@@ -3,8 +3,8 @@
 
 use std::{fmt::Debug, u32};
 
-use crate::puzzle::{Clue, Color, Puzzle, BACKGROUND};
-use anyhow::{bail, Context};
+use crate::puzzle::{BACKGROUND, Clue, Color, Puzzle};
+use anyhow::{Context, bail};
 use ndarray::{ArrayView1, ArrayViewMut1};
 
 // We might want to switch from `Result<>` to `Option<>`, because currently scrubbing generates and
@@ -74,7 +74,7 @@ impl Cell {
     }
 
     // TODO: this could be a lot more efficient by using a bitmask as an iterator.
-    pub fn can_be_iter(&self) -> impl Iterator<Item = Color> {
+    pub fn can_be_iter(&self) -> impl Iterator<Item = Color> + use<> {
         let mut res = vec![];
         for i in 0..32 {
             if self.possible_color_mask & (1 << i) != 0 {
