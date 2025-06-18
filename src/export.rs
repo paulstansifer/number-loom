@@ -50,7 +50,14 @@ pub fn save(
 ) -> anyhow::Result<()> {
     let bytes = to_bytes(document, Some(path.to_str().unwrap().to_string()), format)?;
 
-    Ok(std::fs::write(path, bytes)?)
+    if path == &PathBuf::from("-") {
+        use std::io::Write;
+        std::io::stdout().write_all(&bytes)?;
+        std::io::stdout().flush()?;
+    } else {
+        std::fs::write(path, bytes)?
+    }
+    Ok(())
 }
 
 pub fn as_html<C: Clue>(puzzle: &Puzzle<C>) -> String {
