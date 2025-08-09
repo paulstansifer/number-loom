@@ -208,15 +208,18 @@ pub fn olsak_ch(c: char, orig_to_sanitized: &mut HashMap<char, char>) -> char {
 pub fn as_olsak_nono(puzzle: &Puzzle<Nono>) -> String {
     let mut orig_to_sanitized: HashMap<char, char> = HashMap::new();
 
+    let mut palette = puzzle.palette.clone();
+
     let mut res = String::new();
     res.push_str("#d\n");
 
     // Nonny doesn't like it if white isn't the first color in the palette.
     res.push_str("   0:   #FFFFFF   white\n");
-    for color in puzzle.palette.values() {
+    for color in palette.values_mut() {
         if color.rgb != (255, 255, 255) {
             let (r, g, b) = color.rgb;
-            let ch = olsak_ch(color.ch, &mut orig_to_sanitized);
+            color.ch = olsak_ch(color.ch, &mut orig_to_sanitized);
+            let ch = color.ch;
             let (spec, comment) = (&format!("#{r:02X}{g:02X}{b:02X}"), color.name.to_string());
 
             // I think the second `ch` can perhaps be any ASCII character.
@@ -226,20 +229,14 @@ pub fn as_olsak_nono(puzzle: &Puzzle<Nono>) -> String {
     res.push_str(": rows\n");
     for row in &puzzle.rows {
         for clue in row {
-            res.push_str(&format!(
-                "{}{} ",
-                clue.count, puzzle.palette[&clue.color].ch
-            ));
+            res.push_str(&format!("{}{} ", clue.count, palette[&clue.color].ch));
         }
         res.push('\n');
     }
     res.push_str(": columns\n");
     for column in &puzzle.cols {
         for clue in column {
-            res.push_str(&format!(
-                "{}{} ",
-                clue.count, puzzle.palette[&clue.color].ch
-            ));
+            res.push_str(&format!("{}{} ", clue.count, palette[&clue.color].ch));
         }
         res.push('\n');
     }
