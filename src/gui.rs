@@ -1,5 +1,11 @@
 use std::{collections::HashMap, sync::mpsc};
 
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum Tool {
+    Pencil,
+    FloodFill,
+}
+
 use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
@@ -116,6 +122,7 @@ struct NonogramGui {
     report_stale: bool,
     disambiguator: Disambiguator,
     solved_mask: Vec<Vec<bool>>,
+    current_tool: Tool,
 }
 
 #[derive(Clone, Debug)]
@@ -166,6 +173,7 @@ impl NonogramGui {
             report_stale: true,
             disambiguator: Disambiguator::new(),
             solved_mask,
+            current_tool: Tool::Pencil,
         }
     }
 
@@ -440,6 +448,64 @@ impl NonogramGui {
         });
     }
 
+    fn flood_fill(&mut self, x: usize, y: usize) {
+        let target_color = self.picture.grid[x][y];
+        if target_color == self.current_color {
+            return; // Nothing to do
+        }
+
+        let mut changes = HashMap::new();
+        let mut q = std::collections::VecDeque::new();
+
+        q.push_back((x, y));
+        let mut visited = std::collections::HashSet::new();
+        visited.insert((x, y));
+
+        let x_size = self.picture.grid.len();
+        let y_size = self.picture.grid.first().unwrap().len();
+
+        while let Some((px, py)) = q.pop_front() {
+            changes.insert((px, py), self.current_color);
+
+            let neighbors = [
+                (px.wrapping_sub(1), py),
+                (px + 1, py),
+                (px, py.wrapping_sub(1)),
+                (px, py + 1),
+            ];
+
+            for (nx, ny) in neighbors {
+                if nx < x_size && ny < y_size && self.picture.grid[nx][ny] == target_color {
+                    if visited.insert((nx, ny)) {
+                        q.push_back((nx, ny));
+                    }
+                }
+            }
+        }
+
+        if !changes.is_empty() {
+            self.perform(Action::ChangeColor { changes }, ActionMood::Normal);
+        }
+    }
+
+    fn tool_selector(&mut self, ui: &mut egui::Ui) {
+        ui.label("Tools");
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.current_tool,
+                Tool::Pencil,
+                egui::RichText::new(icons::ICON_BRUSH).size(24.0),
+            )
+            .on_hover_text("Pencil");
+            ui.selectable_value(
+                &mut self.current_tool,
+                Tool::FloodFill,
+                egui::RichText::new(icons::ICON_FORMAT_COLOR_FILL).size(24.0),
+            )
+            .on_hover_text("Flood Fill");
+        });
+    }
+
     fn palette_editor(&mut self, ui: &mut egui::Ui) {
         let mut picked_color = self.current_color;
         let mut removed_color = None;
@@ -561,27 +627,36 @@ impl NonogramGui {
             let from_screen = to_screen.inverse();
 
             if let Some(pointer_pos) = response.interact_pointer_pos() {
-                if response.clicked() || response.dragged() {
-                    let canvas_pos = from_screen * pointer_pos;
-                    let x = canvas_pos.x as usize;
-                    let y = canvas_pos.y as usize;
+                let canvas_pos = from_screen * pointer_pos;
+                let x = canvas_pos.x as usize;
+                let y = canvas_pos.y as usize;
 
-                    if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
-                        let new_color = if self.picture.grid[x][y] == self.current_color {
-                            BACKGROUND
-                        } else {
-                            self.current_color
-                        };
-                        let mood = if response.clicked() || response.drag_started() {
-                            self.drag_start_color = new_color;
-                            ActionMood::Normal
-                        } else {
-                            ActionMood::Merge
-                        };
+                if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
+                    match self.current_tool {
+                        Tool::Pencil => {
+                            if response.clicked() || response.dragged() {
+                                let new_color = if self.picture.grid[x][y] == self.current_color {
+                                    BACKGROUND
+                                } else {
+                                    self.current_color
+                                };
+                                let mood = if response.clicked() || response.drag_started() {
+                                    self.drag_start_color = new_color;
+                                    ActionMood::Normal
+                                } else {
+                                    ActionMood::Merge
+                                };
 
-                        let mut changes = HashMap::new();
-                        changes.insert((x, y), self.drag_start_color);
-                        self.perform(Action::ChangeColor { changes }, mood);
+                                let mut changes = HashMap::new();
+                                changes.insert((x, y), self.drag_start_color);
+                                self.perform(Action::ChangeColor { changes }, mood);
+                            }
+                        }
+                        Tool::FloodFill => {
+                            if response.clicked() {
+                                self.flood_fill(x, y);
+                            }
+                        }
                     }
                 }
             }
@@ -821,6 +896,10 @@ impl eframe::App for NonogramGui {
                         }
                         ui.label(format!("({})", self.redo_stack.len()));
                     });
+
+                    ui.separator();
+
+                    self.tool_selector(ui);
 
                     ui.separator();
 
