@@ -6,7 +6,10 @@ use ndarray::{ArrayView1, ArrayViewMut1};
 
 use crate::{
     gui,
-    line_solve::{scrub_heuristic, scrub_line, skim_heuristic, skim_line, Cell, ScrubReport},
+    line_solve::{
+        scrub_heuristic, scrub_line, skim_heuristic, skim_line, Cell, ModeMap, ScrubReport,
+        SolveMode,
+    },
     puzzle::{Clue, Color, Puzzle, Solution, BACKGROUND},
 };
 
@@ -20,16 +23,28 @@ pub struct Report {
     pub solved_mask: Vec<Vec<bool>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PerModeLaneState {
+    processed: bool,
+    score: i32,
+    processed_score: i32,
+}
+
+impl PerModeLaneState {
+    fn new() -> PerModeLaneState {
+        PerModeLaneState {
+            processed: false,
+            score: 0,
+            processed_score: 0,
+        }
+    }
+}
+
 pub struct LaneState<'a, C: Clue> {
     clues: &'a [C], // just convenience, since `row` and `index` suffice to find it again
     row: bool,
     index: ndarray::Ix,
-    scrubbed: bool,
-    scrub_score: i32,
-    processed_scrub_score: i32,
-    skimmed: bool,
-    skim_score: i32,
-    processed_skim_score: i32,
+    per_mode: ModeMap<PerModeLaneState>,
 }
 
 impl<C: Clue> Debug for LaneState<'_, C> {
@@ -54,12 +69,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
             clues,
             row,
             index: idx,
-            scrubbed: false,
-            scrub_score: 0,
-            processed_scrub_score: 0,
-            skimmed: false,
-            skim_score: 0,
-            processed_skim_score: 0,
+            per_mode: ModeMap::new_uniform(PerModeLaneState::new()),
         };
         res.rescore(grid, false);
         res
@@ -67,30 +77,35 @@ impl<'a, C: Clue> LaneState<'a, C> {
     fn rescore(&mut self, grid: &Grid, was_processed: bool) {
         let lane = get_grid_lane(self, grid);
         if lane.iter().all(|cell| cell.is_known()) {
-            self.scrub_score = std::i32::MIN;
-            self.skim_score = std::i32::MIN;
+            for mode in SolveMode::all() {
+                self.per_mode[*mode].score = std::i32::MIN;
+            }
             return;
         }
-        if was_processed {
-            self.processed_scrub_score = self.scrub_score;
-            self.processed_skim_score = self.skim_score;
+
+        for mode in SolveMode::all() {
+            let s = &mut self.per_mode[*mode];
+            if was_processed {
+                s.processed_score = s.score;
+            }
+            s.score = match mode {
+                SolveMode::Scrub => scrub_heuristic(self.clues, lane),
+                SolveMode::Skim => skim_heuristic(self.clues, lane),
+            };
         }
-        self.scrub_score = scrub_heuristic(self.clues, lane);
-        self.skim_score = skim_heuristic(self.clues, lane);
     }
 
-    fn effective_score(&self, to_scrub: bool) -> i32 {
-        if to_scrub {
-            self.scrub_score.saturating_sub(self.processed_scrub_score)
-        } else {
-            self.skim_score.saturating_sub(self.processed_skim_score)
-        }
+    fn effective_score(&self, mode: SolveMode) -> i32 {
+        let s = &self.per_mode[mode];
+        s.score.saturating_sub(s.processed_score)
     }
 }
 
 impl<'a, C: Clue> std::cmp::PartialEq for LaneState<'a, C> {
     fn eq(&self, other: &Self) -> bool {
-        self.scrubbed == other.scrubbed && self.scrub_score == other.scrub_score
+        // TODO: why the heck did I write this? It makes no sense.
+        self.per_mode[SolveMode::Scrub].processed == other.per_mode[SolveMode::Scrub].processed
+            && self.per_mode[SolveMode::Scrub].score == other.per_mode[SolveMode::Scrub].score
     }
 }
 
@@ -117,18 +132,18 @@ fn get_grid_lane<'a, C: Clue>(ls: &LaneState<'a, C>, grid: &'a Grid) -> ArrayVie
 
 fn find_best_lane<'a, 'b, C: Clue>(
     lanes: &'b mut [LaneState<'a, C>],
-    to_scrub: bool,
+    mode: SolveMode,
 ) -> Option<&'b mut LaneState<'a, C>> {
     let mut best_score = std::i32::MIN;
     let mut res = None;
 
     for lane in lanes {
-        if to_scrub && lane.scrubbed || (!to_scrub) && lane.skimmed {
+        if lane.per_mode[mode].processed {
             continue;
         }
 
-        if lane.effective_score(to_scrub) > best_score {
-            best_score = lane.effective_score(to_scrub);
+        if lane.effective_score(mode) > best_score {
+            best_score = lane.effective_score(mode);
             res = Some(lane);
         }
     }
@@ -166,7 +181,7 @@ fn grid_to_solution<C: Clue>(grid: &Grid, puzzle: &Puzzle<C>) -> Solution {
 fn display_step<'a, C: Clue>(
     clue_lane: &'a LaneState<'a, C>,
     orig_lane: Vec<Cell>,
-    scrub: bool,
+    mode: SolveMode,
     grid: &'a Grid,
     puzzle: &'a Puzzle<C>,
 ) {
@@ -179,13 +194,13 @@ fn display_step<'a, C: Clue>(
 
     let r_or_c = if clue_lane.row { "R" } else { "C" };
 
-    print!("{}{: <3} {: >16}", r_or_c, clue_lane.index, clues);
-
-    if scrub {
-        print!(" ! ");
-    } else {
-        print!(" | ");
-    }
+    print!(
+        "{}{: <3} {: >16} {} ",
+        r_or_c,
+        clue_lane.index,
+        clues,
+        mode.ch()
+    );
 
     for (orig, now) in orig_lane.iter().zip(get_grid_lane(clue_lane, grid)) {
         let new_ch = match now.known_or() {
@@ -201,17 +216,18 @@ fn display_step<'a, C: Clue>(
     }
 
     // Hackish way of getting the original score...
-    if scrub {
-        let lane_arr: ndarray::Array1<Cell> = orig_lane.into();
-        let orig_score =
-            scrub_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap());
-        println!("   {}->{}", orig_score, clue_lane.scrub_score);
-    } else {
-        let lane_arr: ndarray::Array1<Cell> = orig_lane.into();
-        let orig_score =
-            skim_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap());
-        println!("   {}->{}", orig_score, clue_lane.skim_score);
-    }
+    let lane_arr: ndarray::Array1<Cell> = orig_lane.into();
+    let (orig_score, new_score) = match mode {
+        SolveMode::Scrub => (
+            scrub_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap()),
+            clue_lane.per_mode[mode].score,
+        ),
+        SolveMode::Skim => (
+            skim_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap()),
+            clue_lane.per_mode[mode].score,
+        ),
+    };
+    println!("   {}->{}", orig_score, new_score);
 }
 
 pub type LineCache<C> = std::collections::HashMap<(Vec<C>, Vec<u32>), (ScrubReport, Vec<Cell>)>;
@@ -283,16 +299,28 @@ pub fn solve<C: Clue>(
     let mut skims = 0;
     let mut scrubs = 0;
 
-    let mut allowed_skims = 10;
+    let initial_allowed_failures = ModeMap {
+        skim: 10,
+        scrub: 0, /*ignored */
+    };
+
+    let mut allowed_failures = initial_allowed_failures;
+
     loop {
         progress.tick();
-        let will_scrub = allowed_skims == 0;
+        let mut current_mode = SolveMode::last();
+        for mode in SolveMode::all() {
+            if allowed_failures[*mode] > 0 {
+                current_mode = *mode;
+                break;
+            }
+        }
 
         let (report, was_row) = {
-            let best_clue_lane = match find_best_lane(&mut solve_lanes, will_scrub) {
+            let best_clue_lane = match find_best_lane(&mut solve_lanes, current_mode) {
                 Some(lane) => lane,
                 None => {
-                    if will_scrub {
+                    if current_mode == SolveMode::last() {
                         // Nothing left to try; can't solve.
                         return Ok(Report {
                             skims,
@@ -302,7 +330,7 @@ pub fn solve<C: Clue>(
                             solved_mask: grid_to_solved_mask::<C>(&grid),
                         });
                     } else {
-                        allowed_skims = 0; // Try again, but scrub.
+                        allowed_failures[current_mode] = 0; // try the next mode
                         continue;
                     }
                 }
@@ -312,7 +340,8 @@ pub fn solve<C: Clue>(
                 get_mut_grid_lane(best_clue_lane, &mut grid);
 
             progress.set_message(format!(
-                "skims: {skims: >6}  scrubs: {scrubs: >6}  cells left: {cells_left: >6}  skims allowed: {allowed_skims: >3}  {} {}", if will_scrub {
+                "skims: {skims: >6}  scrubs: {scrubs: >6}  cells left: {cells_left: >6}  {} {}",
+                if current_mode == SolveMode::Scrub {
                     "scrubbing".red()
                 } else {
                     "skimming".green()
@@ -322,23 +351,24 @@ pub fn solve<C: Clue>(
 
             let orig_version_of_line: Vec<Cell> = best_grid_lane.iter().cloned().collect();
 
-            let report = if will_scrub {
-                best_clue_lane.scrubbed = true;
-                scrubs += 1;
-                op_or_cache(scrub_line, best_clue_lane, &mut best_grid_lane, line_cache).context(
-                    format!(
-                        "scrubbing {:?} with {:?}",
+            let report = match current_mode {
+                SolveMode::Scrub => {
+                    scrubs += 1;
+                    op_or_cache(scrub_line, best_clue_lane, &mut best_grid_lane, line_cache)
+                        .context(format!(
+                            "scrubbing {:?} with {:?}",
+                            best_clue_lane, orig_version_of_line
+                        ))?
+                }
+                SolveMode::Skim => {
+                    skims += 1;
+                    skim_line(best_clue_lane.clues, &mut best_grid_lane).context(format!(
+                        "skimming {:?} with {:?}",
                         best_clue_lane, orig_version_of_line
-                    ),
-                )?
-            } else {
-                best_clue_lane.skimmed = true;
-                skims += 1;
-                skim_line(best_clue_lane.clues, &mut best_grid_lane).context(format!(
-                    "skimming {:?} with {:?}",
-                    best_clue_lane, orig_version_of_line
-                ))?
+                    ))?
+                }
             };
+            best_clue_lane.per_mode[current_mode].processed = true;
 
             let known_before = orig_version_of_line.iter().filter(|c| c.is_known()).count();
             let known_after = best_grid_lane.iter().filter(|c| c.is_known()).count();
@@ -351,7 +381,7 @@ pub fn solve<C: Clue>(
                 display_step(
                     best_clue_lane,
                     orig_version_of_line,
-                    will_scrub,
+                    current_mode,
                     &grid,
                     puzzle,
                 );
@@ -371,27 +401,31 @@ pub fn solve<C: Clue>(
             });
         }
 
-        if will_scrub {
-            if !report.affected_cells.is_empty() {
-                allowed_skims = 10;
+        if current_mode != SolveMode::first() && !report.affected_cells.is_empty() {
+            // Made progress: reset and try easy stuff first again.
+            allowed_failures = initial_allowed_failures;
+        }
+
+        if current_mode != SolveMode::last() {
+            if report.affected_cells.is_empty() {
+                allowed_failures[current_mode] -= 1;
+            } else {
+                // TODO: I think I meant `min`?
+                allowed_failures[current_mode] =
+                    std::cmp::max(10, allowed_failures[current_mode] + 1);
             }
-        } else if report.affected_cells.is_empty() {
-            allowed_skims -= 1;
-        } else {
-            allowed_skims = std::cmp::max(10, allowed_skims + 1);
         }
 
         // Affected intersecting lanes now may need to be re-examined:
         for other_lane in solve_lanes.iter_mut() {
             if other_lane.row != was_row && report.affected_cells.contains(&other_lane.index) {
                 other_lane.rescore(&grid, /*was_processed=*/ false);
-                other_lane.skimmed = false;
-                other_lane.scrubbed = false;
+                for mode in SolveMode::all() {
+                    other_lane.per_mode[*mode].processed = false;
+                }
             }
         }
     }
-
-    // Not printing; we probably already know what it looks like!
 }
 
 pub async fn disambig_candidates(

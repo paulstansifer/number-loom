@@ -7,6 +7,90 @@ use crate::puzzle::{BACKGROUND, Clue, Color, Puzzle};
 use anyhow::{Context, bail};
 use ndarray::{ArrayView1, ArrayViewMut1};
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SolveMode {
+    // Listed in order from quickest to most comprehensive:
+    Skim,
+    Scrub,
+}
+
+impl SolveMode {
+    pub fn all() -> &'static [SolveMode] {
+        &[SolveMode::Skim, SolveMode::Scrub]
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SolveMode::Skim => "skim",
+            SolveMode::Scrub => "scrub",
+        }
+    }
+
+    pub fn ch(self) -> char {
+        match self {
+            SolveMode::Skim => '-',
+            SolveMode::Scrub => '+',
+        }
+    }
+
+    pub fn prev(self) -> Option<SolveMode> {
+        match self {
+            SolveMode::Skim => None,
+            SolveMode::Scrub => Some(SolveMode::Skim),
+        }
+    }
+
+    pub fn next(self) -> Option<SolveMode> {
+        match self {
+            SolveMode::Skim => Some(SolveMode::Scrub),
+            SolveMode::Scrub => None,
+        }
+    }
+
+    pub fn first() -> SolveMode {
+        SolveMode::Skim
+    }
+
+    pub fn last() -> SolveMode {
+        SolveMode::Scrub
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ModeMap<T> {
+    pub skim: T,
+    pub scrub: T,
+}
+
+impl<T: Clone> ModeMap<T> {
+    pub fn new_uniform(value: T) -> ModeMap<T> {
+        ModeMap {
+            skim: value.clone(),
+            scrub: value,
+        }
+    }
+}
+
+impl<T> std::ops::Index<SolveMode> for ModeMap<T> {
+    type Output = T;
+
+    fn index(&self, index: SolveMode) -> &Self::Output {
+        match index {
+            SolveMode::Skim => &self.skim,
+            SolveMode::Scrub => &self.scrub,
+        }
+    }
+}
+
+impl<T> std::ops::IndexMut<SolveMode> for ModeMap<T> {
+    fn index_mut(&mut self, index: SolveMode) -> &mut Self::Output {
+        match index {
+            SolveMode::Skim => &mut self.skim,
+            SolveMode::Scrub => &mut self.scrub,
+        }
+    }
+}
+
 // We might want to switch from `Result<>` to `Option<>`, because currently scrubbing generates and
 // discards a lot of error text!
 
