@@ -101,16 +101,6 @@ impl<'a, C: Clue> LaneState<'a, C> {
     }
 }
 
-impl<'a, C: Clue> std::cmp::PartialEq for LaneState<'a, C> {
-    fn eq(&self, other: &Self) -> bool {
-        // TODO: why the heck did I write this? It makes no sense.
-        self.per_mode[SolveMode::Scrub].processed == other.per_mode[SolveMode::Scrub].processed
-            && self.per_mode[SolveMode::Scrub].score == other.per_mode[SolveMode::Scrub].score
-    }
-}
-
-impl<'a, C: Clue> std::cmp::Eq for LaneState<'a, C> {}
-
 fn get_mut_grid_lane<'a, C: Clue>(
     ls: &LaneState<'a, C>,
     grid: &'a mut Grid,
