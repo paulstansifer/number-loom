@@ -195,41 +195,41 @@ fn solve_examples() {
     println!("{}", report);
 
     assert!(report.contains("apron.png: 77 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("bill_jeb_and_bob.png: 238 skims, 0 scrubs, 0 cells left"));
+    assert!(report.contains("bill_jeb_and_bob.png: 249 skims, 2 scrubs, 0 cells left"));
     assert!(report.contains("boring_blob.png: 32 skims, 0 scrubs, 0 cells left"));
     assert!(report.contains("boring_blob_large.png: 103 skims, 0 scrubs, 0 cells left"));
     assert!(report.contains("boring_hollow_blob.png: 34 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("carry_on_bag.png: 81 skims, 28 scrubs, 0 cells left"));
-    assert!(report.contains("clock.png: 167 skims, 16 scrubs, 0 cells left"));
+    assert!(report.contains("carry_on_bag.png: 77 skims, 29 scrubs, 0 cells left"));
+    assert!(report.contains("clock.png: 165 skims, 16 scrubs, 0 cells left"));
     assert!(
-        report.contains("compact_fluorescent_lightbulb.png: 286 skims, 29 scrubs, 0 cells left")
+        report.contains("compact_fluorescent_lightbulb.png: 264 skims, 3 scrubs, 0 cells left")
     );
-    assert!(report.contains("ear.png: 231 skims, 22 scrubs, 0 cells left"));
+    assert!(report.contains("ear.png: 225 skims, 24 scrubs, 0 cells left"));
     assert!(report.contains("fire_submarine.png: 161 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("hair_dryer.png: 148 skims, 21 scrubs, 0 cells left"));
-    assert!(report.contains("headphones.png: 430 skims, 1 scrubs, 0 cells left"));
+    assert!(report.contains("hair_dryer.png: 144 skims, 20 scrubs, 0 cells left"));
+    assert!(report.contains("headphones.png: 415 skims, 11 scrubs, 0 cells left"));
     assert!(report.contains("keys.png: 62 skims, 0 scrubs, 0 cells left"));
     assert!(report.contains("ladle.png: 20 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("myst_falling_man.png: 64 skims, 14 scrubs, 0 cells left"));
-    assert!(report.contains("pill_bottles.png: 243 skims, 14 scrubs, 0 cells left"));
+    assert!(report.contains("myst_falling_man.png: 63 skims, 14 scrubs, 0 cells left"));
+    assert!(report.contains("pill_bottles.png: 235 skims, 15 scrubs, 0 cells left"));
     assert!(report.contains("puzzle_piece.png: 73 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("ringed_planet.png: 158 skims, 22 scrubs, 0 cells left"));
-    assert!(report.contains("shirt_and_tie.png: 323 skims, 27 scrubs, 0 cells left"));
-    assert!(report.contains("shirt_and_tie_no_button.png: 199 skims, 45 scrubs, 246 cells left"));
-    assert!(report.contains("skid_steer.png: 209 skims, 1 scrubs, 0 cells left"));
-    assert!(report.contains("sunglasses.png: 186 skims, 23 scrubs, 0 cells left"));
-    assert!(report.contains("stroller.png: 125 skims, 76 scrubs, 406 cells left"));
-    assert!(report.contains("tandem_stationary_bike.png: 365 skims, 50 scrubs, 0 cells left"));
+    assert!(report.contains("ringed_planet.png: 159 skims, 22 scrubs, 0 cells left"));
+    assert!(report.contains("shirt_and_tie.png: 308 skims, 30 scrubs, 0 cells left"));
+    assert!(report.contains("shirt_and_tie_no_button.png: 185 skims, 47 scrubs, 246 cells left"));
+    assert!(report.contains("skid_steer.png: 203 skims, 1 scrubs, 0 cells left"));
+    assert!(report.contains("sunglasses.png: 185 skims, 23 scrubs, 0 cells left"));
+    assert!(report.contains("stroller.png: 124 skims, 77 scrubs, 406 cells left"));
+    assert!(report.contains("tandem_stationary_bike.png: 336 skims, 43 scrubs, 0 cells left"));
     assert!(report.contains("tea.png: 100 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("tedious_dust_10x10.png: 91 skims, 22 scrubs, 0 cells left"));
-    assert!(report.contains("tedious_dust_25x25.png: 521 skims, 89 scrubs, 0 cells left"));
-    assert!(report.contains("tedious_dust_30x30.png: 985 skims, 206 scrubs, 0 cells left"));
-    assert!(report.contains("tedious_dust_40x40.png: 1528 skims, 338 scrubs, 0 cells left"));
+    assert!(report.contains("tedious_dust_10x10.png: 90 skims, 22 scrubs, 0 cells left"));
+    assert!(report.contains("tedious_dust_25x25.png: 524 skims, 88 scrubs, 0 cells left"));
+    assert!(report.contains("tedious_dust_30x30.png: 973 skims, 225 scrubs, 0 cells left"));
+    assert!(report.contains("tedious_dust_40x40.png: 1478 skims, 338 scrubs, 0 cells left"));
     assert!(report.contains("telephone_recevier.png: 34 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("tissue_box.png: 65 skims, 49 scrubs, 148 cells left"));
+    assert!(report.contains("tissue_box.png: 64 skims, 50 scrubs, 148 cells left"));
     assert!(report.contains("tornado.png: 96 skims, 15 scrubs, 0 cells left"));
-    assert!(report.contains("usb_type_a.png: 319 skims, 50 scrubs, 0 cells left"));
-    assert!(report.contains("usb_type_a_no_emblem.png: 326 skims, 79 scrubs, 0 cells left"));
+    assert!(report.contains("usb_type_a.png: 308 skims, 56 scrubs, 0 cells left"));
+    assert!(report.contains("usb_type_a_no_emblem.png: 345 skims, 82 scrubs, 0 cells left"));
 
     assert_eq!(report.lines().collect::<Vec<_>>().len(), 34);
 }

@@ -7,10 +7,10 @@ use ndarray::{ArrayView1, ArrayViewMut1};
 use crate::{
     gui,
     line_solve::{
-        scrub_heuristic, scrub_line, skim_heuristic, skim_line, Cell, ModeMap, ScrubReport,
-        SolveMode,
+        Cell, ModeMap, ScrubReport, SolveMode, scrub_heuristic, scrub_line, skim_heuristic,
+        skim_line,
     },
-    puzzle::{Clue, Color, Puzzle, Solution, BACKGROUND},
+    puzzle::{BACKGROUND, Clue, Color, Puzzle, Solution},
 };
 
 type Grid = ndarray::Array2<Cell>;
@@ -410,9 +410,8 @@ pub fn solve<C: Clue>(
             if report.affected_cells.is_empty() {
                 allowed_failures[current_mode] -= 1;
             } else {
-                // TODO: I think I meant `min`?
                 allowed_failures[current_mode] =
-                    std::cmp::max(10, allowed_failures[current_mode] + 1);
+                    std::cmp::min(10, allowed_failures[current_mode] + 1);
             }
         }
 
