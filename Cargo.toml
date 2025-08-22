@@ -1,3 +1,7 @@
+[[bin]]
+name = "number-loom"
+path = "src/bin/number-loom.rs"
+
 [package]
 name = "number-loom"
 description = "Multipurpose GUI and CLI tool for constructing nonograms"
@@ -29,6 +33,7 @@ itertools = "0.14.0"
 egui_material_icons = "0.3.0"
 console_error_panic_hook = "0.1.7"
 tokio = { version = "1", features = ["rt"] }         # Using only wasm-safe features
+criterion = "0.7.0"
 
 [dev-dependencies]
 rand = "0.8.5"
@@ -57,3 +62,7 @@ opt-level = 2 # fast and small wasm
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
 opt-level = 2
+
+[[bench]]
+name = "benchmark"
+harness = false

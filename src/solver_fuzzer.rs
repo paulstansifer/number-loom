@@ -1,20 +1,13 @@
-#![allow(dead_code)] // Otherwise, anything not tested by this becomes a warning!
-
-mod export;
-mod grid_solve;
-mod gui;
-mod import;
-mod line_solve;
-mod puzzle;
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
-    use crate::import::{solution_to_puzzle, solution_to_triano_puzzle};
-    use crate::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
-    use crate::puzzle::{BACKGROUND, Clue, Color, ColorInfo, Puzzle, Solution};
     use ndarray::Array1;
+    use number_loom::import::{solution_to_puzzle, solution_to_triano_puzzle};
+    use number_loom::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
+    use number_loom::puzzle::{
+        BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Puzzle, Solution,
+    };
     use rand::{Rng, SeedableRng};
 
     fn generate_random_line(length: usize, num_colors: u8) -> Vec<Color> {
@@ -72,7 +65,7 @@ mod tests {
     fn dummy_color(color: Color) -> (Color, ColorInfo) {
         (
             color,
-            crate::puzzle::ColorInfo {
+            ColorInfo {
                 ch: ' ',
                 name: String::new(),
                 rgb: (0, 0, 0),
@@ -80,7 +73,7 @@ mod tests {
                 corner: if color.0 <= 1 {
                     None
                 } else {
-                    Some(crate::puzzle::Corner {
+                    Some(Corner {
                         left: color.0 % 2 == 0,
                         upper: true,
                     })
@@ -102,7 +95,7 @@ mod tests {
         }
 
         let dummy_solution = Solution {
-            clue_style: crate::puzzle::ClueStyle::Nono,
+            clue_style: ClueStyle::Nono,
             palette: available_colors.into_iter().map(dummy_color).collect(),
             grid,
         };

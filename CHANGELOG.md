@@ -1,5 +1,12 @@
 ## Changelog
 
+## Current version
+### Added
+ - Bucket fill tool, in addition to the pencil tool
+### Internal improvements
+ - Factored into a library with a binary wrapper
+ - Added simple benchmarks
+
 ## 0.2.2 - 2025-06-18
 ### Added
  - Can now run on the Web
