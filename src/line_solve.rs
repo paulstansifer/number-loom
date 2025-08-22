@@ -5,6 +5,7 @@ use std::{fmt::Debug, u32};
 
 use crate::puzzle::{BACKGROUND, Clue, Color, Puzzle};
 use anyhow::{Context, bail};
+use colored::{ColoredString, Colorize};
 use ndarray::{ArrayView1, ArrayViewMut1};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -23,6 +24,13 @@ impl SolveMode {
         match self {
             SolveMode::Skim => "skim",
             SolveMode::Scrub => "scrub",
+        }
+    }
+
+    pub fn colorized_name(self) -> ColoredString {
+        match self {
+            SolveMode::Skim => self.name().green(),
+            SolveMode::Scrub => self.name().red(),
         }
     }
 
@@ -68,6 +76,19 @@ impl<T: Clone> ModeMap<T> {
             skim: value.clone(),
             scrub: value,
         }
+    }
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for ModeMap<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for mode in SolveMode::all() {
+            // In practice, we know this is a count so (HACK) pluralize:
+            write!(f, "{}s: {: >6}", mode.name(), self[*mode])?;
+            if *mode != SolveMode::last() {
+                write!(f, "  ")?;
+            }
+        }
+        Ok(())
     }
 }
 

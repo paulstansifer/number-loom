@@ -10,7 +10,7 @@ use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
     import,
-    puzzle::{ClueStyle, Color, ColorInfo, Corner, Document, Solution, BACKGROUND},
+    puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, Solution},
 };
 use egui::{Color32, Frame, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
@@ -916,16 +916,13 @@ impl eframe::App for NonogramGui {
 
                         match puzzle.plain_solve() {
                             Ok(grid_solve::Report {
-                                skims,
-                                scrubs,
+                                solve_counts,
                                 cells_left,
                                 solution: _solution,
                                 solved_mask,
                             }) => {
-                                self.solve_report = format!(
-                                    "skims: {} scrubs: {} unsolved cells: {}",
-                                    skims, scrubs, cells_left
-                                );
+                                self.solve_report =
+                                    format!("{solve_counts} unsolved cells: {cells_left}");
                                 self.solved_mask = solved_mask;
                             }
                             Err(e) => self.solve_report = format!("Error: {:?}", e),

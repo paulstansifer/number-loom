@@ -16,8 +16,7 @@ use crate::{
 type Grid = ndarray::Array2<Cell>;
 
 pub struct Report {
-    pub skims: usize,
-    pub scrubs: usize,
+    pub solve_counts: ModeMap<usize>,
     pub cells_left: usize,
     pub solution: Solution,
     pub solved_mask: Vec<Vec<bool>>,
@@ -286,8 +285,7 @@ pub fn solve<C: Clue>(
     }
 
     let mut cells_left = puzzle.rows.len() * puzzle.cols.len();
-    let mut skims = 0;
-    let mut scrubs = 0;
+    let mut solve_counts = ModeMap::new_uniform(0);
 
     let initial_allowed_failures = ModeMap {
         skim: 10,
@@ -313,8 +311,7 @@ pub fn solve<C: Clue>(
                     if current_mode == SolveMode::last() {
                         // Nothing left to try; can't solve.
                         return Ok(Report {
-                            skims,
-                            scrubs,
+                            solve_counts,
                             cells_left,
                             solution: grid_to_solution::<C>(&grid, puzzle),
                             solved_mask: grid_to_solved_mask::<C>(&grid),
@@ -330,20 +327,16 @@ pub fn solve<C: Clue>(
                 get_mut_grid_lane(best_clue_lane, &mut grid);
 
             progress.set_message(format!(
-                "skims: {skims: >6}  scrubs: {scrubs: >6}  cells left: {cells_left: >6}  {} {}",
-                if current_mode == SolveMode::Scrub {
-                    "scrubbing".red()
-                } else {
-                    "skimming".green()
-                },
+                "{solve_counts} cells left: {cells_left: >6}  {}ing {}",
+                current_mode.colorized_name(),
                 best_clue_lane.text_coord(),
             ));
 
             let orig_version_of_line: Vec<Cell> = best_grid_lane.iter().cloned().collect();
 
+            solve_counts[current_mode] += 1;
             let report = match current_mode {
                 SolveMode::Scrub => {
-                    scrubs += 1;
                     op_or_cache(scrub_line, best_clue_lane, &mut best_grid_lane, line_cache)
                         .context(format!(
                             "scrubbing {:?} with {:?}",
@@ -351,7 +344,6 @@ pub fn solve<C: Clue>(
                         ))?
                 }
                 SolveMode::Skim => {
-                    skims += 1;
                     skim_line(best_clue_lane.clues, &mut best_grid_lane).context(format!(
                         "skimming {:?} with {:?}",
                         best_clue_lane, orig_version_of_line
@@ -383,8 +375,7 @@ pub fn solve<C: Clue>(
         if cells_left == 0 {
             progress.finish_and_clear();
             return Ok(Report {
-                skims,
-                scrubs,
+                solve_counts,
                 cells_left,
                 solution: grid_to_solution::<C>(&grid, puzzle),
                 solved_mask: grid_to_solved_mask::<C>(&grid),

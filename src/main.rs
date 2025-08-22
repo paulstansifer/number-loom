@@ -130,18 +130,16 @@ fn main() -> std::io::Result<()> {
 
         None => match document.puzzle().solve_with_args(args.trace_solve) {
             Ok(grid_solve::Report {
-                skims,
-                scrubs,
+                solve_counts,
                 cells_left,
                 solution: _solution,
                 solved_mask: _solved_mask,
             }) => {
                 if cells_left == 0 {
-                    eprintln!("Solved after {} skims and {} scrubs.", skims, scrubs);
+                    eprintln!("Solved after {solve_counts}.");
                 } else {
                     eprintln!(
-                        "Unable to solve. Performed {} skims, {} scrubs; {} cells left.",
-                        skims, scrubs, cells_left
+                        "Unable to solve. Performed {solve_counts}; {cells_left} cells left."
                     );
                 }
             }
@@ -175,15 +173,14 @@ fn solve_examples() {
             let mut document = import::load_path(&path, None);
             match document.puzzle().plain_solve() {
                 Ok(Report {
-                    skims,
-                    scrubs,
+                    solve_counts,
                     cells_left,
                     solution: _solution,
                     solved_mask: _solved_mask,
                 }) => {
                     let filename = path.file_name().unwrap().to_str().unwrap();
                     report.push_str(&format!(
-                        "{filename}: {skims} skims, {scrubs} scrubs, {cells_left} cells left\n"
+                        "{filename: <40} {solve_counts}  cells left: {cells_left}\n"
                     ));
                 }
                 Err(e) => {
@@ -192,44 +189,49 @@ fn solve_examples() {
             }
         }
     }
+
     println!("{}", report);
 
-    assert!(report.contains("apron.png: 77 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("bill_jeb_and_bob.png: 249 skims, 2 scrubs, 0 cells left"));
-    assert!(report.contains("boring_blob.png: 32 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("boring_blob_large.png: 103 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("boring_hollow_blob.png: 34 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("carry_on_bag.png: 77 skims, 29 scrubs, 0 cells left"));
-    assert!(report.contains("clock.png: 165 skims, 16 scrubs, 0 cells left"));
-    assert!(
-        report.contains("compact_fluorescent_lightbulb.png: 264 skims, 3 scrubs, 0 cells left")
-    );
-    assert!(report.contains("ear.png: 225 skims, 24 scrubs, 0 cells left"));
-    assert!(report.contains("fire_submarine.png: 161 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("hair_dryer.png: 144 skims, 20 scrubs, 0 cells left"));
-    assert!(report.contains("headphones.png: 415 skims, 11 scrubs, 0 cells left"));
-    assert!(report.contains("keys.png: 62 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("ladle.png: 20 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("myst_falling_man.png: 63 skims, 14 scrubs, 0 cells left"));
-    assert!(report.contains("pill_bottles.png: 235 skims, 15 scrubs, 0 cells left"));
-    assert!(report.contains("puzzle_piece.png: 73 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("ringed_planet.png: 159 skims, 22 scrubs, 0 cells left"));
-    assert!(report.contains("shirt_and_tie.png: 308 skims, 30 scrubs, 0 cells left"));
-    assert!(report.contains("shirt_and_tie_no_button.png: 185 skims, 47 scrubs, 246 cells left"));
-    assert!(report.contains("skid_steer.png: 203 skims, 1 scrubs, 0 cells left"));
-    assert!(report.contains("sunglasses.png: 185 skims, 23 scrubs, 0 cells left"));
-    assert!(report.contains("stroller.png: 124 skims, 77 scrubs, 406 cells left"));
-    assert!(report.contains("tandem_stationary_bike.png: 336 skims, 43 scrubs, 0 cells left"));
-    assert!(report.contains("tea.png: 100 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("tedious_dust_10x10.png: 90 skims, 22 scrubs, 0 cells left"));
-    assert!(report.contains("tedious_dust_25x25.png: 524 skims, 88 scrubs, 0 cells left"));
-    assert!(report.contains("tedious_dust_30x30.png: 973 skims, 225 scrubs, 0 cells left"));
-    assert!(report.contains("tedious_dust_40x40.png: 1478 skims, 338 scrubs, 0 cells left"));
-    assert!(report.contains("telephone_recevier.png: 34 skims, 0 scrubs, 0 cells left"));
-    assert!(report.contains("tissue_box.png: 64 skims, 50 scrubs, 148 cells left"));
-    assert!(report.contains("tornado.png: 96 skims, 15 scrubs, 0 cells left"));
-    assert!(report.contains("usb_type_a.png: 308 skims, 56 scrubs, 0 cells left"));
-    assert!(report.contains("usb_type_a_no_emblem.png: 345 skims, 82 scrubs, 0 cells left"));
+    let expected_report = vec![
+        "apron.png                                skims:     77  scrubs:      0  cells left: 0",
+        "bill_jeb_and_bob.png                     skims:    249  scrubs:      2  cells left: 0",
+        "boring_blob.png                          skims:     32  scrubs:      0  cells left: 0",
+        "boring_blob_large.png                    skims:    103  scrubs:      0  cells left: 0",
+        "boring_hollow_blob.png                   skims:     34  scrubs:      0  cells left: 0",
+        "carry_on_bag.png                         skims:     77  scrubs:     29  cells left: 0",
+        "clock.png                                skims:    165  scrubs:     16  cells left: 0",
+        "compact_fluorescent_lightbulb.png        skims:    264  scrubs:      3  cells left: 0",
+        "ear.png                                  skims:    225  scrubs:     24  cells left: 0",
+        "fire_submarine.png                       skims:    161  scrubs:      0  cells left: 0",
+        "hair_dryer.png                           skims:    144  scrubs:     20  cells left: 0",
+        "headphones.png                           skims:    415  scrubs:     11  cells left: 0",
+        "keys.png                                 skims:     62  scrubs:      0  cells left: 0",
+        "ladle.png                                skims:     20  scrubs:      0  cells left: 0",
+        "myst_falling_man.png                     skims:     63  scrubs:     14  cells left: 0",
+        "pill_bottles.png                         skims:    235  scrubs:     15  cells left: 0",
+        "puzzle_piece.png                         skims:     73  scrubs:      0  cells left: 0",
+        "ringed_planet.png                        skims:    159  scrubs:     22  cells left: 0",
+        "shirt_and_tie.png                        skims:    308  scrubs:     30  cells left: 0",
+        "shirt_and_tie_no_button.png              skims:    185  scrubs:     47  cells left: 246",
+        "skid_steer.png                           skims:    203  scrubs:      1  cells left: 0",
+        "stroller.png                             skims:    124  scrubs:     77  cells left: 406",
+        "sunglasses.png                           skims:    185  scrubs:     23  cells left: 0",
+        "tandem_stationary_bike.png               skims:    336  scrubs:     43  cells left: 0",
+        "tea.png                                  skims:    100  scrubs:      0  cells left: 0",
+        "tedious_dust_10x10.png                   skims:     90  scrubs:     22  cells left: 0",
+        "tedious_dust_25x25.png                   skims:    524  scrubs:     88  cells left: 0",
+        "tedious_dust_30x30.png                   skims:    973  scrubs:    225  cells left: 0",
+        "tedious_dust_40x40.png                   skims:   1478  scrubs:    338  cells left: 0",
+        "telephone_recevier.png                   skims:     34  scrubs:      0  cells left: 0",
+        "tissue_box.png                           skims:     64  scrubs:     50  cells left: 148",
+        "tornado.png                              skims:     96  scrubs:     15  cells left: 0",
+        "usb_type_a.png                           skims:    308  scrubs:     56  cells left: 0",
+        "usb_type_a_no_emblem.png                 skims:    345  scrubs:     82  cells left: 0",
+    ];
+
+    for line in expected_report {
+        assert!(report.contains(line));
+    }
 
     assert_eq!(report.lines().collect::<Vec<_>>().len(), 34);
 }
