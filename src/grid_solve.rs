@@ -7,7 +7,7 @@ use ndarray::{ArrayView1, ArrayViewMut1};
 use crate::{
     gui,
     line_solve::{
-        Cell, ModeMap, ScrubReport, SolveMode, scrub_heuristic, scrub_line, skim_heuristic,
+        Cell, ModeMap, ScrubReport, SolveMode, exhaust_line, scrub_heuristic, skim_heuristic,
         skim_line,
     },
     puzzle::{BACKGROUND, Clue, Color, Puzzle, Solution},
@@ -336,13 +336,16 @@ pub fn solve<C: Clue>(
 
             solve_counts[current_mode] += 1;
             let report = match current_mode {
-                SolveMode::Scrub => {
-                    op_or_cache(scrub_line, best_clue_lane, &mut best_grid_lane, line_cache)
-                        .context(format!(
-                            "scrubbing {:?} with {:?}",
-                            best_clue_lane, orig_version_of_line
-                        ))?
-                }
+                SolveMode::Scrub => op_or_cache(
+                    exhaust_line,
+                    best_clue_lane,
+                    &mut best_grid_lane,
+                    line_cache,
+                )
+                .context(format!(
+                    "scrubbing {:?} with {:?}",
+                    best_clue_lane, orig_version_of_line
+                ))?,
                 SolveMode::Skim => {
                     skim_line(best_clue_lane.clues, &mut best_grid_lane).context(format!(
                         "skimming {:?} with {:?}",

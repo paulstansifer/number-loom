@@ -16,7 +16,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut fire_sub_doc = load_path(&PathBuf::from("examples/png/fire_submarine.png"), None);
     let fire_sub = fire_sub_doc.puzzle().assume_nono();
 
-    c.bench_function("tedious_fire_sub", |b| {
+    c.bench_function("fire_sub", |b| {
         b.iter(|| solve(std::hint::black_box(&fire_sub.clone()), &mut None, false));
     });
 }
