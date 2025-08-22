@@ -17,7 +17,7 @@ It's still pretty janky, but it's also the most powerful such tool I know of. In
   * `char-grid`, a plaintext grid of characters, which it attempts to infer a reasonable character-to-color mapping (extension: `.txt`)
   * HTML, for export only, as a printable puzzle (extension `.html`)
 * Has support for "Trianograms", a rare variation with triangular cells that may appear as caps to clues.
-* A line-logic solver (currently not quite as powerful as it should be!) that provides some difficulty information.
+* An exhaustive line-logic solver that provides some difficulty information.
 * A tool that searches for one-cell edits that make puzzles closer to solveable.
 
 
@@ -37,11 +37,11 @@ To convert a puzzle from the command line, do `number-loom examples/png/hair_dry
 
 ## Solver
 
-The `number-loom` solver is a line-logic solver only. Algorithmically, it borrows a lot from `pbnsolve`, a powerful and fast nonogram solver, but `number-loom`'s heuristics for processing lines are intended to mimic human solver behavior rather than to maximize speed. (It also currently isn't as powerful as `pbnsolve`'s line-solver in `-aE` mode; this should be fixed!)
+The `number-loom` solver is a line-logic solver only.
 
 It has two modes:
-  * "skim", which shoves all clues in a line as far as possible to one side and then the other, and checks to see if any of the clues overlap themselves between the two positions
-  * "scrub", which tries each color for each cell in a line, ruling out any colors that cause a contradiction
+  * "skim", which shoves all clues in a line as far as possible to one side and then the other, and checks to see if any of the clues (or gaps) overlap themselves between the two positions
+  * "scrub", which uses a "flood fill" in each direction to determine all possible locations of each clue.
 
 It stores progress by noting each possibly-remaining color in each cell. Even though a human solver typically only notes down known cells, in my experience this corresponds pretty well to the sort of ad-hoc logic that solvers perform on color nonograms when they glance at the both lines that contain a cell.
 
@@ -68,7 +68,7 @@ It works by simply re-solving the puzzle with every possible one-square change. 
 
 Trianograms are a rare variant. "Mindful Puzzle Books" publishes a book by that name. The Olšák solver also supports this variant, crediting the concept to "the journal Maľované krížovky, Silentium s.r.o, Bratislava", but I haven't been able to find out more. There are puzzles with triangles at [griddlers.net](http://griddlers.net/), but I'm not sure if they use the same rules.
 
-A Trianogram has black, white, and four additional "colors": triangles that divide the cell into half-black and half-white. The triangles always serve as "caps" to a clue; for example "◢2◤" denotes that the four cells "◢■■◤" will appear. They will be consecutive, despite the fact that the caps are different "colors". Two consecutive clues will only be guaranteed to be separated by a space if neither of them is capped on the facing sides.
+A Trianogram has black, white, and four additional "colors": triangles that divide the cell into half-black and half-white. The triangles always serve as "caps" to a clue; for example "◢2◤" denotes that the four cells "◢■■◤" will appear. They will be consecutive, despite the fact that the caps are different "colors". Two consecutive clues will only be guaranteed to be separated by a space if neither of them is capped on the facing sides (if there are multiple identical consecutive triangles, they will each get their own clue).
 
 The Olšák solver, I believe, supports multi-color trianograms, but `number-loom` does not yet.
 
@@ -87,8 +87,7 @@ You'll have to download and install `pbnsolve` [from a tarball] (and probably ed
 number-loom examples/png/stroller.png - --output-format webpbn | pbnsolve -tu
 ```
 
-It gives some difficulty information. I believe that "Lines Processed" very roughly corresponds to `number-loom`'s measurement of skims and scrubs (summed together). But `pbnsolve` is currently more powerful for difficult puzzles. For example, it can solve the stroller puzzle, even if you use `-aE` to restrict it to line logic.
-
+It gives some difficulty information. I believe that "Lines Processed" very roughly corresponds to `number-loom`'s measurement of skims and scrubs (summed together). `number-loom` should be equivalent to `pbnsolve`'s `-aE` mode, though `pbnsolve` can handle any solveable nonogram by doing a counterfactual tree search.
 
 ### The Olšák solver
 The [Olšák solver] comes in a tarball and doesn't even have a makefile! (Just do `gcc grid.c -o grid` to build it.) It accepts a different input format. It does provide some difficulty information, but I haven't yet learned to understand it.

@@ -2,6 +2,7 @@
 
 ## Current version
 ### Added
+ - Line-solving is now exhaustive!
  - Bucket fill tool, in addition to the pencil tool
 ### Internal improvements
  - Factored into a library with a binary wrapper
