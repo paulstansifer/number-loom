@@ -6,8 +6,6 @@ use crate::import::{solution_to_puzzle, solution_to_triano_puzzle};
 pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash {
     fn style() -> ClueStyle;
 
-    fn new_solid(color: Color, count: u16) -> Self;
-
     fn must_be_separated_from(&self, next: &Self) -> bool;
 
     fn len(&self) -> usize;
@@ -40,10 +38,6 @@ pub struct Nono {
 impl Clue for Nono {
     fn style() -> ClueStyle {
         ClueStyle::Nono
-    }
-
-    fn new_solid(color: Color, count: u16) -> Self {
-        Nono { color, count }
     }
 
     fn must_be_separated_from(&self, next: &Self) -> bool {
@@ -88,14 +82,6 @@ impl Clue for Triano {
         ClueStyle::Triano
     }
 
-    fn new_solid(color: Color, count: u16) -> Self {
-        Triano {
-            front_cap: None,
-            body_len: count,
-            body_color: color,
-            back_cap: None,
-        }
-    }
     fn len(&self) -> usize {
         self.body_len as usize
             + self.front_cap.is_some() as usize
