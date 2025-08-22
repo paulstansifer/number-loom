@@ -781,6 +781,144 @@ pub fn scrub_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
     density + std::cmp::max(0, unknown_background_cells * (excess_chunks + 2) / 2)
 }
 
+pub fn exhaust_line<C: Clue + Clone + Copy>(
+    cs: &[C],
+    lane: &mut ArrayViewMut1<Cell>,
+) -> anyhow::Result<ScrubReport> {
+    if cs.is_empty() {
+        let mut affected_cells = vec![];
+
+        for i in 0..lane.len() {
+            learn_cell(BACKGROUND, lane, i, &mut affected_cells)?
+        }
+
+        return Ok(ScrubReport { affected_cells });
+    }
+
+    let total_slack = bg_squares(cs, lane.len() as u16) as usize;
+
+    // We want to store all possible locations for all the clues.
+    // As an optimization, to keep the table smaller, instead of storing an index into the lane,
+    // we store the total gap so far (as if all clues were zero-width). We add `clue_len_so_far`
+    // to recover the actual index.
+
+    // The "edge" columns are handled by an "if" rather than being stored in the table
+    //        Edge | A | B | C | Edge
+    // Gap 0   *   | * | * | - | -
+    // Gap 1   -   | * | * | * | -
+    // Gap 2   -   | - | * | * | *
+
+    let mut reachable = vec![vec![false; total_slack + 1]; cs.len()];
+
+    // Flood-fill left-reachability:
+    let mut clue_len_so_far = 0;
+    for clue_idx in 0..cs.len() {
+        let clue = &cs[clue_idx];
+        // Look at all of the places the previous clue might've been located
+        for pfx_gap in 0..=total_slack {
+            if clue_idx == 0 {
+                if pfx_gap != 0 {
+                    continue; // The left edge is always at 0.
+                }
+            } else if !reachable[clue_idx - 1][pfx_gap] {
+                continue; // Previous clue can't be there
+            }
+            for new_gap in pfx_gap..=total_slack {
+                // Try to place the gap before this clue and the clue color itself
+                let gap_placeable = (pfx_gap..new_gap)
+                    .all(|g_idx| lane[clue_len_so_far + g_idx].can_be(BACKGROUND));
+                let color_placeable = (0..clue.len()).all(|clue_cell_idx| {
+                    lane[clue_len_so_far + new_gap + clue_cell_idx]
+                        .can_be(clue.color_at(clue_cell_idx))
+                });
+                let consec_placeable = clue_idx == 0
+                    || !cs[clue_idx - 1].must_be_separated_from(&cs[clue_idx])
+                    || new_gap > pfx_gap;
+                if gap_placeable && color_placeable && consec_placeable {
+                    reachable[clue_idx][new_gap as usize] = true;
+                }
+            }
+        }
+        clue_len_so_far += clue.len();
+    }
+
+    let mut superposition = vec![Cell::new_impossible(); lane.len()];
+
+    // Flood-fill right-reachability, intersected with existing reachability:
+    // `clue_len_so_far` is correct; now we'll subtract it back to 0.
+    for clue_idx in (0..cs.len()).rev() {
+        let clue = &cs[clue_idx];
+
+        // Temporary, to be intersected with `reachable`
+        let mut both_reachable = vec![false; total_slack + 1];
+
+        let mut max_reachable_suffix = 0;
+        for gap_sfx in 0..=total_slack {
+            if clue_idx == cs.len() - 1 {
+                if gap_sfx != total_slack {
+                    continue; // The right edge is always after all the background squares.
+                }
+            } else if !reachable[clue_idx + 1][gap_sfx] {
+                continue; // Clue to the right couldn't be there
+            }
+            for new_gap in 0..=gap_sfx {
+                if !reachable[clue_idx][new_gap] {
+                    continue; // Spot not reachable from the LHS, so not worth reaching for.
+                }
+                // Try to place the clue color and the gap AFTER the clue.
+                let clue_placeable = (0..clue.len()).all(|clue_cell_idx| {
+                    lane[clue_len_so_far - clue.len() + new_gap + clue_cell_idx]
+                        .can_be(clue.color_at(clue_cell_idx))
+                });
+                let gap_placeable = (new_gap..gap_sfx)
+                    .all(|g_idx| lane[clue_len_so_far + g_idx].can_be(BACKGROUND));
+                let consec_placeable = clue_idx == cs.len() - 1
+                    || !cs[clue_idx].must_be_separated_from(&cs[clue_idx + 1])
+                    || new_gap < gap_sfx;
+
+                if gap_placeable && clue_placeable && consec_placeable {
+                    both_reachable[new_gap as usize] = true;
+                    max_reachable_suffix = gap_sfx;
+                }
+            }
+        }
+        for new_gap in 0..=total_slack {
+            if both_reachable[new_gap] {
+                // Reachable in both directions! Record it:
+                for clue_cell_idx in 0..clue.len() {
+                    superposition[clue_len_so_far - clue.len() + new_gap + clue_cell_idx]
+                        .actually_could_be(clue.color_at(clue_cell_idx));
+                }
+                for g_idx in new_gap..max_reachable_suffix {
+                    superposition[clue_len_so_far + g_idx].actually_could_be(BACKGROUND);
+                }
+            } else {
+                reachable[clue_idx][new_gap] = false;
+            }
+        }
+
+        clue_len_so_far -= clue.len();
+    }
+
+    // We need to handle the first gap, since the RHS-to-LHS pass doesn't look at it.
+    for first_gap in (0..=total_slack).rev() {
+        if reachable[0][first_gap] {
+            for g_idx in 0..first_gap {
+                superposition[g_idx].actually_could_be(BACKGROUND);
+            }
+            break; // Only need to record the longest possible gap
+        }
+    }
+
+    let mut affected_cells = vec![];
+
+    for i in 0..lane.len() {
+        learn_cell_intersect(superposition[i], lane, i, &mut affected_cells)?;
+    }
+
+    Ok(ScrubReport { affected_cells })
+}
+
 #[test]
 fn arrangement_test() {
     use crate::puzzle::Nono;
@@ -933,6 +1071,17 @@ fn l(spec: &str) -> ndarray::Array1<Cell> {
 }
 
 #[cfg(test)]
+fn test_exhaust<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+    let mut working_line = l(init);
+    exhaust_line(
+        &clues,
+        &mut working_line.rows_mut().into_iter().next().unwrap(),
+    )
+    .unwrap();
+    working_line
+}
+
+#[cfg(test)]
 fn test_scrub<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
     let mut working_line = l(init);
     scrub_line(
@@ -976,6 +1125,40 @@ fn scrub_test() {
     // Different colors don't need separation, so we don't know as much:
     assert_eq!(
         test_scrub(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
+        l("🟥⬜ 🟥 🟥⬛⬜ ⬛ ⬛⬜")
+    );
+}
+
+#[test]
+fn exhaust_test() {
+    assert_eq!(test_exhaust(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
+
+    assert_eq!(test_exhaust(n("⬛1"), "⬜ 🔳 🔳 🔳"), l("⬜ 🔳 🔳 🔳"));
+
+    assert_eq!(test_exhaust(n("⬛1 ⬛2"), "🔳 🔳 🔳 🔳"), l("⬛ ⬜ ⬛ ⬛"));
+
+    assert_eq!(test_exhaust(n("⬛1"), "🔳 🔳 ⬛ 🔳"), l("⬜ ⬜ ⬛ ⬜"));
+
+    assert_eq!(test_exhaust(n("⬛3"), "🔳 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳"));
+
+    assert_eq!(
+        test_exhaust(n("⬛3"), "🔳 ⬛ 🔳 🔳 🔳"),
+        l("🔳 ⬛ ⬛ 🔳 ⬜")
+    );
+
+    assert_eq!(
+        test_exhaust(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳"),
+        l("⬛ ⬛ ⬜ ⬛ ⬛")
+    );
+
+    assert_eq!(
+        test_exhaust(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳 🔳"),
+        l("🔳 ⬛ 🔳 🔳 ⬛ 🔳")
+    );
+
+    // Different colors don't need separation, so we don't know as much:
+    assert_eq!(
+        test_exhaust(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
         l("🟥⬜ 🟥 🟥⬛⬜ ⬛ ⬛⬜")
     );
 }

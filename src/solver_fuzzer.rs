@@ -12,8 +12,8 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::import::{solution_to_puzzle, solution_to_triano_puzzle};
-    use crate::line_solve::{scrub_line, skim_line, Cell};
-    use crate::puzzle::{Clue, Color, ColorInfo, Puzzle, Solution, BACKGROUND};
+    use crate::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
+    use crate::puzzle::{BACKGROUND, Clue, Color, ColorInfo, Puzzle, Solution};
     use ndarray::Array1;
     use rand::{Rng, SeedableRng};
 
@@ -119,7 +119,8 @@ mod tests {
                     if !sk_partial_solution[j].can_be(line[j]) {
                         panic!(
                             "Fuzz case {case}: skim_line inconsistent at {j}.  Clues: {:?}. Orig: {line:?}, Partial: {partial:?}, Partial solution after skim: {:?}",
-                            clues, sk_partial_solution);
+                            clues, sk_partial_solution
+                        );
                     }
                 }
             }
@@ -131,19 +132,39 @@ mod tests {
             }
         }
 
-        match scrub_line(clues, &mut sc_partial_solution.view_mut()) {
+        match scrub_line(clues, &mut sk_partial_solution.view_mut()) {
             Ok(_) => {
                 for j in 0..line.len() {
-                    if !sc_partial_solution[j].can_be(line[j]) {
+                    if !sk_partial_solution[j].can_be(line[j]) {
                         panic!(
-                            "Fuzz case {case}: scrub_line inconsistent at {j}.  Clues: {:?}. Orig: {line:?}, Partial: {partial:?}, Partial solution after skim: {:?}",
-                            clues, sc_partial_solution);
+                            "Fuzz case {case}: scrub_line inconsistent at {j}.  Clues: {:?}. Orig: {line:?}, Partial: {partial:?}, Partial solution after scrub: {:?}",
+                            clues, sk_partial_solution
+                        );
                     }
                 }
             }
             Err(e) => {
                 panic!(
                     "Fuzz case {case}: scrub_line error: {}. Orig: {line:?}, Partial: {partial:?}",
+                    e
+                );
+            }
+        }
+
+        match exhaust_line(clues, &mut sc_partial_solution.view_mut()) {
+            Ok(_) => {
+                for j in 0..line.len() {
+                    if !sc_partial_solution[j].can_be(line[j]) {
+                        panic!(
+                            "Fuzz case {case}: exhaust_line inconsistent at {j}.  Clues: {:?}. Orig: {line:?}, Partial: {partial:?}, Partial solution after skim: {:?}",
+                            clues, sc_partial_solution
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                panic!(
+                    "Fuzz case {case}: exhaust_line error: {}. Orig: {line:?}, Partial: {partial:?}",
                     e
                 );
             }
