@@ -1,6 +1,6 @@
 ## Changelog
 
-## Current version
+## 0.3.0 - 2025-08-22
 ### Added
  - Line-solving is now exhaustive!
  - Bucket fill tool, in addition to the pencil tool
