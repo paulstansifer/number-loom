@@ -4,7 +4,7 @@
 
 ![Screenshot of a GUI editor](screenshot.png)
 
-*Spot an uninvasive change that makes the solver able to solve the puzzle!*
+*Spot an uninvasive change that makes the logo solveable!*
 
 It's still pretty janky, but it's also the most powerful such tool I know of. In particular, it can offer suggestions for how to make an unsolveable puzzle more solveable!  You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
 
