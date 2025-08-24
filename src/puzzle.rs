@@ -153,6 +153,7 @@ impl Debug for Triano {
 pub struct Color(pub u8);
 
 pub static BACKGROUND: Color = Color(0);
+pub static UNSOLVED: Color = Color(255);
 
 // A triangle-shaped half of a square. `true` means solid in the given direction.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

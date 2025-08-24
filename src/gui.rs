@@ -10,7 +10,9 @@ use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
     import,
-    puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, Solution},
+    puzzle::{
+        BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Solution, UNSOLVED,
+    },
 };
 use egui::{Color32, Frame, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
@@ -123,6 +125,15 @@ struct NonogramGui {
     disambiguator: Disambiguator,
     solved_mask: Vec<Vec<bool>>,
     current_tool: Tool,
+
+    solve_mode: bool,
+    solve_gui: Option<SolveGui>,
+}
+
+struct SolveGui {
+    partial_solution: Solution,
+    clues: DynPuzzle,
+    current_color: Color,
 }
 
 #[derive(Clone, Debug)]
@@ -174,6 +185,9 @@ impl NonogramGui {
             disambiguator: Disambiguator::new(),
             solved_mask,
             current_tool: Tool::Pencil,
+
+            solve_mode: false,
+            solve_gui: None,
         }
     }
 
@@ -947,13 +961,45 @@ impl eframe::App for NonogramGui {
                 self.loader(ui);
                 ui.add(egui::TextEdit::singleline(&mut self.file_name).desired_width(150.0));
                 self.saver(ui);
+
+                ui.separator();
+                if ui
+                    .selectable_value(&mut self.solve_mode, true, "Edit")
+                    .clicked()
+                {
+                    self.solve_gui = None;
+                }
+                if ui
+                    .selectable_value(&mut self.solve_mode, false, "Puzzle")
+                    .clicked()
+                {
+                    let mut blank_solution = self.picture.clone();
+                    for row in blank_solution.grid.iter_mut() {
+                        for cell in row.iter_mut() {
+                            *cell = UNSOLVED;
+                        }
+                    }
+
+                    self.solve_gui = Some(SolveGui {
+                        partial_solution: blank_solution,
+                        clues: self.picture.to_puzzle(),
+                        current_color: self.current_color,
+                    });
+                }
             });
             ui.separator();
 
-            ui.horizontal(|ui| {
-                self.sidebar(ui);
-                self.canvas(ui);
-            });
+            match &self.solve_gui {
+                None => {
+                    ui.horizontal(|ui| {
+                        self.sidebar(ui);
+                        self.canvas(ui);
+                    });
+                }
+                Some(solve_gui) => {
+                    // TODO
+                }
+            }
         });
     }
 }
