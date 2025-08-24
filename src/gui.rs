@@ -506,6 +506,77 @@ impl NonogramGui {
         });
     }
 
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.set_width(120.0);
+            ui.horizontal(|ui| {
+                ui.label(format!("({})", self.undo_stack.len()));
+                if ui.button(icons::ICON_UNDO).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Z))
+                {
+                    self.un_or_re_do(true);
+                }
+                if ui.button(icons::ICON_REDO).clicked()
+                    || ui.input(|i| i.key_pressed(egui::Key::Y))
+                {
+                    self.un_or_re_do(false);
+                }
+                ui.label(format!("({})", self.redo_stack.len()));
+            });
+
+            ui.separator();
+
+            self.tool_selector(ui);
+
+            ui.separator();
+
+            self.resizer(ui);
+
+            ui.separator();
+
+            self.palette_editor(ui);
+
+            ui.separator();
+            ui.checkbox(&mut self.auto_solve, "auto-solve");
+            if ui.button("Solve").clicked() || (self.auto_solve && self.report_stale) {
+                let puzzle = self.picture.to_puzzle();
+
+                match puzzle.plain_solve() {
+                    Ok(grid_solve::Report {
+                        solve_counts,
+                        cells_left,
+                        solution: _solution,
+                        solved_mask,
+                    }) => {
+                        self.solve_report = format!("{solve_counts} unsolved cells: {cells_left}");
+                        self.solved_mask = solved_mask;
+                    }
+                    Err(e) => self.solve_report = format!("Error: {:?}", e),
+                }
+                self.report_stale = false;
+            }
+
+            ui.colored_label(
+                if self.report_stale {
+                    Color32::GRAY
+                } else {
+                    Color32::BLACK
+                },
+                &self.solve_report,
+            );
+
+            ui.separator();
+
+            Disambiguator::disambig_widget(&mut self.disambiguator, &self.picture, ui);
+
+            if self.disambiguator.report.is_some()
+                || (self.disambiguator.progress > 0.0 && self.disambiguator.progress < 1.0)
+            {
+                self.report_stale = true; // hide the dots while disambiguating
+            }
+        });
+    }
+
     fn palette_editor(&mut self, ui: &mut egui::Ui) {
         let mut picked_color = self.current_color;
         let mut removed_color = None;
@@ -880,76 +951,7 @@ impl eframe::App for NonogramGui {
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(120.0);
-                    ui.horizontal(|ui| {
-                        ui.label(format!("({})", self.undo_stack.len()));
-                        if ui.button(icons::ICON_UNDO).clicked()
-                            || ui.input(|i| i.key_pressed(egui::Key::Z))
-                        {
-                            self.un_or_re_do(true);
-                        }
-                        if ui.button(icons::ICON_REDO).clicked()
-                            || ui.input(|i| i.key_pressed(egui::Key::Y))
-                        {
-                            self.un_or_re_do(false);
-                        }
-                        ui.label(format!("({})", self.redo_stack.len()));
-                    });
-
-                    ui.separator();
-
-                    self.tool_selector(ui);
-
-                    ui.separator();
-
-                    self.resizer(ui);
-
-                    ui.separator();
-
-                    self.palette_editor(ui);
-
-                    ui.separator();
-                    ui.checkbox(&mut self.auto_solve, "auto-solve");
-                    if ui.button("Solve").clicked() || (self.auto_solve && self.report_stale) {
-                        let puzzle = self.picture.to_puzzle();
-
-                        match puzzle.plain_solve() {
-                            Ok(grid_solve::Report {
-                                solve_counts,
-                                cells_left,
-                                solution: _solution,
-                                solved_mask,
-                            }) => {
-                                self.solve_report =
-                                    format!("{solve_counts} unsolved cells: {cells_left}");
-                                self.solved_mask = solved_mask;
-                            }
-                            Err(e) => self.solve_report = format!("Error: {:?}", e),
-                        }
-                        self.report_stale = false;
-                    }
-
-                    ui.colored_label(
-                        if self.report_stale {
-                            Color32::GRAY
-                        } else {
-                            Color32::BLACK
-                        },
-                        &self.solve_report,
-                    );
-
-                    ui.separator();
-
-                    Disambiguator::disambig_widget(&mut self.disambiguator, &self.picture, ui);
-
-                    if self.disambiguator.report.is_some()
-                        || (self.disambiguator.progress > 0.0 && self.disambiguator.progress < 1.0)
-                    {
-                        self.report_stale = true; // hide the dots while disambiguating
-                    }
-                });
-
+                self.sidebar(ui);
                 self.canvas(ui);
             });
         });
