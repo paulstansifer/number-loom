@@ -83,7 +83,10 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
                 let (r, g, b) = color_info.rgb;
                 let bg_color = egui::Color32::from_rgb(r, g, b);
 
-                let corner_u_r = Pos2::new(current_x, response.rect.min.y + (y as f32) * scale);
+                let corner_u_r = Pos2::new(
+                    current_x,
+                    response.rect.min.y + (y as f32) * scale + box_vertical_margin,
+                );
 
                 if let Some(len) = len {
                     assert!(len > 0);
