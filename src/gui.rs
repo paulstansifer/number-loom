@@ -14,6 +14,7 @@ use crate::{
         BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Solution, UNSOLVED,
     },
 };
+use eframe::glow::COMPUTE_SUBROUTINE;
 use egui::{Color32, Frame, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
 
@@ -171,7 +172,7 @@ impl NonogramGui {
             file_name: "blank.xml".to_string(),
             current_color,
             drag_start_color: current_color,
-            scale: 10.0,
+            scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
             new_dialog: None,
             auto_solve: false,
@@ -696,106 +697,102 @@ impl NonogramGui {
         let x_size = self.picture.grid.len();
         let y_size = self.picture.grid.first().unwrap().len();
 
-        Frame::canvas(ui.style()).show(ui, |ui| {
-            let (mut response, painter) = ui.allocate_painter(
-                Vec2::new(self.scale * x_size as f32, self.scale * y_size as f32)
-                    + Vec2::new(2.0, 2.0), // for the border
-                egui::Sense::click_and_drag(),
-            );
+        let (mut response, painter) = ui.allocate_painter(
+            Vec2::new(self.scale * x_size as f32, self.scale * y_size as f32) + Vec2::new(2.0, 2.0), // for the border
+            egui::Sense::click_and_drag(),
+        );
 
-            let canvas_without_border = response.rect.shrink(1.0);
+        let canvas_without_border = response.rect.shrink(1.0);
 
-            let to_screen = egui::emath::RectTransform::from_to(
-                Rect::from_min_size(Pos2::ZERO, Vec2::new(x_size as f32, y_size as f32)),
-                canvas_without_border,
-            );
-            let from_screen = to_screen.inverse();
+        let to_screen = egui::emath::RectTransform::from_to(
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(x_size as f32, y_size as f32)),
+            canvas_without_border,
+        );
+        let from_screen = to_screen.inverse();
 
-            if let Some(pointer_pos) = response.interact_pointer_pos() {
-                let canvas_pos = from_screen * pointer_pos;
-                let x = canvas_pos.x as usize;
-                let y = canvas_pos.y as usize;
+        if let Some(pointer_pos) = response.interact_pointer_pos() {
+            let canvas_pos = from_screen * pointer_pos;
+            let x = canvas_pos.x as usize;
+            let y = canvas_pos.y as usize;
 
-                if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
-                    match self.current_tool {
-                        Tool::Pencil => {
-                            if response.clicked() || response.dragged() {
-                                let new_color = if self.picture.grid[x][y] == self.current_color {
-                                    BACKGROUND
-                                } else {
-                                    self.current_color
-                                };
-                                let mood = if response.clicked() || response.drag_started() {
-                                    self.drag_start_color = new_color;
-                                    ActionMood::Normal
-                                } else {
-                                    ActionMood::Merge
-                                };
+            if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
+                match self.current_tool {
+                    Tool::Pencil => {
+                        if response.clicked() || response.dragged() {
+                            let new_color = if self.picture.grid[x][y] == self.current_color {
+                                BACKGROUND
+                            } else {
+                                self.current_color
+                            };
+                            let mood = if response.clicked() || response.drag_started() {
+                                self.drag_start_color = new_color;
+                                ActionMood::Normal
+                            } else {
+                                ActionMood::Merge
+                            };
 
-                                let mut changes = HashMap::new();
-                                changes.insert((x, y), self.drag_start_color);
-                                self.perform(Action::ChangeColor { changes }, mood);
-                            }
+                            let mut changes = HashMap::new();
+                            changes.insert((x, y), self.drag_start_color);
+                            self.perform(Action::ChangeColor { changes }, mood);
                         }
-                        Tool::FloodFill => {
-                            if response.clicked() {
-                                self.flood_fill(x, y);
-                            }
+                    }
+                    Tool::FloodFill => {
+                        if response.clicked() {
+                            self.flood_fill(x, y);
                         }
                     }
                 }
             }
+        }
 
-            let mut shapes = vec![];
-            let disambig_report = &self.disambiguator.report;
+        let mut shapes = vec![];
+        let disambig_report = &self.disambiguator.report;
 
-            for y in 0..y_size {
-                for x in 0..x_size {
-                    let cell = self.picture.grid[x][y];
-                    let color_info = &self.picture.palette[&cell];
-                    let solved = self.solved_mask[x][y] || self.report_stale;
+        for y in 0..y_size {
+            for x in 0..x_size {
+                let cell = self.picture.grid[x][y];
+                let color_info = &self.picture.palette[&cell];
+                let solved = self.solved_mask[x][y] || self.report_stale;
 
-                    let dr = if let Some(disambig_report) = disambig_report.as_ref() {
-                        let (c, score) = disambig_report[x][y];
-                        (&self.picture.palette[&c], score)
-                    } else {
-                        (&self.picture.palette[&BACKGROUND], 1.0)
-                    };
+                let dr = if let Some(disambig_report) = disambig_report.as_ref() {
+                    let (c, score) = disambig_report[x][y];
+                    (&self.picture.palette[&c], score)
+                } else {
+                    (&self.picture.palette[&BACKGROUND], 1.0)
+                };
 
-                    for shape in cell_shape(color_info, solved, dr, x, y, &to_screen) {
-                        shapes.push(shape);
-                    }
+                for shape in cell_shape(color_info, solved, dr, x, y, &to_screen) {
+                    shapes.push(shape);
                 }
             }
+        }
 
-            // Grid lines:
-            for y in 0..=y_size {
-                let points = [
-                    to_screen * Pos2::new(0.0, y as f32),
-                    to_screen * Pos2::new(x_size as f32, y as f32),
-                ];
-                let stroke = egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_black_alpha(if y % 5 == 0 { 64 } else { 16 }),
-                );
-                shapes.push(egui::Shape::line_segment(points, stroke));
-            }
-            for x in 0..=x_size {
-                let points = [
-                    to_screen * Pos2::new(x as f32, 0.0),
-                    to_screen * Pos2::new(x as f32, y_size as f32),
-                ];
-                let stroke = egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_black_alpha(if x % 5 == 0 { 64 } else { 16 }),
-                );
-                shapes.push(egui::Shape::line_segment(points, stroke));
-            }
+        // Grid lines:
+        for y in 0..=y_size {
+            let points = [
+                to_screen * Pos2::new(0.0, y as f32),
+                to_screen * Pos2::new(x_size as f32, y as f32),
+            ];
+            let stroke = egui::Stroke::new(
+                1.0,
+                egui::Color32::from_black_alpha(if y % 5 == 0 { 64 } else { 16 }),
+            );
+            shapes.push(egui::Shape::line_segment(points, stroke));
+        }
+        for x in 0..=x_size {
+            let points = [
+                to_screen * Pos2::new(x as f32, 0.0),
+                to_screen * Pos2::new(x as f32, y_size as f32),
+            ];
+            let stroke = egui::Stroke::new(
+                1.0,
+                egui::Color32::from_black_alpha(if x % 5 == 0 { 64 } else { 16 }),
+            );
+            shapes.push(egui::Shape::line_segment(points, stroke));
+        }
 
-            painter.extend(shapes);
-            response.mark_changed();
-            response
-        });
+        painter.extend(shapes);
+        response.mark_changed();
     }
 
     fn loader(&mut self, ui: &mut egui::Ui) {
@@ -862,6 +859,121 @@ impl NonogramGui {
                     handle.write(&bytes).await.unwrap();
                 }
             });
+        }
+    }
+
+    fn draw_dyn_row_clues(&self, ui: &mut egui::Ui, puzzle: &DynPuzzle) {
+        match puzzle {
+            DynPuzzle::Nono(puzzle) => {
+                self.draw_row_clues::<crate::puzzle::Nono>(ui, puzzle);
+            }
+            DynPuzzle::Triano(puzzle) => {
+                self.draw_row_clues::<crate::puzzle::Triano>(ui, puzzle);
+            }
+        }
+    }
+
+    fn draw_row_clues<C: crate::puzzle::Clue>(
+        &self,
+        ui: &mut egui::Ui,
+        puzzle: &crate::puzzle::Puzzle<C>,
+    ) {
+        let font_id = egui::FontId::monospace(self.scale * 0.7);
+
+        let widths = ui.fonts(|f| {
+            vec![
+                f.layout_no_wrap("".to_string(), font_id.clone(), Color32::BLACK)
+                    .rect
+                    .width(),
+                f.layout_no_wrap("0".to_string(), font_id.clone(), Color32::BLACK)
+                    .rect
+                    .width(),
+                f.layout_no_wrap("00".to_string(), font_id.clone(), Color32::BLACK)
+                    .rect
+                    .width(),
+                f.layout_no_wrap("000".to_string(), font_id.clone(), Color32::BLACK)
+                    .rect
+                    .width(),
+            ]
+        });
+
+        let puzz_padding = 5.0;
+        let text_margin = self.scale * 0.18;
+        let between_clues = self.scale * 0.25;
+
+        let mut max_width: f32 = 0.0;
+        for row in &puzzle.rows {
+            let mut this_width = 0.0;
+            for clue in row {
+                for (_, len) in clue.express(puzzle) {
+                    assert!(len.unwrap_or(1) <= 999);
+                    match len {
+                        Some(len) => {
+                            this_width += widths[len.to_string().len()] + text_margin * 2.0
+                        }
+                        None => this_width += widths[1],
+                    }
+                }
+                this_width += between_clues;
+            }
+
+            max_width = max_width.max(this_width);
+        }
+        max_width += puzz_padding;
+
+        let (response, painter) = ui.allocate_painter(
+            Vec2::new(max_width, self.scale * puzzle.rows.len() as f32) + Vec2::new(2.0, 2.0),
+            egui::Sense::empty(),
+        );
+
+        for y in 0..puzzle.rows.len() {
+            let row_clues = &puzzle.rows[y];
+            let mut current_x = response.rect.max.x - puzz_padding;
+
+            for clue in row_clues.iter().rev() {
+                let expressed_clues = clue.express(puzzle);
+
+                for (color_info, len) in expressed_clues.into_iter().rev() {
+                    let (r, g, b) = color_info.rgb;
+                    let bg_color = egui::Color32::from_rgb(r, g, b);
+
+                    if let Some(len) = len {
+                        assert!(len > 0);
+
+                        let box_width = widths[len.to_string().len()] + text_margin * 2.0;
+
+                        let corner_u_l = Pos2::new(
+                            current_x - box_width,
+                            response.rect.min.y + (y as f32) * self.scale,
+                        );
+
+                        let box_dims = Vec2::new(box_width, self.scale * 0.9);
+
+                        painter.rect_filled(
+                            Rect::from_min_size(
+                                corner_u_l + Vec2::new(0.0, self.scale * 0.05),
+                                box_dims,
+                            ),
+                            self.scale * 0.1,
+                            bg_color,
+                        );
+                        painter.text(
+                            // vertical: 0.7 for text, 0.15 for each side:
+                            corner_u_l + Vec2::new(text_margin, self.scale * 0.15),
+                            egui::Align2::LEFT_TOP,
+                            len.to_string(),
+                            font_id.clone(),
+                            egui::Color32::WHITE,
+                        );
+                        current_x -= box_dims.x;
+                    } else {
+                        panic!()
+                        // current_x -= self.scale;
+                        // This is a triangle clue
+                    }
+                }
+                current_x -= between_clues
+            }
         }
     }
 }
@@ -964,13 +1076,13 @@ impl eframe::App for NonogramGui {
 
                 ui.separator();
                 if ui
-                    .selectable_value(&mut self.solve_mode, true, "Edit")
+                    .selectable_value(&mut self.solve_mode, false, "Edit")
                     .clicked()
                 {
                     self.solve_gui = None;
                 }
                 if ui
-                    .selectable_value(&mut self.solve_mode, false, "Puzzle")
+                    .selectable_value(&mut self.solve_mode, true, "Puzzle")
                     .clicked()
                 {
                     let mut blank_solution = self.picture.clone();
@@ -989,17 +1101,18 @@ impl eframe::App for NonogramGui {
             });
             ui.separator();
 
-            match &self.solve_gui {
-                None => {
-                    ui.horizontal(|ui| {
+            ui.horizontal(|ui| {
+                match &self.solve_gui {
+                    None => {
                         self.sidebar(ui);
-                        self.canvas(ui);
-                    });
+                    }
+                    Some(solve_gui) => {
+                        self.draw_dyn_row_clues(ui, &solve_gui.clues);
+                    }
                 }
-                Some(solve_gui) => {
-                    // TODO
-                }
-            }
+
+                self.canvas(ui);
+            });
         });
     }
 }

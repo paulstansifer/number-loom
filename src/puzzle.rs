@@ -21,6 +21,8 @@ pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash {
     fn html_text(&self, puzzle: &Puzzle<Self>) -> String;
 
     fn to_dyn(puzzle: Puzzle<Self>) -> DynPuzzle;
+
+    fn express<'a>(&self, puzzle: &'a Puzzle<Self>) -> Vec<(&'a ColorInfo, Option<u16>)>;
 }
 
 impl Debug for Nono {
@@ -66,6 +68,10 @@ impl Clue for Nono {
 
     fn to_dyn(puzzle: Puzzle<Self>) -> DynPuzzle {
         DynPuzzle::Nono(puzzle)
+    }
+
+    fn express<'a>(&self, puzzle: &'a Puzzle<Self>) -> Vec<(&'a ColorInfo, Option<u16>)> {
+        vec![(&puzzle.palette[&self.color], Some(self.count))]
     }
 }
 
@@ -133,6 +139,20 @@ impl Clue for Triano {
 
     fn to_dyn(puzzle: Puzzle<Self>) -> DynPuzzle {
         DynPuzzle::Triano(puzzle)
+    }
+
+    fn express<'a>(&self, puzzle: &'a Puzzle<Self>) -> Vec<(&'a ColorInfo, Option<u16>)> {
+        let mut res = vec![];
+        if let Some(front_cap) = self.front_cap {
+            res.push((&puzzle.palette[&front_cap], None));
+        }
+        if self.body_len > 0 {
+            res.push((&puzzle.palette[&self.body_color], Some(self.body_len)));
+        }
+        if let Some(back_cap) = self.back_cap {
+            res.push((&puzzle.palette[&back_cap], None));
+        }
+        res
     }
 }
 
