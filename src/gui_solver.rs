@@ -55,13 +55,7 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
     for row in &puzzle.rows {
         let mut this_width = 0.0;
         for clue in row {
-            for (_, len) in clue.express(puzzle) {
-                match len {
-                    Some(_) => this_width += box_side,
-                    None => this_width += box_side,
-                }
-            }
-            this_width += between_clues;
+            this_width += box_side * (clue.express(puzzle).len() as f32) + between_clues;
         }
         max_width = max_width.max(this_width);
     }
@@ -94,13 +88,10 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
                     let clue_txt = len.to_string();
                     let clue_font = fonts_by_digit[clue_txt.len()].clone();
 
-                    let corner_u_l = corner_u_r - Vec2::new(box_side, 0.0);
+                    let corner_u_l = corner_u_r + Vec2::new(-box_side, box_margin);
 
                     painter.rect_filled(
-                        Rect::from_min_size(
-                            corner_u_l + Vec2::new(box_margin, box_margin),
-                            Vec2::new(box_side, box_side),
-                        ),
+                        Rect::from_min_size(corner_u_l, Vec2::new(box_side, box_side)),
                         0.0,
                         bg_color,
                     );
@@ -113,15 +104,14 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
                     );
                     current_x -= box_side;
                 } else {
-                    let tri_width = box_side;
                     let mut triangle = crate::gui::triangle_shape(
                         color_info.corner.expect("must be a corner"),
                         bg_color,
-                        Vec2::new(tri_width, box_side),
+                        Vec2::new(box_side, box_side),
                     );
                     let corner_u_l = corner_u_r + Vec2::new(-box_side, box_margin);
                     triangle.translate(corner_u_l.to_vec2());
-                    current_x -= tri_width;
+                    current_x -= box_side;
 
                     painter.add(triangle);
                 }
