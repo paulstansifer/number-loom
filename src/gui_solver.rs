@@ -1,4 +1,4 @@
-use egui::{Color32, Pos2, Rect, Vec2};
+use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
 use crate::puzzle::{Color, DynPuzzle, Solution};
 
@@ -24,45 +24,45 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
     puzzle: &crate::puzzle::Puzzle<C>,
     scale: f32,
 ) {
-    let font_id = egui::FontId::monospace(scale * 0.7);
+    let base_font = egui::FontId::monospace(scale * 0.7);
 
-    let widths = ui.fonts(|f| {
-        vec![
-            f.layout_no_wrap("".to_string(), font_id.clone(), Color32::BLACK)
-                .rect
-                .width(),
-            f.layout_no_wrap("0".to_string(), font_id.clone(), Color32::BLACK)
-                .rect
-                .width(),
-            f.layout_no_wrap("00".to_string(), font_id.clone(), Color32::BLACK)
-                .rect
-                .width(),
-            f.layout_no_wrap("000".to_string(), font_id.clone(), Color32::BLACK)
-                .rect
-                .width(),
-        ]
+    let text_width = |fonts: &Fonts, t: &str| {
+        fonts
+            .layout_no_wrap(t.to_string(), base_font.clone(), Color32::BLACK)
+            .rect
+            .width()
+    };
+
+    let (width_2, width_3) = ui.fonts(|f| {
+        (
+            f32::max(text_width(f, "00") / (scale * 0.7), 1.0),
+            f32::max(text_width(f, "000") / (scale * 0.7), 1.0),
+        )
     });
+    let fonts_by_digit = vec![
+        base_font.clone(),
+        base_font,
+        egui::FontId::monospace(scale * 0.7 / width_2),
+        egui::FontId::monospace(scale * 0.7 / width_3),
+    ];
 
     let puzz_padding = 5.0;
-    let text_margin = scale * 0.18;
     let between_clues = scale * 0.5;
-    let box_height = scale * 0.9;
-    let box_vertical_margin = (scale - box_height) / 2.0;
+    let box_side = scale * 0.9;
+    let box_margin = (scale - box_side) / 2.0;
 
     let mut max_width: f32 = 0.0;
     for row in &puzzle.rows {
         let mut this_width = 0.0;
         for clue in row {
             for (_, len) in clue.express(puzzle) {
-                assert!(len.unwrap_or(1) <= 999);
                 match len {
-                    Some(len) => this_width += widths[len.to_string().len()] + text_margin * 2.0,
-                    None => this_width += scale,
+                    Some(_) => this_width += box_side,
+                    None => this_width += box_side,
                 }
             }
             this_width += between_clues;
         }
-
         max_width = max_width.max(this_width);
     }
     max_width += puzz_padding;
@@ -85,47 +85,48 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
 
                 let corner_u_r = Pos2::new(
                     current_x,
-                    response.rect.min.y + (y as f32) * scale + box_vertical_margin,
+                    response.rect.min.y + (y as f32) * scale + box_margin,
                 );
 
                 if let Some(len) = len {
                     assert!(len > 0);
 
-                    let box_width = widths[len.to_string().len()] + text_margin * 2.0;
-                    let corner_u_l = corner_u_r - Vec2::new(box_width, 0.0);
+                    let clue_txt = len.to_string();
+                    let clue_font = fonts_by_digit[clue_txt.len()].clone();
+
+                    let corner_u_l = corner_u_r - Vec2::new(box_side, 0.0);
 
                     painter.rect_filled(
                         Rect::from_min_size(
-                            corner_u_l + Vec2::new(0.0, box_vertical_margin),
-                            Vec2::new(box_width, box_height),
+                            corner_u_l + Vec2::new(box_margin, box_margin),
+                            Vec2::new(box_side, box_side),
                         ),
                         0.0,
                         bg_color,
                     );
                     painter.text(
-                        // TODO: the 0.15 is tied to the constants up above:
-                        corner_u_l + Vec2::new(text_margin, scale * 0.15),
-                        egui::Align2::LEFT_TOP,
-                        len.to_string(),
-                        font_id.clone(),
+                        corner_u_l + Vec2::new(0.5, 0.5) * scale,
+                        egui::Align2::CENTER_CENTER,
+                        clue_txt,
+                        clue_font,
                         egui::Color32::WHITE,
                     );
-                    current_x -= box_width;
+                    current_x -= box_side;
                 } else {
-                    let tri_width = box_height;
+                    let tri_width = box_side;
                     let mut triangle = crate::gui::triangle_shape(
                         color_info.corner.expect("must be a corner"),
                         bg_color,
-                        Vec2::new(tri_width, box_height),
+                        Vec2::new(tri_width, box_side),
                     );
-                    let corner_u_l = corner_u_r + Vec2::new(-box_height, box_vertical_margin);
+                    let corner_u_l = corner_u_r + Vec2::new(-box_side, box_margin);
                     triangle.translate(corner_u_l.to_vec2());
                     current_x -= tri_width;
 
                     painter.add(triangle);
                 }
             }
-            current_x -= between_clues
+            current_x -= between_clues;
         }
     }
 }
