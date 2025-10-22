@@ -294,6 +294,27 @@ impl NonogramGui {
     }
 }
 
+fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui::Shape {
+    let Corner { left, upper } = corner;
+
+    let mut points = vec![];
+    // The `+`ed offsets are empirircally-set to make things fit better.
+    if left || upper {
+        points.push((Vec2::new(0.0, 0.0) * scale + Vec2::new(0.25, -0.5)).to_pos2());
+    }
+    if !left || upper {
+        points.push((Vec2::new(1.0, 0.0) * scale + Vec2::new(0.25, -0.5)).to_pos2());
+    }
+    if !left || !upper {
+        points.push((Vec2::new(1.0, 1.0) * scale + Vec2::new(0.25, 0.5)).to_pos2());
+    }
+    if left || !upper {
+        points.push((Vec2::new(0.0, 1.0) * scale + Vec2::new(0.25, 0.5)).to_pos2());
+    }
+
+    Shape::convex_polygon(points, color, (0.0, color))
+}
+
 fn cell_shape(
     ci: &ColorInfo,
     solved: bool,
@@ -305,34 +326,16 @@ fn cell_shape(
     let (r, g, b) = ci.rgb;
     let color = egui::Color32::from_rgb(r, g, b);
 
-    let actual_cell = match ci.corner {
+    let mut actual_cell = match ci.corner {
         None => egui::Shape::rect_filled(
-            Rect::from_min_size(to_screen * Pos2::new(x as f32, y as f32), to_screen.scale()),
+            Rect::from_min_size(Pos2::new(0.3, 0.0), to_screen.scale()),
             0.0,
             color,
         ),
-        Some(Corner { left, upper }) => {
-            let mut points = vec![];
-            // The `+`ed offsets are empirircally-set to make things fit better.
-            if left || upper {
-                points.push(to_screen * Pos2::new(x as f32, y as f32) + Vec2::new(0.25, -0.5));
-            }
-            if !left || upper {
-                points
-                    .push(to_screen * Pos2::new((x + 1) as f32, y as f32) + Vec2::new(0.25, -0.5));
-            }
-            if !left || !upper {
-                points.push(
-                    to_screen * Pos2::new((x + 1) as f32, (y + 1) as f32) + Vec2::new(0.25, 0.5),
-                );
-            }
-            if left || !upper {
-                points.push(to_screen * Pos2::new(x as f32, (y + 1) as f32) + Vec2::new(0.25, 0.5));
-            }
-
-            Shape::convex_polygon(points, color, (0.0, color))
-        }
+        Some(corner) => triangle_shape(corner, color, to_screen.scale()),
     };
+
+    actual_cell.translate((to_screen * Pos2::new(x as f32, y as f32)).to_vec2());
 
     let mut res = vec![actual_cell];
 
@@ -899,7 +902,9 @@ impl NonogramGui {
 
         let puzz_padding = 5.0;
         let text_margin = self.scale * 0.18;
-        let between_clues = self.scale * 0.25;
+        let between_clues = self.scale * 0.5;
+        let box_height = self.scale * 0.9;
+        let box_vertical_margin = (self.scale - box_height) / 2.0;
 
         let mut max_width: f32 = 0.0;
         for row in &puzzle.rows {
@@ -911,7 +916,7 @@ impl NonogramGui {
                         Some(len) => {
                             this_width += widths[len.to_string().len()] + text_margin * 2.0
                         }
-                        None => this_width += widths[1],
+                        None => this_width += self.scale,
                     }
                 }
                 this_width += between_clues;
@@ -937,39 +942,44 @@ impl NonogramGui {
                     let (r, g, b) = color_info.rgb;
                     let bg_color = egui::Color32::from_rgb(r, g, b);
 
+                    let corner_u_r =
+                        Pos2::new(current_x, response.rect.min.y + (y as f32) * self.scale);
+
                     if let Some(len) = len {
                         assert!(len > 0);
 
                         let box_width = widths[len.to_string().len()] + text_margin * 2.0;
-
-                        let corner_u_l = Pos2::new(
-                            current_x - box_width,
-                            response.rect.min.y + (y as f32) * self.scale,
-                        );
-
-                        let box_dims = Vec2::new(box_width, self.scale * 0.9);
+                        let corner_u_l = corner_u_r - Vec2::new(box_width, 0.0);
 
                         painter.rect_filled(
                             Rect::from_min_size(
-                                corner_u_l + Vec2::new(0.0, self.scale * 0.05),
-                                box_dims,
+                                corner_u_l + Vec2::new(0.0, box_vertical_margin),
+                                Vec2::new(box_width, box_height),
                             ),
-                            self.scale * 0.1,
+                            0.0,
                             bg_color,
                         );
                         painter.text(
-                            // vertical: 0.7 for text, 0.15 for each side:
+                            // TODO: the 0.15 is tied to the constants up above:
                             corner_u_l + Vec2::new(text_margin, self.scale * 0.15),
                             egui::Align2::LEFT_TOP,
                             len.to_string(),
                             font_id.clone(),
                             egui::Color32::WHITE,
                         );
-                        current_x -= box_dims.x;
+                        current_x -= box_width;
                     } else {
-                        panic!()
-                        // current_x -= self.scale;
-                        // This is a triangle clue
+                        let tri_width = box_height;
+                        let mut triangle = triangle_shape(
+                            color_info.corner.expect("must be a corner"),
+                            bg_color,
+                            Vec2::new(tri_width, box_height),
+                        );
+                        let corner_u_l = corner_u_r + Vec2::new(-box_height, box_vertical_margin);
+                        triangle.translate(corner_u_l.to_vec2());
+                        current_x -= tri_width;
+
+                        painter.add(triangle);
                     }
                 }
                 current_x -= between_clues
