@@ -9,13 +9,11 @@ enum Tool {
 use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
+    gui_solver::{SolveGui, draw_dyn_row_clues},
     import,
-    puzzle::{
-        BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Solution, UNSOLVED,
-    },
+    puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, Solution, UNSOLVED},
 };
-use eframe::glow::COMPUTE_SUBROUTINE;
-use egui::{Color32, Frame, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
+use egui::{Color32, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -129,12 +127,6 @@ struct NonogramGui {
 
     solve_mode: bool,
     solve_gui: Option<SolveGui>,
-}
-
-struct SolveGui {
-    partial_solution: Solution,
-    clues: DynPuzzle,
-    current_color: Color,
 }
 
 #[derive(Clone, Debug)]
@@ -294,7 +286,7 @@ impl NonogramGui {
     }
 }
 
-fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui::Shape {
+pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui::Shape {
     let Corner { left, upper } = corner;
 
     let mut points = vec![];
@@ -864,128 +856,6 @@ impl NonogramGui {
             });
         }
     }
-
-    fn draw_dyn_row_clues(&self, ui: &mut egui::Ui, puzzle: &DynPuzzle) {
-        match puzzle {
-            DynPuzzle::Nono(puzzle) => {
-                self.draw_row_clues::<crate::puzzle::Nono>(ui, puzzle);
-            }
-            DynPuzzle::Triano(puzzle) => {
-                self.draw_row_clues::<crate::puzzle::Triano>(ui, puzzle);
-            }
-        }
-    }
-
-    fn draw_row_clues<C: crate::puzzle::Clue>(
-        &self,
-        ui: &mut egui::Ui,
-        puzzle: &crate::puzzle::Puzzle<C>,
-    ) {
-        let font_id = egui::FontId::monospace(self.scale * 0.7);
-
-        let widths = ui.fonts(|f| {
-            vec![
-                f.layout_no_wrap("".to_string(), font_id.clone(), Color32::BLACK)
-                    .rect
-                    .width(),
-                f.layout_no_wrap("0".to_string(), font_id.clone(), Color32::BLACK)
-                    .rect
-                    .width(),
-                f.layout_no_wrap("00".to_string(), font_id.clone(), Color32::BLACK)
-                    .rect
-                    .width(),
-                f.layout_no_wrap("000".to_string(), font_id.clone(), Color32::BLACK)
-                    .rect
-                    .width(),
-            ]
-        });
-
-        let puzz_padding = 5.0;
-        let text_margin = self.scale * 0.18;
-        let between_clues = self.scale * 0.5;
-        let box_height = self.scale * 0.9;
-        let box_vertical_margin = (self.scale - box_height) / 2.0;
-
-        let mut max_width: f32 = 0.0;
-        for row in &puzzle.rows {
-            let mut this_width = 0.0;
-            for clue in row {
-                for (_, len) in clue.express(puzzle) {
-                    assert!(len.unwrap_or(1) <= 999);
-                    match len {
-                        Some(len) => {
-                            this_width += widths[len.to_string().len()] + text_margin * 2.0
-                        }
-                        None => this_width += self.scale,
-                    }
-                }
-                this_width += between_clues;
-            }
-
-            max_width = max_width.max(this_width);
-        }
-        max_width += puzz_padding;
-
-        let (response, painter) = ui.allocate_painter(
-            Vec2::new(max_width, self.scale * puzzle.rows.len() as f32) + Vec2::new(2.0, 2.0),
-            egui::Sense::empty(),
-        );
-
-        for y in 0..puzzle.rows.len() {
-            let row_clues = &puzzle.rows[y];
-            let mut current_x = response.rect.max.x - puzz_padding;
-
-            for clue in row_clues.iter().rev() {
-                let expressed_clues = clue.express(puzzle);
-
-                for (color_info, len) in expressed_clues.into_iter().rev() {
-                    let (r, g, b) = color_info.rgb;
-                    let bg_color = egui::Color32::from_rgb(r, g, b);
-
-                    let corner_u_r =
-                        Pos2::new(current_x, response.rect.min.y + (y as f32) * self.scale);
-
-                    if let Some(len) = len {
-                        assert!(len > 0);
-
-                        let box_width = widths[len.to_string().len()] + text_margin * 2.0;
-                        let corner_u_l = corner_u_r - Vec2::new(box_width, 0.0);
-
-                        painter.rect_filled(
-                            Rect::from_min_size(
-                                corner_u_l + Vec2::new(0.0, box_vertical_margin),
-                                Vec2::new(box_width, box_height),
-                            ),
-                            0.0,
-                            bg_color,
-                        );
-                        painter.text(
-                            // TODO: the 0.15 is tied to the constants up above:
-                            corner_u_l + Vec2::new(text_margin, self.scale * 0.15),
-                            egui::Align2::LEFT_TOP,
-                            len.to_string(),
-                            font_id.clone(),
-                            egui::Color32::WHITE,
-                        );
-                        current_x -= box_width;
-                    } else {
-                        let tri_width = box_height;
-                        let mut triangle = triangle_shape(
-                            color_info.corner.expect("must be a corner"),
-                            bg_color,
-                            Vec2::new(tri_width, box_height),
-                        );
-                        let corner_u_l = corner_u_r + Vec2::new(-box_height, box_vertical_margin);
-                        triangle.translate(corner_u_l.to_vec2());
-                        current_x -= tri_width;
-
-                        painter.add(triangle);
-                    }
-                }
-                current_x -= between_clues
-            }
-        }
-    }
 }
 
 struct NewPuzzleDialog {
@@ -1102,7 +972,7 @@ impl eframe::App for NonogramGui {
                         }
                     }
 
-                    self.solve_gui = Some(SolveGui {
+                    self.solve_gui = Some(crate::gui_solver::SolveGui {
                         partial_solution: blank_solution,
                         clues: self.picture.to_puzzle(),
                         current_color: self.current_color,
@@ -1117,7 +987,7 @@ impl eframe::App for NonogramGui {
                         self.sidebar(ui);
                     }
                     Some(solve_gui) => {
-                        self.draw_dyn_row_clues(ui, &solve_gui.clues);
+                        draw_dyn_row_clues(ui, &solve_gui.clues, self.scale);
                     }
                 }
 
@@ -1129,9 +999,6 @@ impl eframe::App for NonogramGui {
 
 struct Disambiguator {
     report: Option<Vec<Vec<(Color, f32)>>>,
-    // progress: std::sync::atomic::AtomicUsize,
-    // running: std::sync::atomic::AtomicBool,
-    // should_stop: std::sync::atomic::AtomicBool,
     terminate_s: mpsc::Sender<()>,
     progress_r: mpsc::Receiver<f32>,
     progress: f32,
