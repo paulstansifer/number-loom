@@ -578,12 +578,6 @@ impl NonogramGui {
             ui.separator();
 
             Disambiguator::disambig_widget(&mut self.disambiguator, &self.picture, ui);
-
-            if self.disambiguator.report.is_some()
-                || (self.disambiguator.progress > 0.0 && self.disambiguator.progress < 1.0)
-            {
-                self.report_stale = true; // hide the dots while disambiguating
-            }
         });
     }
 
@@ -747,7 +741,10 @@ impl NonogramGui {
             for x in 0..x_size {
                 let cell = self.picture.grid[x][y];
                 let color_info = &self.picture.palette[&cell];
-                let solved = self.solved_mask[x][y] || self.report_stale;
+                let solved = self.solved_mask[x][y]
+                    || self.report_stale
+                    || disambig_report.is_some()
+                    || (self.disambiguator.progress > 0.0 && self.disambiguator.progress < 1.0);
 
                 let dr = if let Some(disambig_report) = disambig_report.as_ref() {
                     let (c, score) = disambig_report[x][y];
