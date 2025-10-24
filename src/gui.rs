@@ -345,7 +345,11 @@ fn cell_shape(
     to_screen: &egui::emath::RectTransform,
 ) -> Vec<egui::Shape> {
     let (r, g, b) = ci.rgb;
-    let color = egui::Color32::from_rgb(r, g, b);
+    let color = if ci.color == UNSOLVED {
+        egui::Color32::from_rgb(160, 160, 160)
+    } else {
+        egui::Color32::from_rgb(r, g, b)
+    };
 
     let mut actual_cell = match ci.corner {
         None => egui::Shape::rect_filled(
@@ -359,6 +363,19 @@ fn cell_shape(
     actual_cell.translate((to_screen * Pos2::new(x as f32, y as f32)).to_vec2());
 
     let mut res = vec![actual_cell];
+
+    if ci.color == UNSOLVED {
+        res.push(egui::Shape::convex_polygon(
+            vec![
+                to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 0.0),
+                to_screen * Pos2::new(x as f32 + 1.0, y as f32 + 0.5),
+                to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 1.0),
+                to_screen * Pos2::new(x as f32 + 0.0, y as f32 + 0.5),
+            ],
+            egui::Color32::from_rgb(96, 96, 96),
+            egui::Stroke::default(),
+        ));
+    }
 
     if !solved {
         res.push(egui::Shape::circle_filled(
@@ -1050,6 +1067,16 @@ impl eframe::App for NonogramGui {
                             *cell = UNSOLVED;
                         }
                     }
+                    blank_solution.palette.insert(
+                        UNSOLVED,
+                        ColorInfo {
+                            ch: '?',
+                            name: "unknown".to_owned(),
+                            rgb: (128, 128, 128),
+                            color: UNSOLVED,
+                            corner: None,
+                        },
+                    );
 
                     self.solve_gui = Some(crate::gui_solver::SolveGui {
                         partial_solution: blank_solution,
