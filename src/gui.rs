@@ -1,9 +1,14 @@
-use std::{collections::HashMap, sync::mpsc};
+use std::{
+    cmp::{max, min},
+    collections::HashMap,
+    sync::mpsc,
+};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Tool {
     Pencil,
     FloodFill,
+    OrthographicLine,
 }
 
 use crate::{
@@ -127,6 +132,7 @@ struct NonogramGui {
 
     solve_mode: bool,
     solve_gui: Option<SolveGui>,
+    line_tool_state: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +149,7 @@ enum Action {
 enum ActionMood {
     Normal,
     Merge,
+    ReplaceAction,
     Undo,
     Redo,
 }
@@ -181,6 +188,7 @@ impl NonogramGui {
 
             solve_mode: false,
             solve_gui: None,
+            line_tool_state: None,
         }
     }
 
@@ -202,7 +210,7 @@ impl NonogramGui {
         use Action::*;
         use ActionMood::*;
 
-        let mood = if mood == Merge {
+        let mood = if mood == Merge || mood == ReplaceAction {
             match (self.undo_stack.last_mut(), &action) {
                 // Consecutive `ChangeColor`s can be merged with each other.
                 (
@@ -211,14 +219,35 @@ impl NonogramGui {
                         changes: new_changes,
                     },
                 ) => {
-                    for ((x, y), col) in new_changes {
-                        if !changes.contains_key(&(*x, *y)) {
-                            changes.insert((*x, *y), self.picture.grid[*x][*y]);
-                            // Crucially, this only fires on a new cell!
-                            // Otherwise, we'd be flipping cells back and forth as long as we were
-                            // in them!
-                            self.picture.grid[*x][*y] = *col;
-                            self.report_stale = true;
+                    if mood == ReplaceAction {
+                        for ((x, y), _) in new_changes {
+                            changes.entry((*x, *y)).or_insert(self.picture.grid[*x][*y]);
+                        }
+                        changes.retain(|(x, y), old_col| {
+                            if !new_changes.contains_key(&(*x, *y)) {
+                                self.picture.grid[*x][*y] = *old_col;
+                                self.report_stale = true;
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        for ((x, y), col) in new_changes {
+                            if self.picture.grid[*x][*y] != *col {
+                                self.picture.grid[*x][*y] = *col;
+                                self.report_stale = true
+                            }
+                        }
+                    } else {
+                        for ((x, y), col) in new_changes {
+                            if !changes.contains_key(&(*x, *y)) {
+                                changes.insert((*x, *y), self.picture.grid[*x][*y]);
+                                // Crucially, this only fires on a new cell!
+                                // Otherwise, we'd be flipping cells back and forth as long as we were
+                                // in them!
+                                self.picture.grid[*x][*y] = *col;
+                                self.report_stale = true;
+                            }
                         }
                     }
                     return; // Action is done; nothing else to do!
@@ -249,7 +278,7 @@ impl NonogramGui {
         }
 
         match mood {
-            Merge => {}
+            Merge | ReplaceAction => {}
             Normal => {
                 self.undo_stack.push(reversed_action);
                 self.redo_stack.clear();
@@ -509,6 +538,12 @@ impl NonogramGui {
             .on_hover_text("Pencil");
             ui.selectable_value(
                 &mut self.current_tool,
+                Tool::OrthographicLine,
+                egui::RichText::new(icons::ICON_LINE_START).size(24.0),
+            )
+            .on_hover_text("Orthographic line");
+            ui.selectable_value(
+                &mut self.current_tool,
                 Tool::FloodFill,
                 egui::RichText::new(icons::ICON_FORMAT_COLOR_FILL).size(24.0),
             )
@@ -728,6 +763,53 @@ impl NonogramGui {
                     Tool::FloodFill => {
                         if response.clicked() {
                             self.flood_fill(x, y);
+                        }
+                    }
+                    Tool::OrthographicLine => {
+                        if response.clicked() || response.drag_started() {
+                            let new_color = if self.picture.grid[x][y] == self.current_color {
+                                BACKGROUND
+                            } else {
+                                self.current_color
+                            };
+                            self.drag_start_color = new_color;
+
+                            self.line_tool_state = Some((x, y));
+
+                            self.perform(
+                                Action::ChangeColor {
+                                    changes: [((x, y), self.drag_start_color)].into(),
+                                },
+                                ActionMood::Normal,
+                            );
+                        } else if response.dragged() {
+                            if let Some((start_x, start_y)) = self.line_tool_state {
+                                let mut new_points = HashMap::new();
+
+                                let horiz = x.abs_diff(start_x) > y.abs_diff(start_y);
+
+                                if horiz {
+                                    let xlo = min(start_x, x);
+                                    let xhi = max(start_x, x);
+                                    for xi in xlo..=xhi {
+                                        new_points.insert((xi, start_y), self.drag_start_color);
+                                    }
+                                } else {
+                                    let ylo = min(start_y, y);
+                                    let yhi = max(start_y, y);
+                                    for yi in ylo..=yhi {
+                                        new_points.insert((start_x, yi), self.drag_start_color);
+                                    }
+                                }
+                                self.perform(
+                                    Action::ChangeColor {
+                                        changes: new_points,
+                                    },
+                                    ActionMood::ReplaceAction,
+                                );
+                            }
+                        } else if response.drag_stopped() {
+                            self.line_tool_state = None;
                         }
                     }
                 }
