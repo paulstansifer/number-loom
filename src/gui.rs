@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::mpsc};
+use std::{
+    cmp::{max, min},
+    collections::HashMap,
+    sync::mpsc,
+};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Tool {
@@ -779,30 +783,22 @@ impl NonogramGui {
                                 ActionMood::Normal,
                             );
                         } else if response.dragged() {
-                            if let Some((start_x, start_y)) = &mut self.line_tool_state {
+                            if let Some((start_x, start_y)) = self.line_tool_state {
                                 let mut new_points = HashMap::new();
-                                let (x0, y0) = (*start_x, *start_y);
 
-                                let dx = (x as i32 - x0 as i32).abs();
-                                let dy = (y as i32 - y0 as i32).abs();
+                                let horiz = x.abs_diff(start_x) > y.abs_diff(start_y);
 
-                                if dx > dy {
-                                    // Horizontal
-                                    let sx = if x0 < x { 1 } else { -1 };
-                                    for i in 0..=dx {
-                                        new_points.insert(
-                                            ((x0 as i32 + i * sx) as usize, y0),
-                                            self.drag_start_color,
-                                        );
+                                if horiz {
+                                    let xlo = min(start_x, x);
+                                    let xhi = max(start_x, x);
+                                    for xi in xlo..=xhi {
+                                        new_points.insert((xi, start_y), self.drag_start_color);
                                     }
                                 } else {
-                                    // Vertical
-                                    let sy = if y0 < y { 1 } else { -1 };
-                                    for i in 0..=dy {
-                                        new_points.insert(
-                                            (x0, (y0 as i32 + i * sy) as usize),
-                                            self.drag_start_color,
-                                        );
+                                    let ylo = min(start_y, y);
+                                    let yhi = max(start_y, y);
+                                    for yi in ylo..=yhi {
+                                        new_points.insert((start_x, yi), self.drag_start_color);
                                     }
                                 }
                                 self.perform(
