@@ -538,16 +538,16 @@ impl NonogramGui {
             .on_hover_text("Pencil");
             ui.selectable_value(
                 &mut self.current_tool,
+                Tool::OrthographicLine,
+                egui::RichText::new(icons::ICON_LINE_START).size(24.0),
+            )
+            .on_hover_text("Orthographic line");
+            ui.selectable_value(
+                &mut self.current_tool,
                 Tool::FloodFill,
                 egui::RichText::new(icons::ICON_FORMAT_COLOR_FILL).size(24.0),
             )
             .on_hover_text("Flood Fill");
-            ui.selectable_value(
-                &mut self.current_tool,
-                Tool::OrthographicLine,
-                egui::RichText::new(icons::ICON_SHOW_CHART).size(24.0),
-            )
-            .on_hover_text("Orthographic line");
         });
     }
 
