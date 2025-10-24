@@ -4,6 +4,7 @@ use std::{collections::HashMap, sync::mpsc};
 enum Tool {
     Pencil,
     FloodFill,
+    OrthographicLine,
 }
 
 use crate::{
@@ -127,6 +128,7 @@ struct NonogramGui {
 
     solve_mode: bool,
     solve_gui: Option<SolveGui>,
+    line_tool_state: Option<((usize, usize), HashMap<(usize, usize), Color>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -181,6 +183,7 @@ impl NonogramGui {
 
             solve_mode: false,
             solve_gui: None,
+            line_tool_state: None,
         }
     }
 
@@ -513,6 +516,12 @@ impl NonogramGui {
                 egui::RichText::new(icons::ICON_FORMAT_COLOR_FILL).size(24.0),
             )
             .on_hover_text("Flood Fill");
+            ui.selectable_value(
+                &mut self.current_tool,
+                Tool::OrthographicLine,
+                egui::RichText::new(icons::ICON_SHOW_CHART).size(24.0),
+            )
+            .on_hover_text("Orthographic line");
         });
     }
 
@@ -728,6 +737,76 @@ impl NonogramGui {
                     Tool::FloodFill => {
                         if response.clicked() {
                             self.flood_fill(x, y);
+                        }
+                    }
+                    Tool::OrthographicLine => {
+                        if response.drag_started() {
+                            let new_color = if self.picture.grid[x][y] == self.current_color {
+                                BACKGROUND
+                            } else {
+                                self.current_color
+                            };
+                            self.drag_start_color = new_color;
+
+                            let mut original_colors = HashMap::new();
+                            original_colors.insert((x, y), self.picture.grid[x][y]);
+                            self.line_tool_state = Some(((x, y), original_colors));
+
+                            self.perform(
+                                Action::ChangeColor {
+                                    changes: [((x, y), self.drag_start_color)].into(),
+                                },
+                                ActionMood::Normal,
+                            );
+                        } else if response.dragged() {
+                            if let Some(((start_x, start_y), original_colors)) =
+                                &mut self.line_tool_state
+                            {
+                                let mut new_points = vec![];
+                                let (x0, y0) = (*start_x, *start_y);
+
+                                let dx = (x as i32 - x0 as i32).abs();
+                                let dy = (y as i32 - y0 as i32).abs();
+
+                                if dx > dy {
+                                    // Horizontal
+                                    let sx = if x0 < x { 1 } else { -1 };
+                                    for i in 0..=dx {
+                                        new_points.push(((x0 as i32 + i * sx) as usize, y0));
+                                    }
+                                } else {
+                                    // Vertical
+                                    let sy = if y0 < y { 1 } else { -1 };
+                                    for i in 0..=dy {
+                                        new_points.push((x0, (y0 as i32 + i * sy) as usize));
+                                    }
+                                }
+
+                                let mut changes = HashMap::new();
+                                use std::collections::HashSet;
+                                let new_points_set = new_points.iter().cloned().collect::<HashSet<_>>();
+
+                                let old_points = original_colors.keys().cloned().collect::<HashSet<_>>();
+
+                                // Points to add
+                                for (px, py) in new_points_set.difference(&old_points) {
+                                    if *px < x_size && *py < y_size {
+                                        original_colors.insert((*px, *py), self.picture.grid[*px][*py]);
+                                        changes.insert((*px, *py), self.drag_start_color);
+                                    }
+                                }
+
+                                // Points to revert
+                                for (px, py) in old_points.difference(&new_points_set) {
+                                    changes.insert((*px, *py), original_colors[&(*px, *py)]);
+                                }
+
+                                if !changes.is_empty() {
+                                    self.perform(Action::ChangeColor { changes }, ActionMood::Merge);
+                                }
+                            }
+                        } else if response.drag_released() {
+                            self.line_tool_state = None;
                         }
                     }
                 }
