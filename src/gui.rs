@@ -128,7 +128,7 @@ struct NonogramGui {
 
     solve_mode: bool,
     solve_gui: Option<SolveGui>,
-    line_tool_state: Option<((usize, usize), HashMap<(usize, usize), Color>)>,
+    line_tool_state: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -145,6 +145,7 @@ enum Action {
 enum ActionMood {
     Normal,
     Merge,
+    ReplaceAction,
     Undo,
     Redo,
 }
@@ -205,7 +206,7 @@ impl NonogramGui {
         use Action::*;
         use ActionMood::*;
 
-        let mood = if mood == Merge {
+        let mood = if mood == Merge || mood == ReplaceAction {
             match (self.undo_stack.last_mut(), &action) {
                 // Consecutive `ChangeColor`s can be merged with each other.
                 (
@@ -214,14 +215,35 @@ impl NonogramGui {
                         changes: new_changes,
                     },
                 ) => {
-                    for ((x, y), col) in new_changes {
-                        if !changes.contains_key(&(*x, *y)) {
-                            changes.insert((*x, *y), self.picture.grid[*x][*y]);
-                            // Crucially, this only fires on a new cell!
-                            // Otherwise, we'd be flipping cells back and forth as long as we were
-                            // in them!
-                            self.picture.grid[*x][*y] = *col;
-                            self.report_stale = true;
+                    if mood == ReplaceAction {
+                        for ((x, y), _) in new_changes {
+                            changes.entry((*x, *y)).or_insert(self.picture.grid[*x][*y]);
+                        }
+                        changes.retain(|(x, y), old_col| {
+                            if !new_changes.contains_key(&(*x, *y)) {
+                                self.picture.grid[*x][*y] = *old_col;
+                                self.report_stale = true;
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        for ((x, y), col) in new_changes {
+                            if self.picture.grid[*x][*y] != *col {
+                                self.picture.grid[*x][*y] = *col;
+                                self.report_stale = true
+                            }
+                        }
+                    } else {
+                        for ((x, y), col) in new_changes {
+                            if !changes.contains_key(&(*x, *y)) {
+                                changes.insert((*x, *y), self.picture.grid[*x][*y]);
+                                // Crucially, this only fires on a new cell!
+                                // Otherwise, we'd be flipping cells back and forth as long as we were
+                                // in them!
+                                self.picture.grid[*x][*y] = *col;
+                                self.report_stale = true;
+                            }
                         }
                     }
                     return; // Action is done; nothing else to do!
@@ -252,7 +274,7 @@ impl NonogramGui {
         }
 
         match mood {
-            Merge => {}
+            Merge | ReplaceAction => {}
             Normal => {
                 self.undo_stack.push(reversed_action);
                 self.redo_stack.clear();
@@ -740,7 +762,7 @@ impl NonogramGui {
                         }
                     }
                     Tool::OrthographicLine => {
-                        if response.drag_started() {
+                        if response.clicked() || response.drag_started() {
                             let new_color = if self.picture.grid[x][y] == self.current_color {
                                 BACKGROUND
                             } else {
@@ -748,9 +770,7 @@ impl NonogramGui {
                             };
                             self.drag_start_color = new_color;
 
-                            let mut original_colors = HashMap::new();
-                            original_colors.insert((x, y), self.picture.grid[x][y]);
-                            self.line_tool_state = Some(((x, y), original_colors));
+                            self.line_tool_state = Some((x, y));
 
                             self.perform(
                                 Action::ChangeColor {
@@ -759,10 +779,8 @@ impl NonogramGui {
                                 ActionMood::Normal,
                             );
                         } else if response.dragged() {
-                            if let Some(((start_x, start_y), original_colors)) =
-                                &mut self.line_tool_state
-                            {
-                                let mut new_points = vec![];
+                            if let Some((start_x, start_y)) = &mut self.line_tool_state {
+                                let mut new_points = HashMap::new();
                                 let (x0, y0) = (*start_x, *start_y);
 
                                 let dx = (x as i32 - x0 as i32).abs();
@@ -772,40 +790,29 @@ impl NonogramGui {
                                     // Horizontal
                                     let sx = if x0 < x { 1 } else { -1 };
                                     for i in 0..=dx {
-                                        new_points.push(((x0 as i32 + i * sx) as usize, y0));
+                                        new_points.insert(
+                                            ((x0 as i32 + i * sx) as usize, y0),
+                                            self.drag_start_color,
+                                        );
                                     }
                                 } else {
                                     // Vertical
                                     let sy = if y0 < y { 1 } else { -1 };
                                     for i in 0..=dy {
-                                        new_points.push((x0, (y0 as i32 + i * sy) as usize));
+                                        new_points.insert(
+                                            (x0, (y0 as i32 + i * sy) as usize),
+                                            self.drag_start_color,
+                                        );
                                     }
                                 }
-
-                                let mut changes = HashMap::new();
-                                use std::collections::HashSet;
-                                let new_points_set = new_points.iter().cloned().collect::<HashSet<_>>();
-
-                                let old_points = original_colors.keys().cloned().collect::<HashSet<_>>();
-
-                                // Points to add
-                                for (px, py) in new_points_set.difference(&old_points) {
-                                    if *px < x_size && *py < y_size {
-                                        original_colors.insert((*px, *py), self.picture.grid[*px][*py]);
-                                        changes.insert((*px, *py), self.drag_start_color);
-                                    }
-                                }
-
-                                // Points to revert
-                                for (px, py) in old_points.difference(&new_points_set) {
-                                    changes.insert((*px, *py), original_colors[&(*px, *py)]);
-                                }
-
-                                if !changes.is_empty() {
-                                    self.perform(Action::ChangeColor { changes }, ActionMood::Merge);
-                                }
+                                self.perform(
+                                    Action::ChangeColor {
+                                        changes: new_points,
+                                    },
+                                    ActionMood::ReplaceAction,
+                                );
                             }
-                        } else if response.drag_released() {
+                        } else if response.drag_stopped() {
                             self.line_tool_state = None;
                         }
                     }
