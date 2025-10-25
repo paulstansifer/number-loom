@@ -1113,6 +1113,7 @@ impl eframe::App for NonogramGui {
                         blank_solution,
                         self.editor_gui.picture.to_puzzle(),
                         self.editor_gui.current_color,
+                        self.editor_gui.picture.clone(),
                     ));
                 }
             });
