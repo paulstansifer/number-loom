@@ -1,5 +1,5 @@
 use crate::{
-    gui::{CanvasGui, Dirtiness, Tool},
+    gui::{CanvasGui, Dirtiness, Disambiguator, Tool},
     puzzle::{Color, DynPuzzle, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
@@ -11,6 +11,7 @@ pub struct SolveGui {
 
 impl SolveGui {
     pub fn new(picture: Solution, clues: DynPuzzle, current_color: Color) -> Self {
+        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
         SolveGui {
             canvas: CanvasGui {
                 picture,
@@ -21,6 +22,8 @@ impl SolveGui {
                 redo_stack: vec![],
                 current_tool: Tool::Pencil,
                 line_tool_state: None,
+                solved_mask,
+                disambiguator: Disambiguator::new(),
             },
             clues,
         }
