@@ -405,16 +405,22 @@ impl CanvasGui {
             let y = canvas_pos.y as usize;
 
             if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
+                let pointer = &ui.input(|i| i.pointer.clone());
+                let paint_color = if pointer.secondary_down() {
+                    BACKGROUND
+                } else if pointer.middle_down() {
+                    UNSOLVED
+                } else if self.picture.grid[x][y] == self.current_color {
+                    BACKGROUND
+                } else {
+                    self.current_color
+                };
+
                 match self.current_tool {
                     Tool::Pencil => {
                         if response.clicked() || response.dragged() {
-                            let new_color = if self.picture.grid[x][y] == self.current_color {
-                                BACKGROUND
-                            } else {
-                                self.current_color
-                            };
                             let mood = if response.clicked() || response.drag_started() {
-                                self.drag_start_color = new_color;
+                                self.drag_start_color = paint_color;
                                 ActionMood::Normal
                             } else {
                                 ActionMood::Merge
@@ -427,17 +433,15 @@ impl CanvasGui {
                     }
                     Tool::FloodFill => {
                         if response.clicked() {
+                            let original_color = self.current_color;
+                            self.current_color = paint_color;
                             self.flood_fill(x, y);
+                            self.current_color = original_color;
                         }
                     }
                     Tool::OrthographicLine => {
                         if response.clicked() || response.drag_started() {
-                            let new_color = if self.picture.grid[x][y] == self.current_color {
-                                BACKGROUND
-                            } else {
-                                self.current_color
-                            };
-                            self.drag_start_color = new_color;
+                            self.drag_start_color = paint_color;
 
                             self.line_tool_state = Some((x, y));
 
