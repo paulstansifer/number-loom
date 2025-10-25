@@ -1,6 +1,6 @@
 use crate::{
     gui::{CanvasGui, Dirtiness, Disambiguator, Tool},
-    puzzle::{BACKGROUND, Color, DynPuzzle, Solution},
+    puzzle::{Color, DynPuzzle, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
@@ -12,13 +12,13 @@ pub struct SolveGui {
 }
 
 impl SolveGui {
-    pub fn new(picture: Solution, clues: DynPuzzle, intended_solution: Solution) -> Self {
+    pub fn new(
+        picture: Solution,
+        clues: DynPuzzle,
+        current_color: Color,
+        intended_solution: Solution,
+    ) -> Self {
         let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
-        let mut current_color = BACKGROUND;
-        if picture.palette.contains_key(&Color(1)) {
-            current_color = Color(1);
-        }
-
         SolveGui {
             canvas: CanvasGui {
                 picture,
@@ -38,16 +38,21 @@ impl SolveGui {
         }
     }
 
-    fn any_errors(&self) -> bool {
+    fn detect_any_errors(&self) -> bool {
         for (x, row) in self.canvas.picture.grid.iter().enumerate() {
             for (y, color) in row.iter().enumerate() {
-                if *color != self.intended_solution.grid[x][y] && *color != crate::puzzle::UNSOLVED
+                if *color != self.intended_solution.grid[x][y]
+                    && *color != crate::puzzle::UNSOLVED
                 {
                     return true;
                 }
             }
         }
         false
+    }
+
+    fn is_correctly_solved(&self) -> bool {
+        self.canvas.picture.grid == self.intended_solution.grid
     }
 
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
@@ -58,8 +63,10 @@ impl SolveGui {
             ui.separator();
 
             ui.checkbox(&mut self.detect_errors, "Detect errors");
-            if self.detect_errors && self.any_errors() {
+            if self.detect_errors && self.detect_any_errors() {
                 ui.colored_label(egui::Color32::RED, "Error detected");
+            } else if self.is_correctly_solved() {
+                ui.colored_label(egui::Color32::GREEN, "Correctly solved");
             }
         });
     }
