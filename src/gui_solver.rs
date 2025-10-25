@@ -1,11 +1,37 @@
+use crate::{
+    gui::{CanvasGui, Dirtiness, Tool},
+    puzzle::{Color, DynPuzzle, Solution},
+};
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
-use crate::puzzle::{Color, DynPuzzle, Solution};
-
 pub struct SolveGui {
-    pub partial_solution: Solution,
+    pub canvas: CanvasGui,
     pub clues: DynPuzzle,
-    pub current_color: Color,
+}
+
+impl SolveGui {
+    pub fn new(picture: Solution, clues: DynPuzzle, current_color: Color) -> Self {
+        SolveGui {
+            canvas: CanvasGui {
+                picture,
+                dirtiness: Dirtiness::Clean,
+                current_color,
+                drag_start_color: current_color,
+                undo_stack: vec![],
+                redo_stack: vec![],
+                current_tool: Tool::Pencil,
+                line_tool_state: None,
+            },
+            clues,
+        }
+    }
+
+    pub fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.set_width(120.0);
+            self.canvas.common_sidebar_items(ui, true);
+        });
+    }
 }
 
 pub fn draw_dyn_row_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32) {
@@ -96,7 +122,7 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
                         bg_color,
                     );
                     painter.text(
-                        corner_u_l + Vec2::new(0.5, 0.5) * scale,
+                        corner_u_l + Vec2::new(box_side / 2.0, box_side / 2.0),
                         egui::Align2::CENTER_CENTER,
                         clue_txt,
                         clue_font,
