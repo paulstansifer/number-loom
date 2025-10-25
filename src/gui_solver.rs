@@ -2,7 +2,7 @@ use crate::{
     gui::{CanvasGui, Dirtiness, Disambiguator, Tool},
     puzzle::{Color, DynPuzzle, Solution},
 };
-use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
+use egui::{text::Fonts, Color32, Pos2, Rect, Vec2};
 
 pub struct SolveGui {
     pub canvas: CanvasGui,
@@ -72,21 +72,17 @@ impl SolveGui {
     }
 }
 
-pub fn draw_dyn_row_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32) {
-    match puzzle {
-        DynPuzzle::Nono(puzzle) => {
-            draw_row_clues::<crate::puzzle::Nono>(ui, puzzle, scale);
-        }
-        DynPuzzle::Triano(puzzle) => {
-            draw_row_clues::<crate::puzzle::Triano>(ui, puzzle, scale);
-        }
-    }
+#[derive(Clone, Copy)]
+enum Orientation {
+    Horizontal,
+    Vertical,
 }
 
-fn draw_row_clues<C: crate::puzzle::Clue>(
+fn draw_clues<C: crate::puzzle::Clue>(
     ui: &mut egui::Ui,
     puzzle: &crate::puzzle::Puzzle<C>,
     scale: f32,
+    orientation: Orientation,
 ) {
     let base_font = egui::FontId::monospace(scale * 0.7);
 
@@ -115,36 +111,53 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
     let box_side = scale * 0.9;
     let box_margin = (scale - box_side) / 2.0;
 
-    let mut max_width: f32 = 0.0;
-    for row in &puzzle.rows {
-        let mut this_width = 0.0;
-        for clue in row {
-            this_width += box_side * (clue.express(puzzle).len() as f32) + between_clues;
+    let clues_vec = match orientation {
+        Orientation::Horizontal => &puzzle.rows,
+        Orientation::Vertical => &puzzle.cols,
+    };
+
+    let mut max_size: f32 = 0.0;
+    for line_clues in clues_vec {
+        let mut this_size = 0.0;
+        for clue in line_clues {
+            this_size += box_side * (clue.express(puzzle).len() as f32) + between_clues;
         }
-        max_width = max_width.max(this_width);
+        max_size = max_size.max(this_size);
     }
-    max_width += puzz_padding;
+    max_size += puzz_padding;
 
     let (response, painter) = ui.allocate_painter(
-        Vec2::new(max_width, scale * puzzle.rows.len() as f32) + Vec2::new(2.0, 2.0),
+        match orientation {
+            Orientation::Horizontal => Vec2::new(max_size, scale * puzzle.rows.len() as f32),
+            Orientation::Vertical => Vec2::new(scale * puzzle.cols.len() as f32, max_size),
+        } + Vec2::new(2.0, 2.0),
         egui::Sense::empty(),
     );
 
-    for y in 0..puzzle.rows.len() {
-        let row_clues = &puzzle.rows[y];
-        let mut current_x = response.rect.max.x - puzz_padding;
+    for i in 0..clues_vec.len() {
+        let line_clues = &clues_vec[i];
+        let mut current_pos = match orientation {
+            Orientation::Horizontal => response.rect.max.x - puzz_padding,
+            Orientation::Vertical => response.rect.max.y - puzz_padding,
+        };
 
-        for clue in row_clues.iter().rev() {
+        for clue in line_clues.iter().rev() {
             let expressed_clues = clue.express(puzzle);
 
             for (color_info, len) in expressed_clues.into_iter().rev() {
                 let (r, g, b) = color_info.rgb;
                 let bg_color = egui::Color32::from_rgb(r, g, b);
 
-                let corner_u_r = Pos2::new(
-                    current_x,
-                    response.rect.min.y + (y as f32) * scale + box_margin,
-                );
+                let corner = match orientation {
+                    Orientation::Horizontal => Pos2::new(
+                        current_pos,
+                        response.rect.min.y + (i as f32) * scale + box_margin,
+                    ),
+                    Orientation::Vertical => Pos2::new(
+                        response.rect.min.x + (i as f32) * scale + box_margin,
+                        current_pos,
+                    ),
+                };
 
                 if let Some(len) = len {
                     assert!(len > 0);
@@ -152,35 +165,65 @@ fn draw_row_clues<C: crate::puzzle::Clue>(
                     let clue_txt = len.to_string();
                     let clue_font = fonts_by_digit[clue_txt.len()].clone();
 
-                    let corner_u_l = corner_u_r + Vec2::new(-box_side, box_margin);
+                    let translated_corner = corner
+                        + match orientation {
+                            Orientation::Horizontal => Vec2::new(-box_side, 0.0),
+                            Orientation::Vertical => Vec2::new(0.0, -box_side),
+                        };
 
                     painter.rect_filled(
-                        Rect::from_min_size(corner_u_l, Vec2::new(box_side, box_side)),
+                        Rect::from_min_size(translated_corner, Vec2::new(box_side, box_side)),
                         0.0,
                         bg_color,
                     );
                     painter.text(
-                        corner_u_l + Vec2::new(box_side / 2.0, box_side / 2.0),
+                        translated_corner + Vec2::new(box_side / 2.0, box_side / 2.0),
                         egui::Align2::CENTER_CENTER,
                         clue_txt,
                         clue_font,
                         egui::Color32::WHITE,
                     );
-                    current_x -= box_side;
+                    current_pos -= box_side;
                 } else {
                     let mut triangle = crate::gui::triangle_shape(
                         color_info.corner.expect("must be a corner"),
                         bg_color,
                         Vec2::new(box_side, box_side),
                     );
-                    let corner_u_l = corner_u_r + Vec2::new(-box_side, box_margin);
-                    triangle.translate(corner_u_l.to_vec2());
-                    current_x -= box_side;
+                    let translated_corner = corner
+                        + match orientation {
+                            Orientation::Horizontal => Vec2::new(-box_side, 0.0),
+                            Orientation::Vertical => Vec2::new(0.0, -box_side),
+                        };
+                    triangle.translate(translated_corner.to_vec2());
+                    current_pos -= box_side;
 
                     painter.add(triangle);
                 }
             }
-            current_x -= between_clues;
+            current_pos -= between_clues;
+        }
+    }
+}
+
+pub fn draw_dyn_col_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32) {
+    match puzzle {
+        DynPuzzle::Nono(puzzle) => {
+            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, Orientation::Vertical);
+        }
+        DynPuzzle::Triano(puzzle) => {
+            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, Orientation::Vertical);
+        }
+    }
+}
+
+pub fn draw_dyn_row_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32) {
+    match puzzle {
+        DynPuzzle::Nono(puzzle) => {
+            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, Orientation::Horizontal);
+        }
+        DynPuzzle::Triano(puzzle) => {
+            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, Orientation::Horizontal);
         }
     }
 }
