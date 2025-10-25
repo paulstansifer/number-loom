@@ -1121,12 +1121,14 @@ impl eframe::App for NonogramGui {
             ui.horizontal(|ui| {
                 if let Some(solve_gui) = &mut self.solve_gui {
                     solve_gui.sidebar(ui);
-                    ui.vertical(|ui| {
+                    egui::Grid::new("solve_grid").show(ui, |ui| {
+                        ui.label(""); // Top-left is empty
                         draw_dyn_col_clues(ui, &solve_gui.clues, self.scale);
-                        ui.horizontal(|ui| {
-                            draw_dyn_row_clues(ui, &solve_gui.clues, self.scale);
-                            solve_gui.canvas.canvas(ui, self.scale);
-                        });
+                        ui.end_row();
+
+                        draw_dyn_row_clues(ui, &solve_gui.clues, self.scale);
+                        solve_gui.canvas.canvas(ui, self.scale);
+                        ui.end_row();
                     });
                 } else {
                     self.sidebar(ui);
