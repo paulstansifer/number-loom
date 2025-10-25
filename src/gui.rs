@@ -5,19 +5,19 @@ use std::{
 };
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
-pub enum PuzzleDirtiness {
+pub enum Dirtiness {
     Clean,
     CellsChanged,
     DimensionsChanged,
 }
 
-impl PuzzleDirtiness {
+impl Dirtiness {
     pub fn change_cells(&mut self) {
-        *self = max(*self, PuzzleDirtiness::CellsChanged);
+        *self = max(*self, Dirtiness::CellsChanged);
     }
 
     pub fn change_dimensions(&mut self) {
-        *self = max(*self, PuzzleDirtiness::DimensionsChanged);
+        *self = max(*self, Dirtiness::DimensionsChanged);
     }
 }
 
@@ -31,7 +31,7 @@ pub enum Tool {
 use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
-    gui_solver::{draw_dyn_row_clues, SolveGui},
+    gui_solver::{SolveGui, draw_dyn_row_clues},
     import,
     puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, Solution, UNSOLVED},
 };
@@ -129,6 +129,7 @@ pub async fn yield_now() {
 
 pub struct CanvasGui {
     pub picture: Solution,
+    pub dirtiness: Dirtiness,
     pub current_color: Color,
     pub drag_start_color: Color,
     pub undo_stack: Vec<Action>,
@@ -146,7 +147,6 @@ struct NonogramGui {
     auto_solve: bool,
     lines_to_affect_string: String,
     solve_report: String,
-    dirtiness: PuzzleDirtiness,
     disambiguator: Disambiguator,
     solved_mask: Vec<Vec<bool>>,
     solve_mode: bool,
@@ -187,7 +187,7 @@ impl CanvasGui {
         }
     }
 
-    pub fn perform(&mut self, action: Action, mood: ActionMood, dirtiness: &mut PuzzleDirtiness) {
+    pub fn perform(&mut self, action: Action, mood: ActionMood) {
         use Action::*;
         use ActionMood::*;
 
@@ -201,10 +201,13 @@ impl CanvasGui {
                     },
                 ) => {
                     if mood == ReplaceAction {
+                        for ((x, y), _) in new_changes {
+                            changes.entry((*x, *y)).or_insert(self.picture.grid[*x][*y]);
+                        }
                         changes.retain(|(x, y), old_col| {
                             if !new_changes.contains_key(&(*x, *y)) {
                                 self.picture.grid[*x][*y] = *old_col;
-                                dirtiness.change_cells();
+                                self.dirtiness.change_cells();
                                 false
                             } else {
                                 true
@@ -213,7 +216,7 @@ impl CanvasGui {
                         for ((x, y), col) in new_changes {
                             if self.picture.grid[*x][*y] != *col {
                                 self.picture.grid[*x][*y] = *col;
-                                dirtiness.change_cells();
+                                self.dirtiness.change_cells();
                             }
                         }
                         return;
@@ -222,10 +225,10 @@ impl CanvasGui {
                             if !changes.contains_key(&(*x, *y)) {
                                 changes.insert((*x, *y), self.picture.grid[*x][*y]);
                                 // Crucially, this only fires on a new cell!
-                                // Otherwise, we'd be flipping cells back and forth as long as we were
-                                // in them!
+                                // Otherwise, we'd be flipping cells back and forth as long as we
+                                // were in them!
                                 self.picture.grid[*x][*y] = *col;
-                                dirtiness.change_cells();
+                                self.dirtiness.change_cells();
                             }
                         }
                         return;
@@ -244,13 +247,13 @@ impl CanvasGui {
                 for ((x, y), new_color) in changes {
                     if self.picture.grid[x][y] != new_color {
                         self.picture.grid[x][y] = new_color;
-                        dirtiness.change_cells();
+                        self.dirtiness.change_cells();
                     }
                 }
             }
             Action::ReplacePicture { picture } => {
                 self.picture = picture;
-                dirtiness.change_dimensions();
+                self.dirtiness.change_dimensions();
             }
         }
 
@@ -269,7 +272,7 @@ impl CanvasGui {
         }
     }
 
-    pub fn un_or_re_do(&mut self, un: bool, dirtiness: &mut PuzzleDirtiness) {
+    pub fn un_or_re_do(&mut self, un: bool) {
         let action = if un {
             self.undo_stack.pop()
         } else {
@@ -284,23 +287,18 @@ impl CanvasGui {
                 } else {
                     ActionMood::Redo
                 },
-                dirtiness,
             )
         }
     }
 
-    pub fn common_sidebar_items(&mut self, ui: &mut egui::Ui, palette_read_only: bool, dirtiness: &mut PuzzleDirtiness) {
+    pub fn common_sidebar_items(&mut self, ui: &mut egui::Ui, palette_read_only: bool) {
         ui.horizontal(|ui| {
             ui.label(format!("({})", self.undo_stack.len()));
-            if ui.button(icons::ICON_UNDO).clicked()
-                || ui.input(|i| i.key_pressed(egui::Key::Z))
-            {
-                self.un_or_re_do(true, dirtiness);
+            if ui.button(icons::ICON_UNDO).clicked() || ui.input(|i| i.key_pressed(egui::Key::Z)) {
+                self.un_or_re_do(true);
             }
-            if ui.button(icons::ICON_REDO).clicked()
-                || ui.input(|i| i.key_pressed(egui::Key::Y))
-            {
-                self.un_or_re_do(false, dirtiness);
+            if ui.button(icons::ICON_REDO).clicked() || ui.input(|i| i.key_pressed(egui::Key::Y)) {
+                self.un_or_re_do(false);
             }
             ui.label(format!("({})", self.redo_stack.len()));
         });
@@ -311,7 +309,7 @@ impl CanvasGui {
 
         ui.separator();
 
-        self.palette_editor(ui, palette_read_only, dirtiness);
+        self.palette_editor(ui, palette_read_only);
     }
 
     fn tool_selector(&mut self, ui: &mut egui::Ui) {
@@ -338,7 +336,7 @@ impl CanvasGui {
         });
     }
 
-    fn flood_fill(&mut self, x: usize, y: usize, dirtiness: &mut PuzzleDirtiness) {
+    fn flood_fill(&mut self, x: usize, y: usize) {
         let target_color = self.picture.grid[x][y];
         if target_color == self.current_color {
             return; // Nothing to do
@@ -374,11 +372,17 @@ impl CanvasGui {
         }
 
         if !changes.is_empty() {
-            self.perform(Action::ChangeColor { changes }, ActionMood::Normal, dirtiness);
+            self.perform(Action::ChangeColor { changes }, ActionMood::Normal);
         }
     }
 
-    fn canvas(&mut self, ui: &mut egui::Ui, scale: f32, disambiguator: &Disambiguator, solved_mask: &[Vec<bool>], dirtiness: &mut PuzzleDirtiness) {
+    fn canvas(
+        &mut self,
+        ui: &mut egui::Ui,
+        scale: f32,
+        disambiguator: &Disambiguator,
+        solved_mask: &[Vec<bool>],
+    ) {
         let x_size = self.picture.grid.len();
         let y_size = self.picture.grid.first().unwrap().len();
 
@@ -418,12 +422,12 @@ impl CanvasGui {
 
                             let mut changes = HashMap::new();
                             changes.insert((x, y), self.drag_start_color);
-                            self.perform(Action::ChangeColor { changes }, mood, dirtiness);
+                            self.perform(Action::ChangeColor { changes }, mood);
                         }
                     }
                     Tool::FloodFill => {
                         if response.clicked() {
-                            self.flood_fill(x, y, dirtiness);
+                            self.flood_fill(x, y);
                         }
                     }
                     Tool::OrthographicLine => {
@@ -442,7 +446,6 @@ impl CanvasGui {
                                     changes: [((x, y), self.drag_start_color)].into(),
                                 },
                                 ActionMood::Normal,
-                                dirtiness,
                             );
                         } else if response.dragged() {
                             if let Some((start_x, start_y)) = self.line_tool_state {
@@ -468,7 +471,6 @@ impl CanvasGui {
                                         changes: new_points,
                                     },
                                     ActionMood::ReplaceAction,
-                                    dirtiness,
                                 );
                             }
                         } else if response.drag_stopped() {
@@ -486,18 +488,18 @@ impl CanvasGui {
             for x in 0..x_size {
                 let cell = self.picture.grid[x][y];
                 let color_info = &self.picture.palette[&cell];
-                let solved = solved_mask[x][y]
-                    || *dirtiness != PuzzleDirtiness::Clean
+                let solved = self.dirtiness != Dirtiness::Clean
+                    || solved_mask[x][y]
                     || disambig_report.is_some()
                     || (disambiguator.progress > 0.0 && disambiguator.progress < 1.0);
+                let mut dr = (&self.picture.palette[&BACKGROUND], 1.0);
 
-                let dr = if let Some(disambig_report) = disambig_report.as_ref() {
-                    let (c, score) = disambig_report[x][y];
-                    (&self.picture.palette[&c], score)
-                } else {
-                    (&self.picture.palette[&BACKGROUND], 1.0)
-                };
-
+                if let Some(disambig_report) = disambig_report.as_ref() {
+                    if self.dirtiness != Dirtiness::DimensionsChanged {
+                        let (c, score) = disambig_report[x][y];
+                        dr = (&self.picture.palette[&c], score);
+                    }
+                }
                 for shape in cell_shape(color_info, solved, dr, x, y, &to_screen) {
                     shapes.push(shape);
                 }
@@ -532,7 +534,7 @@ impl CanvasGui {
         response.mark_changed();
     }
 
-    fn palette_editor(&mut self, ui: &mut egui::Ui, read_only: bool, dirtiness: &mut PuzzleDirtiness) {
+    fn palette_editor(&mut self, ui: &mut egui::Ui, read_only: bool) {
         let mut picked_color = self.current_color;
         let mut removed_color = None;
         let mut add_color = false;
@@ -615,7 +617,6 @@ impl CanvasGui {
                     picture: new_picture,
                 },
                 ActionMood::Normal,
-                dirtiness,
             );
         }
         if add_color {
@@ -636,7 +637,6 @@ impl CanvasGui {
                     picture: new_picture,
                 },
                 ActionMood::Normal,
-                dirtiness,
             );
         }
     }
@@ -645,7 +645,7 @@ impl CanvasGui {
 impl NonogramGui {
     fn new(cc: &eframe::CreationContext<'_>, picture: Solution) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
-        let solved_mask = vec![vec![false; picture.grid[0].len()]; picture.grid.len()];
+        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
 
         let mut current_color = BACKGROUND;
         for (c, ci) in picture.palette.iter() {
@@ -657,6 +657,7 @@ impl NonogramGui {
         NonogramGui {
             editor_gui: CanvasGui {
                 picture,
+                dirtiness: Dirtiness::Clean,
                 current_color,
                 drag_start_color: current_color,
                 undo_stack: vec![],
@@ -671,7 +672,6 @@ impl NonogramGui {
             auto_solve: false,
             lines_to_affect_string: "5".to_string(),
             solve_report: "".to_string(),
-            dirtiness: PuzzleDirtiness::CellsChanged,
             disambiguator: Disambiguator::new(),
             solved_mask,
             solve_mode: false,
@@ -813,7 +813,6 @@ impl NonogramGui {
                 },
             },
             ActionMood::Normal,
-            &mut self.dirtiness,
         );
     }
 
@@ -873,7 +872,7 @@ impl NonogramGui {
     fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(120.0);
-            self.editor_gui.common_sidebar_items(ui, false, &mut self.dirtiness);
+            self.editor_gui.common_sidebar_items(ui, false);
 
             ui.separator();
 
@@ -881,7 +880,9 @@ impl NonogramGui {
 
             ui.separator();
             ui.checkbox(&mut self.auto_solve, "auto-solve");
-            if ui.button("Solve").clicked() || (self.auto_solve && self.dirtiness != PuzzleDirtiness::Clean) {
+            if ui.button("Solve").clicked()
+                || (self.auto_solve && self.editor_gui.dirtiness == Dirtiness::CellsChanged)
+            {
                 let puzzle = self.editor_gui.picture.to_puzzle();
 
                 match puzzle.plain_solve() {
@@ -896,14 +897,14 @@ impl NonogramGui {
                     }
                     Err(e) => self.solve_report = format!("Error: {:?}", e),
                 }
-                self.dirtiness = PuzzleDirtiness::Clean;
+                self.editor_gui.dirtiness = Dirtiness::Clean;
             }
 
             ui.colored_label(
-                if self.dirtiness == PuzzleDirtiness::Clean {
+                if self.editor_gui.dirtiness == Dirtiness::Clean {
                     Color32::BLACK
                 } else {
-                    Color32::BLACK
+                    Color32::GRAY
                 },
                 &self.solve_report,
             );
@@ -947,7 +948,6 @@ impl NonogramGui {
             self.editor_gui.perform(
                 Action::ReplacePicture { picture: solution },
                 ActionMood::Normal,
-                &mut self.dirtiness,
             );
             self.file_name = file;
         }
@@ -1071,7 +1071,6 @@ impl eframe::App for NonogramGui {
                             picture: new_picture,
                         },
                         ActionMood::Normal,
-                        &mut self.dirtiness,
                     );
                     self.new_dialog = None;
                 }
@@ -1108,25 +1107,36 @@ impl eframe::App for NonogramGui {
                         },
                     );
 
-                    self.solve_gui = Some(crate::gui_solver::SolveGui::new(blank_solution, self.editor_gui.picture.to_puzzle(), self.editor_gui.current_color));
+                    self.solve_gui = Some(crate::gui_solver::SolveGui::new(
+                        blank_solution,
+                        self.editor_gui.picture.to_puzzle(),
+                        self.editor_gui.current_color,
+                    ));
                 }
             });
             ui.separator();
 
             ui.horizontal(|ui| {
                 if let Some(solve_gui) = &mut self.solve_gui {
-                    solve_gui.sidebar(ui, &mut self.dirtiness);
+                    solve_gui.sidebar(ui);
                     draw_dyn_row_clues(ui, &solve_gui.clues, self.scale);
-                    solve_gui.canvas.canvas(ui, self.scale, &self.disambiguator, &self.solved_mask, &mut self.dirtiness);
+                    solve_gui
+                        .canvas
+                        .canvas(ui, self.scale, &self.disambiguator, &self.solved_mask);
                 } else {
                     self.sidebar(ui);
-                    self.editor_gui.canvas(ui, self.scale, &self.disambiguator, &self.solved_mask, &mut self.dirtiness);
+                    self.editor_gui
+                        .canvas(ui, self.scale, &self.disambiguator, &self.solved_mask);
                 }
             });
 
-            if self.dirtiness == PuzzleDirtiness::DimensionsChanged {
-                self.solved_mask = vec![vec![false; self.editor_gui.picture.grid[0].len()]; self.editor_gui.picture.grid.len()];
+            if self.editor_gui.dirtiness == Dirtiness::DimensionsChanged {
+                self.solved_mask = vec![
+                    vec![false; self.editor_gui.picture.grid[0].len()];
+                    self.editor_gui.picture.grid.len()
+                ];
                 self.disambiguator.reset();
+                self.editor_gui.dirtiness = Dirtiness::CellsChanged;
             }
         });
     }

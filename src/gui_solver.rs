@@ -1,8 +1,8 @@
 use crate::{
-    gui::{CanvasGui, PuzzleDirtiness, Tool},
-    puzzle::{Color, DynPuzzle, Solution, UNSOLVED},
+    gui::{CanvasGui, Dirtiness, Tool},
+    puzzle::{Color, DynPuzzle, Solution},
 };
-use egui::{text::Fonts, Color32, Pos2, Rect, Vec2};
+use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
 pub struct SolveGui {
     pub canvas: CanvasGui,
@@ -14,6 +14,7 @@ impl SolveGui {
         SolveGui {
             canvas: CanvasGui {
                 picture,
+                dirtiness: Dirtiness::Clean,
                 current_color,
                 drag_start_color: current_color,
                 undo_stack: vec![],
@@ -25,10 +26,10 @@ impl SolveGui {
         }
     }
 
-    pub fn sidebar(&mut self, ui: &mut egui::Ui, dirtiness: &mut PuzzleDirtiness) {
+    pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(120.0);
-            self.canvas.common_sidebar_items(ui, true, dirtiness);
+            self.canvas.common_sidebar_items(ui, true);
         });
     }
 }
