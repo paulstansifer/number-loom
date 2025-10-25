@@ -454,7 +454,7 @@ fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
     Ok(None)
 }
 
-pub fn analyze_solve_techniques<C: Clue>(
+pub fn analyze_line_solvabiltiy<C: Clue>(
     puzzle: &Puzzle<C>,
     grid: &Grid,
 ) -> (Vec<LineStatus>, Vec<LineStatus>) {
@@ -550,7 +550,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_analyze_solve_techniques() {
+    fn test_analyze_line_solvabiltiy() {
         let mut palette = HashMap::new();
         palette.insert(BACKGROUND, ColorInfo::default_bg());
         palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
@@ -571,7 +571,7 @@ mod tests {
         grid[[0, 0]] = Cell::from_color(BACKGROUND);
         grid[[1, 1]] = Cell::from_color(BACKGROUND);
 
-        let (row_tech, col_tech) = analyze_solve_techniques(&puzzle, &grid);
+        let (row_tech, col_tech) = analyze_line_solvabiltiy(&puzzle, &grid);
 
         assert_eq!(
             row_tech.into_iter().map(|r| r.ok()).collect::<Vec<_>>(),
