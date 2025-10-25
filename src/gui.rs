@@ -136,6 +136,8 @@ pub struct CanvasGui {
     pub redo_stack: Vec<Action>,
     pub current_tool: Tool,
     pub line_tool_state: Option<(usize, usize)>,
+    pub solved_mask: Vec<Vec<bool>>,
+    pub disambiguator: Disambiguator,
 }
 
 struct NonogramGui {
@@ -147,8 +149,6 @@ struct NonogramGui {
     auto_solve: bool,
     lines_to_affect_string: String,
     solve_report: String,
-    disambiguator: Disambiguator,
-    solved_mask: Vec<Vec<bool>>,
     solve_mode: bool,
     solve_gui: Option<SolveGui>,
 }
@@ -380,8 +380,6 @@ impl CanvasGui {
         &mut self,
         ui: &mut egui::Ui,
         scale: f32,
-        disambiguator: &Disambiguator,
-        solved_mask: &[Vec<bool>],
     ) {
         let x_size = self.picture.grid.len();
         let y_size = self.picture.grid.first().unwrap().len();
@@ -482,16 +480,16 @@ impl CanvasGui {
         }
 
         let mut shapes = vec![];
-        let disambig_report = &disambiguator.report;
+        let disambig_report = &self.disambiguator.report;
 
         for y in 0..y_size {
             for x in 0..x_size {
                 let cell = self.picture.grid[x][y];
                 let color_info = &self.picture.palette[&cell];
                 let solved = self.dirtiness != Dirtiness::Clean
-                    || solved_mask[x][y]
+                    || self.solved_mask[x][y]
                     || disambig_report.is_some()
-                    || (disambiguator.progress > 0.0 && disambiguator.progress < 1.0);
+                    || (self.disambiguator.progress > 0.0 && self.disambiguator.progress < 1.0);
                 let mut dr = (&self.picture.palette[&BACKGROUND], 1.0);
 
                 if let Some(disambig_report) = disambig_report.as_ref() {
@@ -664,6 +662,8 @@ impl NonogramGui {
                 redo_stack: vec![],
                 current_tool: Tool::Pencil,
                 line_tool_state: None,
+                solved_mask,
+                disambiguator: Disambiguator::new(),
             },
             file_name: "blank.xml".to_string(),
             scale: 16.0,
@@ -672,8 +672,6 @@ impl NonogramGui {
             auto_solve: false,
             lines_to_affect_string: "5".to_string(),
             solve_report: "".to_string(),
-            disambiguator: Disambiguator::new(),
-            solved_mask,
             solve_mode: false,
             solve_gui: None,
         }
@@ -893,7 +891,7 @@ impl NonogramGui {
                         solved_mask,
                     }) => {
                         self.solve_report = format!("{solve_counts} unsolved cells: {cells_left}");
-                        self.solved_mask = solved_mask;
+                        self.editor_gui.solved_mask = solved_mask;
                     }
                     Err(e) => self.solve_report = format!("Error: {:?}", e),
                 }
@@ -911,7 +909,7 @@ impl NonogramGui {
 
             ui.separator();
 
-            Disambiguator::disambig_widget(&mut self.disambiguator, &self.editor_gui.picture, ui);
+            self.editor_gui.disambiguator.disambig_widget(&self.editor_gui.picture, ui);
         });
     }
 
@@ -1122,36 +1120,36 @@ impl eframe::App for NonogramGui {
                     draw_dyn_row_clues(ui, &solve_gui.clues, self.scale);
                     solve_gui
                         .canvas
-                        .canvas(ui, self.scale, &self.disambiguator, &self.solved_mask);
+                        .canvas(ui, self.scale);
                 } else {
                     self.sidebar(ui);
                     self.editor_gui
-                        .canvas(ui, self.scale, &self.disambiguator, &self.solved_mask);
+                        .canvas(ui, self.scale);
                 }
             });
 
             if self.editor_gui.dirtiness == Dirtiness::DimensionsChanged {
-                self.solved_mask = vec![
+                self.editor_gui.solved_mask = vec![
                     vec![false; self.editor_gui.picture.grid[0].len()];
                     self.editor_gui.picture.grid.len()
                 ];
-                self.disambiguator.reset();
+                self.editor_gui.disambiguator.reset();
                 self.editor_gui.dirtiness = Dirtiness::CellsChanged;
             }
         });
     }
 }
 
-struct Disambiguator {
+pub struct Disambiguator {
     report: Option<Vec<Vec<(Color, f32)>>>,
-    terminate_s: mpsc::Sender<()>,
+    pub terminate_s: mpsc::Sender<()>,
     progress_r: mpsc::Receiver<f32>,
     progress: f32,
     report_r: mpsc::Receiver<Vec<Vec<(Color, f32)>>>,
 }
 
 impl Disambiguator {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Disambiguator {
             report: None,
             progress: 0.0,
@@ -1163,12 +1161,12 @@ impl Disambiguator {
 
     // Must do this any time the resolution changes!
     // (Currently that only happens through `ReplacePicture`)
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.report = None;
         self.progress = 0.0;
     }
 
-    fn disambig_widget(&mut self, picture: &Solution, ui: &mut egui::Ui) {
+    pub fn disambig_widget(&mut self, picture: &Solution, ui: &mut egui::Ui) {
         while let Ok(progress) = self.progress_r.try_recv() {
             self.progress = progress;
         }
