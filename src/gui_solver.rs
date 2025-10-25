@@ -7,10 +7,17 @@ use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 pub struct SolveGui {
     pub canvas: CanvasGui,
     pub clues: DynPuzzle,
+    pub intended_solution: Solution,
+    pub detect_errors: bool,
 }
 
 impl SolveGui {
-    pub fn new(picture: Solution, clues: DynPuzzle, current_color: Color) -> Self {
+    pub fn new(
+        picture: Solution,
+        clues: DynPuzzle,
+        current_color: Color,
+        intended_solution: Solution,
+    ) -> Self {
         let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
         SolveGui {
             canvas: CanvasGui {
@@ -26,13 +33,41 @@ impl SolveGui {
                 disambiguator: Disambiguator::new(),
             },
             clues,
+            intended_solution,
+            detect_errors: false,
         }
+    }
+
+    fn detect_any_errors(&self) -> bool {
+        for (x, row) in self.canvas.picture.grid.iter().enumerate() {
+            for (y, color) in row.iter().enumerate() {
+                if *color != self.intended_solution.grid[x][y]
+                    && *color != crate::puzzle::UNSOLVED
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn is_correctly_solved(&self) -> bool {
+        self.canvas.picture.grid == self.intended_solution.grid
     }
 
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(120.0);
             self.canvas.common_sidebar_items(ui, true);
+
+            ui.separator();
+
+            ui.checkbox(&mut self.detect_errors, "Detect errors");
+            if self.detect_errors && self.detect_any_errors() {
+                ui.colored_label(egui::Color32::RED, "Error detected");
+            } else if self.is_correctly_solved() {
+                ui.colored_label(egui::Color32::GREEN, "Correctly solved");
+            }
         });
     }
 }
