@@ -555,28 +555,16 @@ mod tests {
         palette.insert(BACKGROUND, ColorInfo::default_bg());
         palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
 
+        let clue = |n| {
+            vec![Nono {
+                color: Color(1),
+                count: n,
+            }]
+        };
         let puzzle = Puzzle {
             palette,
-            rows: vec![
-                vec![Nono {
-                    color: Color(1),
-                    count: 1,
-                }],
-                vec![Nono {
-                    color: Color(1),
-                    count: 1,
-                }],
-            ],
-            cols: vec![
-                vec![Nono {
-                    color: Color(1),
-                    count: 1,
-                }],
-                vec![Nono {
-                    color: Color(1),
-                    count: 2, // Contradiction
-                }],
-            ],
+            rows: vec![clue(1), clue(1)],
+            cols: vec![clue(1), clue(2)], // impossible
         };
 
         let mut grid = Grid::from_elem((2, 2), Cell::new(&puzzle));
@@ -586,10 +574,7 @@ mod tests {
         let (row_tech, col_tech) = analyze_solve_techniques(&puzzle, &grid);
 
         assert_eq!(
-            row_tech
-                .into_iter()
-                .map(|r| r.ok())
-                .collect::<Vec<_>>(),
+            row_tech.into_iter().map(|r| r.ok()).collect::<Vec<_>>(),
             vec![Some(Some(SolveMode::Skim)), Some(Some(SolveMode::Skim))]
         );
         assert!(col_tech[0].as_ref().is_ok());
