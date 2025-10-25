@@ -735,7 +735,7 @@ fn cell_shape(
                 to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 1.0),
                 to_screen * Pos2::new(x as f32 + 0.0, y as f32 + 0.5),
             ],
-            egui::Color32::from_rgb(96, 96, 96),
+            egui::Color32::from_rgb(230, 230, 230),
             egui::Stroke::default(),
         ));
     }
@@ -744,7 +744,7 @@ fn cell_shape(
         res.push(egui::Shape::circle_filled(
             to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 0.5),
             to_screen.scale().x * 0.3,
-            egui::Color32::from_rgb(128, 128, 128),
+            egui::Color32::from_rgb(190, 190, 190),
         ))
     }
 
