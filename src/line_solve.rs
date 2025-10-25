@@ -8,7 +8,7 @@ use anyhow::{Context, bail};
 use colored::{ColoredString, Colorize};
 use ndarray::{ArrayView1, ArrayViewMut1};
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum SolveMode {
     // Listed in order from quickest to most comprehensive:
     Skim,
