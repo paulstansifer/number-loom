@@ -405,15 +405,28 @@ impl CanvasGui {
             let y = canvas_pos.y as usize;
 
             if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
+                let pointer = &ui.input(|i| i.pointer.clone());
+                let (paint_color, drag_button) = if pointer.secondary_down() {
+                    (BACKGROUND, egui::PointerButton::Secondary)
+                } else if pointer.middle_down() {
+                    (UNSOLVED, egui::PointerButton::Middle)
+                } else {
+                    (self.current_color, egui::PointerButton::Primary)
+                };
+
                 match self.current_tool {
                     Tool::Pencil => {
-                        if response.clicked() || response.dragged() {
-                            let new_color = if self.picture.grid[x][y] == self.current_color {
+                        if response.clicked_by(drag_button) || response.dragged_by(drag_button) {
+                            let new_color = if drag_button == egui::PointerButton::Primary
+                                && self.picture.grid[x][y] == self.current_color
+                            {
                                 BACKGROUND
                             } else {
-                                self.current_color
+                                paint_color
                             };
-                            let mood = if response.clicked() || response.drag_started() {
+                            let mood = if response.clicked_by(drag_button)
+                                || response.drag_started_by(drag_button)
+                            {
                                 self.drag_start_color = new_color;
                                 ActionMood::Normal
                             } else {
@@ -426,16 +439,23 @@ impl CanvasGui {
                         }
                     }
                     Tool::FloodFill => {
-                        if response.clicked() {
+                        if response.clicked_by(drag_button) {
+                            let original_color = self.current_color;
+                            self.current_color = paint_color;
                             self.flood_fill(x, y);
+                            self.current_color = original_color;
                         }
                     }
                     Tool::OrthographicLine => {
-                        if response.clicked() || response.drag_started() {
-                            let new_color = if self.picture.grid[x][y] == self.current_color {
+                        if response.clicked_by(drag_button)
+                            || response.drag_started_by(drag_button)
+                        {
+                            let new_color = if drag_button == egui::PointerButton::Primary
+                                && self.picture.grid[x][y] == self.current_color
+                            {
                                 BACKGROUND
                             } else {
-                                self.current_color
+                                paint_color
                             };
                             self.drag_start_color = new_color;
 
@@ -447,7 +467,7 @@ impl CanvasGui {
                                 },
                                 ActionMood::Normal,
                             );
-                        } else if response.dragged() {
+                        } else if response.dragged_by(drag_button) {
                             if let Some((start_x, start_y)) = self.line_tool_state {
                                 let mut new_points = HashMap::new();
 
