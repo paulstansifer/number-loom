@@ -31,7 +31,7 @@ pub enum Tool {
 use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
-    gui_solver::{draw_dyn_col_clues, draw_dyn_row_clues, SolveGui},
+    gui_solver::{Orientation, SolveGui, draw_dyn_clues},
     import,
     puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, Solution, UNSOLVED},
 };
@@ -376,11 +376,7 @@ impl CanvasGui {
         }
     }
 
-    fn canvas(
-        &mut self,
-        ui: &mut egui::Ui,
-        scale: f32,
-    ) {
+    fn canvas(&mut self, ui: &mut egui::Ui, scale: f32) {
         let x_size = self.picture.grid.len();
         let y_size = self.picture.grid.first().unwrap().len();
 
@@ -913,7 +909,9 @@ impl NonogramGui {
 
             ui.separator();
 
-            self.editor_gui.disambiguator.disambig_widget(&self.editor_gui.picture, ui);
+            self.editor_gui
+                .disambiguator
+                .disambig_widget(&self.editor_gui.picture, ui);
         });
     }
 
@@ -1124,10 +1122,10 @@ impl eframe::App for NonogramGui {
                     solve_gui.sidebar(ui);
                     egui::Grid::new("solve_grid").show(ui, |ui| {
                         ui.label(""); // Top-left is empty
-                        draw_dyn_col_clues(ui, &solve_gui.clues, self.scale);
+                        draw_dyn_clues(ui, &solve_gui.clues, self.scale, Orientation::Vertical);
                         ui.end_row();
 
-                        draw_dyn_row_clues(ui, &solve_gui.clues, self.scale);
+                        draw_dyn_clues(ui, &solve_gui.clues, self.scale, Orientation::Horizontal);
                         solve_gui.canvas.canvas(ui, self.scale);
                         ui.end_row();
                     });
@@ -1138,10 +1136,11 @@ impl eframe::App for NonogramGui {
             });
 
             if self.editor_gui.dirtiness == Dirtiness::DimensionsChanged {
-                self.editor_gui.solved_mask = vec![
-                    vec![false; self.editor_gui.picture.grid[0].len()];
-                    self.editor_gui.picture.grid.len()
-                ];
+                self.editor_gui.solved_mask =
+                    vec![
+                        vec![false; self.editor_gui.picture.grid[0].len()];
+                        self.editor_gui.picture.grid.len()
+                    ];
                 self.editor_gui.disambiguator.reset();
                 self.editor_gui.dirtiness = Dirtiness::CellsChanged;
             }

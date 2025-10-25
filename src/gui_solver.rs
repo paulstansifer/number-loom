@@ -2,7 +2,7 @@ use crate::{
     gui::{CanvasGui, Dirtiness, Disambiguator, Tool},
     puzzle::{Color, DynPuzzle, Solution},
 };
-use egui::{text::Fonts, Color32, Pos2, Rect, Vec2};
+use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
 pub struct SolveGui {
     pub canvas: CanvasGui,
@@ -41,8 +41,7 @@ impl SolveGui {
     fn detect_any_errors(&self) -> bool {
         for (x, row) in self.canvas.picture.grid.iter().enumerate() {
             for (y, color) in row.iter().enumerate() {
-                if *color != self.intended_solution.grid[x][y]
-                    && *color != crate::puzzle::UNSOLVED
+                if *color != self.intended_solution.grid[x][y] && *color != crate::puzzle::UNSOLVED
                 {
                     return true;
                 }
@@ -73,7 +72,7 @@ impl SolveGui {
 }
 
 #[derive(Clone, Copy)]
-enum Orientation {
+pub enum Orientation {
     Horizontal,
     Vertical,
 }
@@ -206,24 +205,13 @@ fn draw_clues<C: crate::puzzle::Clue>(
     }
 }
 
-pub fn draw_dyn_col_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32) {
+pub fn draw_dyn_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32, orientation: Orientation) {
     match puzzle {
         DynPuzzle::Nono(puzzle) => {
-            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, Orientation::Vertical);
+            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, orientation);
         }
         DynPuzzle::Triano(puzzle) => {
-            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, Orientation::Vertical);
-        }
-    }
-}
-
-pub fn draw_dyn_row_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32) {
-    match puzzle {
-        DynPuzzle::Nono(puzzle) => {
-            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, Orientation::Horizontal);
-        }
-        DynPuzzle::Triano(puzzle) => {
-            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, Orientation::Horizontal);
+            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, orientation);
         }
     }
 }
