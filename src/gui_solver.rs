@@ -37,6 +37,119 @@ impl SolveGui {
     }
 }
 
+fn draw_col_clues<C: crate::puzzle::Clue>(
+    ui: &mut egui::Ui,
+    puzzle: &crate::puzzle::Puzzle<C>,
+    scale: f32,
+) {
+    let base_font = egui::FontId::monospace(scale * 0.7);
+
+    let text_width = |fonts: &Fonts, t: &str| {
+        fonts
+            .layout_no_wrap(t.to_string(), base_font.clone(), Color32::BLACK)
+            .rect
+            .width()
+    };
+
+    let (width_2, width_3) = ui.fonts(|f| {
+        (
+            f32::max(text_width(f, "00") / (scale * 0.7), 1.0),
+            f32::max(text_width(f, "000") / (scale * 0.7), 1.0),
+        )
+    });
+    let fonts_by_digit = vec![
+        base_font.clone(),
+        base_font,
+        egui::FontId::monospace(scale * 0.7 / width_2),
+        egui::FontId::monospace(scale * 0.7 / width_3),
+    ];
+
+    let puzz_padding = 5.0;
+    let between_clues = scale * 0.5;
+    let box_side = scale * 0.9;
+    let box_margin = (scale - box_side) / 2.0;
+
+    let mut max_height: f32 = 0.0;
+    for col in &puzzle.cols {
+        let mut this_height = 0.0;
+        for clue in col {
+            this_height += box_side * (clue.express(puzzle).len() as f32) + between_clues;
+        }
+        max_height = max_height.max(this_height);
+    }
+    max_height += puzz_padding;
+
+    let (response, painter) = ui.allocate_painter(
+        Vec2::new(scale * puzzle.cols.len() as f32, max_height) + Vec2::new(2.0, 2.0),
+        egui::Sense::empty(),
+    );
+
+    for x in 0..puzzle.cols.len() {
+        let col_clues = &puzzle.cols[x];
+        let mut current_y = response.rect.max.y - puzz_padding;
+
+        for clue in col_clues.iter().rev() {
+            let expressed_clues = clue.express(puzzle);
+
+            for (color_info, len) in expressed_clues.into_iter().rev() {
+                let (r, g, b) = color_info.rgb;
+                let bg_color = egui::Color32::from_rgb(r, g, b);
+
+                let corner_b_l = Pos2::new(
+                    response.rect.min.x + (x as f32) * scale + box_margin,
+                    current_y,
+                );
+
+                if let Some(len) = len {
+                    assert!(len > 0);
+
+                    let clue_txt = len.to_string();
+                    let clue_font = fonts_by_digit[clue_txt.len()].clone();
+
+                    let corner_u_l = corner_b_l + Vec2::new(0.0, -box_side);
+
+                    painter.rect_filled(
+                        Rect::from_min_size(corner_u_l, Vec2::new(box_side, box_side)),
+                        0.0,
+                        bg_color,
+                    );
+                    painter.text(
+                        corner_u_l + Vec2::new(box_side / 2.0, box_side / 2.0),
+                        egui::Align2::CENTER_CENTER,
+                        clue_txt,
+                        clue_font,
+                        egui::Color32::WHITE,
+                    );
+                    current_y -= box_side;
+                } else {
+                    let mut triangle = crate::gui::triangle_shape(
+                        color_info.corner.expect("must be a corner"),
+                        bg_color,
+                        Vec2::new(box_side, box_side),
+                    );
+                    let corner_u_l = corner_b_l + Vec2::new(0.0, -box_side);
+                    triangle.translate(corner_u_l.to_vec2());
+                    current_y -= box_side;
+
+                    painter.add(triangle);
+                }
+            }
+            current_y -= between_clues;
+        }
+    }
+}
+
+pub fn draw_dyn_col_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32) {
+    match puzzle {
+        DynPuzzle::Nono(puzzle) => {
+            draw_col_clues::<crate::puzzle::Nono>(ui, puzzle, scale);
+        }
+        DynPuzzle::Triano(puzzle) => {
+            draw_col_clues::<crate::puzzle::Triano>(ui, puzzle, scale);
+        }
+    }
+}
+
 pub fn draw_dyn_row_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32) {
     match puzzle {
         DynPuzzle::Nono(puzzle) => {

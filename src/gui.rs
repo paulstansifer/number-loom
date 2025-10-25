@@ -31,7 +31,7 @@ pub enum Tool {
 use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
-    gui_solver::{SolveGui, draw_dyn_row_clues},
+    gui_solver::{draw_dyn_col_clues, draw_dyn_row_clues, SolveGui},
     import,
     puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, Solution, UNSOLVED},
 };
@@ -1121,14 +1121,16 @@ impl eframe::App for NonogramGui {
             ui.horizontal(|ui| {
                 if let Some(solve_gui) = &mut self.solve_gui {
                     solve_gui.sidebar(ui);
-                    draw_dyn_row_clues(ui, &solve_gui.clues, self.scale);
-                    solve_gui
-                        .canvas
-                        .canvas(ui, self.scale);
+                    ui.vertical(|ui| {
+                        draw_dyn_col_clues(ui, &solve_gui.clues, self.scale);
+                        ui.horizontal(|ui| {
+                            draw_dyn_row_clues(ui, &solve_gui.clues, self.scale);
+                            solve_gui.canvas.canvas(ui, self.scale);
+                        });
+                    });
                 } else {
                     self.sidebar(ui);
-                    self.editor_gui
-                        .canvas(ui, self.scale);
+                    self.editor_gui.canvas(ui, self.scale);
                 }
             });
 
