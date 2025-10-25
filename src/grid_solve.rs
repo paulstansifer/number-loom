@@ -10,10 +10,11 @@ use crate::{
         Cell, ModeMap, ScrubReport, SolveMode, exhaust_line, scrub_heuristic, skim_heuristic,
         skim_line,
     },
-    puzzle::{BACKGROUND, Clue, Color, Puzzle, Solution},
+    puzzle::{BACKGROUND, Clue, Color, Puzzle, Solution, UNSOLVED},
 };
 
 type Grid = ndarray::Array2<Cell>;
+pub type LineStatus = anyhow::Result<Option<SolveMode>>;
 
 pub struct Report {
     pub solve_counts: ModeMap<usize>,
@@ -262,6 +263,23 @@ where
     }
 }
 
+pub fn grid_from_solution<C: Clue>(solution: &Solution, puzzle: &Puzzle<C>) -> Grid {
+    let mut grid = Grid::from_elem(
+        (solution.x_size(), solution.y_size()),
+        Cell::new_impossible(),
+    );
+    for (x, row) in solution.grid.iter().enumerate() {
+        for (y, color) in row.iter().enumerate() {
+            if *color == UNSOLVED {
+                grid[[x, y]] = Cell::new(puzzle);
+            } else {
+                grid[[x, y]] = Cell::from_color(*color);
+            }
+        }
+    }
+    grid
+}
+
 pub fn solve<C: Clue>(
     puzzle: &Puzzle<C>,
     line_cache: &mut Option<LineCache<C>>,
@@ -411,6 +429,48 @@ pub fn solve<C: Clue>(
     }
 }
 
+fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
+    let any_newly_known = |original_lane: ArrayView1<Cell>, new_lane: ArrayView1<Cell>| -> bool {
+        original_lane
+            .iter()
+            .zip(new_lane.iter())
+            .any(|(orig, new)| !orig.is_known() && new.is_known())
+    };
+
+    // Try skimming
+    let mut skim_lane = lane.to_owned();
+    skim_line(clues, &mut skim_lane.view_mut())?;
+    if any_newly_known(lane, skim_lane.view()) {
+        return Ok(Some(SolveMode::Skim));
+    }
+
+    // Try scrubbing
+    let mut scrub_lane = lane.to_owned();
+    exhaust_line(clues, &mut scrub_lane.view_mut())?;
+    if any_newly_known(lane, scrub_lane.view()) {
+        return Ok(Some(SolveMode::Scrub));
+    }
+
+    Ok(None)
+}
+
+pub fn analyze_solve_techniques<C: Clue>(
+    puzzle: &Puzzle<C>,
+    grid: &Grid,
+) -> (Vec<LineStatus>, Vec<LineStatus>) {
+    let mut row_techniques = vec![];
+    for (idx, clues) in puzzle.rows.iter().enumerate() {
+        row_techniques.push(analyze_line(clues, grid.row(idx)));
+    }
+
+    let mut col_techniques = vec![];
+    for (idx, clues) in puzzle.cols.iter().enumerate() {
+        col_techniques.push(analyze_line(clues, grid.column(idx)));
+    }
+
+    (row_techniques, col_techniques)
+}
+
 pub async fn disambig_candidates(
     s: &Solution,
     progress: mpsc::Sender<f32>,
@@ -479,4 +539,85 @@ pub async fn disambig_candidates(
     progress.send(1.0).unwrap();
 
     return res;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::puzzle::{ColorInfo, Nono};
+
+    use super::*;
+
+    #[test]
+    fn test_analyze_solve_techniques() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+
+        let puzzle = Puzzle {
+            palette,
+            rows: vec![
+                vec![Nono {
+                    color: Color(1),
+                    count: 1,
+                }],
+                vec![Nono {
+                    color: Color(1),
+                    count: 1,
+                }],
+            ],
+            cols: vec![
+                vec![Nono {
+                    color: Color(1),
+                    count: 1,
+                }],
+                vec![Nono {
+                    color: Color(1),
+                    count: 2, // Contradiction
+                }],
+            ],
+        };
+
+        let mut grid = Grid::from_elem((2, 2), Cell::new(&puzzle));
+        grid[[0, 0]] = Cell::from_color(BACKGROUND);
+        grid[[1, 1]] = Cell::from_color(BACKGROUND);
+
+        let (row_tech, col_tech) = analyze_solve_techniques(&puzzle, &grid);
+
+        assert_eq!(
+            row_tech
+                .into_iter()
+                .map(|r| r.ok())
+                .collect::<Vec<_>>(),
+            vec![Some(Some(SolveMode::Skim)), Some(Some(SolveMode::Skim))]
+        );
+        assert!(col_tech[0].as_ref().is_ok());
+        assert!(col_tech[1].is_err());
+    }
+
+    #[test]
+    fn test_grid_from_solution() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+
+        let puzzle: Puzzle<Nono> = Puzzle {
+            palette,
+            rows: vec![vec![]],
+            cols: vec![vec![]],
+        };
+
+        let solution = Solution {
+            clue_style: crate::puzzle::ClueStyle::Nono,
+            palette: puzzle.palette.clone(),
+            grid: vec![vec![BACKGROUND, UNSOLVED]],
+        };
+
+        let grid = grid_from_solution(&solution, &puzzle);
+        assert!(grid[[0, 0]].is_known_to_be(BACKGROUND));
+        assert!(!grid[[0, 1]].is_known());
+        assert!(grid[[0, 1]].can_be(BACKGROUND));
+        assert!(grid[[0, 1]].can_be(Color(1)));
+    }
 }
