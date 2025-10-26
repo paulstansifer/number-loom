@@ -134,7 +134,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
         egui::FontId::monospace(scale * 0.7 / width_3),
     ];
 
-    let puzz_padding = 5.0;
+    let puzz_padding = 8.0;
     let between_clues = scale * 0.5;
     let box_side = scale * 0.9;
     let box_margin = (scale - box_side) / 2.0;
