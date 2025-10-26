@@ -9,6 +9,7 @@ pub struct SolveGui {
     pub canvas: CanvasGui,
     pub clues: DynPuzzle,
     pub intended_solution: Solution,
+    pub analyze_lines: bool,
     pub detect_errors: bool,
     pub line_analysis: Option<(Vec<LineStatus>, Vec<LineStatus>)>,
 }
@@ -36,6 +37,7 @@ impl SolveGui {
             },
             clues,
             intended_solution,
+            analyze_lines: false,
             detect_errors: false,
             line_analysis: None,
         }
@@ -64,7 +66,8 @@ impl SolveGui {
 
             ui.separator();
 
-            if ui.button("Analyze Lines").clicked() {
+            ui.checkbox(&mut self.analyze_lines, "[auto]");
+            if ui.button("Analyze Lines").clicked() || self.analyze_lines {
                 self.line_analysis = Some(match &self.clues {
                     DynPuzzle::Nono(puzzle) => {
                         let grid =
@@ -81,10 +84,13 @@ impl SolveGui {
 
             ui.separator();
 
-            ui.checkbox(&mut self.detect_errors, "Detect errors");
-            if self.detect_errors && self.detect_any_errors() {
-                ui.colored_label(egui::Color32::RED, "Error detected");
-            } else if self.is_correctly_solved() {
+            ui.checkbox(&mut self.detect_errors, "[auto]");
+            if ui.button("Detect errors").clicked() || self.detect_errors {
+                if self.detect_any_errors() {
+                    ui.colored_label(egui::Color32::RED, "Error detected");
+                }
+            }
+            if self.is_correctly_solved() {
                 ui.colored_label(egui::Color32::GREEN, "Correctly solved");
             }
         });
