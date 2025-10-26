@@ -134,7 +134,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
         egui::FontId::monospace(scale * 0.7 / width_3),
     ];
 
-    let puzz_padding = 8.0;
+    let puzz_padding = 10.0;
     let between_clues = scale * 0.5;
     let box_side = scale * 0.9;
     let box_margin = (scale - box_side) / 2.0;
@@ -194,7 +194,21 @@ fn draw_clues<C: crate::puzzle::Clue>(
                     ));
                 }
                 Err(_) => {
-                    painter.circle_filled(center, radius, Color32::RED);
+                    let stroke = egui::Stroke::new(2.0, Color32::RED);
+                    painter.line_segment(
+                        [
+                            center + Vec2::new(-radius, -radius),
+                            center + Vec2::new(radius, radius),
+                        ],
+                        stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            center + Vec2::new(radius, -radius),
+                            center + Vec2::new(-radius, radius),
+                        ],
+                        stroke,
+                    );
                 }
                 _ => {}
             }
