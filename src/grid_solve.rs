@@ -24,7 +24,7 @@ impl Default for SolveOptions {
     fn default() -> Self {
         SolveOptions {
             trace_solve: false,
-            display_cli_progress: true,
+            display_cli_progress: false,
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
         }

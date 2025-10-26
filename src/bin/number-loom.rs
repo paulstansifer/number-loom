@@ -122,6 +122,7 @@ fn main() -> std::io::Result<()> {
         None => {
             let options = grid_solve::SolveOptions {
                 trace_solve: args.trace_solve,
+                display_cli_progress: true,
                 ..Default::default()
             };
             match document.puzzle().solve_with_args(&options) {
