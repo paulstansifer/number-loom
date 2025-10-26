@@ -248,12 +248,13 @@ impl DynSolveCache {
     }
 
     pub fn solve(&mut self, p: &DynPuzzle) -> anyhow::Result<crate::grid_solve::Report> {
+        let options = crate::grid_solve::SolveOptions::default();
         match p {
             DynPuzzle::Nono(puzzle) => {
-                crate::grid_solve::solve(puzzle, &mut self.nono_cache, false)
+                crate::grid_solve::solve(puzzle, &mut self.nono_cache, &options)
             }
             DynPuzzle::Triano(puzzle) => {
-                crate::grid_solve::solve(puzzle, &mut self.triano_cache, false)
+                crate::grid_solve::solve(puzzle, &mut self.triano_cache, &options)
             }
         }
     }
@@ -261,16 +262,20 @@ impl DynSolveCache {
 
 impl DynPuzzle {
     pub fn plain_solve(&self) -> anyhow::Result<crate::grid_solve::Report> {
+        let options = crate::grid_solve::SolveOptions::default();
         match self {
-            DynPuzzle::Nono(puzzle) => crate::grid_solve::solve(puzzle, &mut None, false),
-            DynPuzzle::Triano(puzzle) => crate::grid_solve::solve(puzzle, &mut None, false),
+            DynPuzzle::Nono(puzzle) => crate::grid_solve::solve(puzzle, &mut None, &options),
+            DynPuzzle::Triano(puzzle) => crate::grid_solve::solve(puzzle, &mut None, &options),
         }
     }
 
-    pub fn solve_with_args(&self, trace_solve: bool) -> anyhow::Result<crate::grid_solve::Report> {
+    pub fn solve_with_args(
+        &self,
+        options: &crate::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::grid_solve::Report> {
         match self {
-            DynPuzzle::Nono(puzzle) => crate::grid_solve::solve(puzzle, &mut None, trace_solve),
-            DynPuzzle::Triano(puzzle) => crate::grid_solve::solve(puzzle, &mut None, trace_solve),
+            DynPuzzle::Nono(puzzle) => crate::grid_solve::solve(puzzle, &mut None, options),
+            DynPuzzle::Triano(puzzle) => crate::grid_solve::solve(puzzle, &mut None, options),
         }
     }
 

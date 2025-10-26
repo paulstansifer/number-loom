@@ -119,10 +119,15 @@ fn main() -> std::io::Result<()> {
             export::save(&mut document, &path, args.output_format).unwrap();
         }
 
-        None => match document.puzzle().solve_with_args(args.trace_solve) {
-            Ok(grid_solve::Report {
-                solve_counts,
-                cells_left,
+        None => {
+            let options = grid_solve::SolveOptions {
+                trace_solve: args.trace_solve,
+                ..Default::default()
+            };
+            match document.puzzle().solve_with_args(&options) {
+                Ok(grid_solve::Report {
+                    solve_counts,
+                    cells_left,
                 solution: _solution,
                 solved_mask: _solved_mask,
             }) => {
@@ -138,8 +143,8 @@ fn main() -> std::io::Result<()> {
                 eprintln!("Error: {:?}", e);
                 std::process::exit(1);
             }
-        },
-    }
+        }
+    }}
 
     Ok(())
 }
