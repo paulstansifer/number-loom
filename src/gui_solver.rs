@@ -1,6 +1,7 @@
 use crate::{
-    gui::{CanvasGui, Dirtiness, Disambiguator, Tool},
-    puzzle::{Color, DynPuzzle, Solution},
+    grid_solve,
+    gui::{Action, ActionMood, CanvasGui, Dirtiness, Disambiguator, Tool},
+    puzzle::{Color, DynPuzzle, Solution, BACKGROUND},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
@@ -9,6 +10,7 @@ pub struct SolveGui {
     pub clues: DynPuzzle,
     pub intended_solution: Solution,
     pub detect_errors: bool,
+    pub infer_background: bool,
 }
 
 impl SolveGui {
@@ -35,6 +37,7 @@ impl SolveGui {
             clues,
             intended_solution,
             detect_errors: false,
+            infer_background: false,
         }
     }
 
@@ -54,6 +57,52 @@ impl SolveGui {
         self.canvas.picture.grid == self.intended_solution.grid
     }
 
+    fn infer_background_for_puzzle<C: crate::puzzle::Clue>(
+        &self,
+        puzzle: &crate::puzzle::Puzzle<C>,
+        options: &grid_solve::SolveOptions,
+    ) -> Option<std::collections::HashMap<(usize, usize), Color>> {
+        let mut grid = grid_solve::grid_from_solution(&self.canvas.picture, puzzle);
+        if let Ok(report) = grid_solve::solve_grid(puzzle, &mut None, options, &mut grid) {
+            let mut changes = std::collections::HashMap::new();
+            for (x, row) in report.solution.grid.iter().enumerate() {
+                for (y, color) in row.iter().enumerate() {
+                    if *color == BACKGROUND && self.canvas.picture.grid[x][y] != BACKGROUND {
+                        changes.insert((x, y), BACKGROUND);
+                    }
+                }
+            }
+            if !changes.is_empty() {
+                return Some(changes);
+            }
+        }
+        None
+    }
+
+    fn infer_background(&mut self) {
+        if self.canvas.dirtiness == Dirtiness::Clean {
+            return;
+        }
+
+        let options = grid_solve::SolveOptions {
+            max_effort: crate::line_solve::SolveMode::Skim,
+            only_solve_color: Some(BACKGROUND),
+            ..Default::default()
+        };
+
+        let changes = self.clues.specialize(
+            |puzzle| self.infer_background_for_puzzle(puzzle, &options),
+            |puzzle| self.infer_background_for_puzzle(puzzle, &options),
+        );
+
+        if let Some(changes) = changes {
+            self.canvas
+                .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+        }
+
+        self.canvas.dirtiness = Dirtiness::Clean;
+    }
+
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(120.0);
@@ -66,6 +115,13 @@ impl SolveGui {
                 ui.colored_label(egui::Color32::RED, "Error detected");
             } else if self.is_correctly_solved() {
                 ui.colored_label(egui::Color32::GREEN, "Correctly solved");
+            }
+
+            ui.separator();
+
+            ui.checkbox(&mut self.infer_background, "Infer background");
+            if ui.button("Infer background").clicked() || (self.infer_background && self.canvas.dirtiness > Dirtiness::Clean) {
+                self.infer_background();
             }
         });
     }
