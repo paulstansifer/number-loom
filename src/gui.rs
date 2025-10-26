@@ -1122,10 +1122,22 @@ impl eframe::App for NonogramGui {
                     solve_gui.sidebar(ui);
                     egui::Grid::new("solve_grid").show(ui, |ui| {
                         ui.label(""); // Top-left is empty
-                        draw_dyn_clues(ui, &solve_gui.clues, self.scale, Orientation::Vertical);
+                        draw_dyn_clues(
+                            ui,
+                            &solve_gui.clues,
+                            self.scale,
+                            Orientation::Vertical,
+                            solve_gui.line_analysis.as_ref().map(|la| &la.1[..]),
+                        );
                         ui.end_row();
 
-                        draw_dyn_clues(ui, &solve_gui.clues, self.scale, Orientation::Horizontal);
+                        draw_dyn_clues(
+                            ui,
+                            &solve_gui.clues,
+                            self.scale,
+                            Orientation::Horizontal,
+                            solve_gui.line_analysis.as_ref().map(|la| &la.0[..]),
+                        );
                         solve_gui.canvas.canvas(ui, self.scale);
                         ui.end_row();
                     });

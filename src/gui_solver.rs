@@ -1,7 +1,8 @@
 use crate::{
     grid_solve,
+    grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Dirtiness, Disambiguator, Tool},
-    puzzle::{Color, DynPuzzle, Solution, BACKGROUND},
+    puzzle::{BACKGROUND, Color, DynPuzzle, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
@@ -9,8 +10,10 @@ pub struct SolveGui {
     pub canvas: CanvasGui,
     pub clues: DynPuzzle,
     pub intended_solution: Solution,
+    pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
+    pub line_analysis: Option<(Vec<LineStatus>, Vec<LineStatus>)>,
 }
 
 impl SolveGui {
@@ -36,8 +39,10 @@ impl SolveGui {
             },
             clues,
             intended_solution,
+            analyze_lines: false,
             detect_errors: false,
             infer_background: false,
+            line_analysis: None,
         }
     }
 
@@ -110,17 +115,40 @@ impl SolveGui {
 
             ui.separator();
 
-            ui.checkbox(&mut self.detect_errors, "Detect errors");
-            if self.detect_errors && self.detect_any_errors() {
-                ui.colored_label(egui::Color32::RED, "Error detected");
-            } else if self.is_correctly_solved() {
+            ui.checkbox(&mut self.analyze_lines, "[auto]");
+            if ui.button("Analyze Lines").clicked() || self.analyze_lines {
+                self.line_analysis = Some(match &self.clues {
+                    DynPuzzle::Nono(puzzle) => {
+                        let grid =
+                            crate::grid_solve::grid_from_solution(&self.canvas.picture, puzzle);
+                        crate::grid_solve::analyze_lines(puzzle, &grid)
+                    }
+                    DynPuzzle::Triano(puzzle) => {
+                        let grid =
+                            crate::grid_solve::grid_from_solution(&self.canvas.picture, puzzle);
+                        crate::grid_solve::analyze_lines(puzzle, &grid)
+                    }
+                });
+            }
+
+            ui.separator();
+
+            ui.checkbox(&mut self.detect_errors, "[auto]");
+            if ui.button("Detect errors").clicked() || self.detect_errors {
+                if self.detect_any_errors() {
+                    ui.colored_label(egui::Color32::RED, "Error detected");
+                }
+            }
+            if self.is_correctly_solved() {
                 ui.colored_label(egui::Color32::GREEN, "Correctly solved");
             }
 
             ui.separator();
 
             ui.checkbox(&mut self.infer_background, "Infer background");
-            if ui.button("Infer background").clicked() || (self.infer_background && self.canvas.dirtiness > Dirtiness::Clean) {
+            if ui.button("Infer background").clicked()
+                || (self.infer_background && self.canvas.dirtiness > Dirtiness::Clean)
+            {
                 self.infer_background();
             }
         });
@@ -133,11 +161,14 @@ pub enum Orientation {
     Vertical,
 }
 
+use crate::line_solve::SolveMode;
+
 fn draw_clues<C: crate::puzzle::Clue>(
     ui: &mut egui::Ui,
     puzzle: &crate::puzzle::Puzzle<C>,
     scale: f32,
     orientation: Orientation,
+    line_analysis: Option<&[LineStatus]>,
 ) {
     let base_font = egui::FontId::monospace(scale * 0.7);
 
@@ -161,7 +192,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
         egui::FontId::monospace(scale * 0.7 / width_3),
     ];
 
-    let puzz_padding = 5.0;
+    let puzz_padding = 10.0;
     let between_clues = scale * 0.5;
     let box_side = scale * 0.9;
     let box_margin = (scale - box_side) / 2.0;
@@ -190,6 +221,57 @@ fn draw_clues<C: crate::puzzle::Clue>(
     );
 
     for i in 0..clues_vec.len() {
+        if let Some(analysis) = line_analysis {
+            let center = match orientation {
+                Orientation::Horizontal => Pos2::new(
+                    response.rect.max.x - puzz_padding / 2.0,
+                    response.rect.min.y + (i as f32 + 0.5) * scale,
+                ),
+                Orientation::Vertical => Pos2::new(
+                    response.rect.min.x + (i as f32 + 0.5) * scale,
+                    response.rect.max.y - puzz_padding / 2.0,
+                ),
+            };
+            let radius = scale * 0.2;
+
+            match &analysis[i] {
+                Ok(Some(SolveMode::Skim)) => {
+                    painter.circle_filled(center, radius, Color32::BLACK);
+                }
+                Ok(Some(SolveMode::Scrub)) => {
+                    let points = vec![
+                        center + Vec2::new(0.0, -radius),
+                        center + Vec2::new(radius, 0.0),
+                        center + Vec2::new(0.0, radius),
+                        center + Vec2::new(-radius, 0.0),
+                    ];
+                    painter.add(egui::Shape::convex_polygon(
+                        points,
+                        Color32::BLACK,
+                        egui::Stroke::NONE,
+                    ));
+                }
+                Err(_) => {
+                    let stroke = egui::Stroke::new(2.0, Color32::RED);
+                    painter.line_segment(
+                        [
+                            center + Vec2::new(-radius, -radius),
+                            center + Vec2::new(radius, radius),
+                        ],
+                        stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            center + Vec2::new(radius, -radius),
+                            center + Vec2::new(-radius, radius),
+                        ],
+                        stroke,
+                    );
+                }
+                _ => {}
+            }
+        }
+
         let line_clues = &clues_vec[i];
         let mut current_pos = match orientation {
             Orientation::Horizontal => response.rect.max.x - puzz_padding,
@@ -261,13 +343,19 @@ fn draw_clues<C: crate::puzzle::Clue>(
     }
 }
 
-pub fn draw_dyn_clues(ui: &mut egui::Ui, puzzle: &DynPuzzle, scale: f32, orientation: Orientation) {
+pub fn draw_dyn_clues(
+    ui: &mut egui::Ui,
+    puzzle: &DynPuzzle,
+    scale: f32,
+    orientation: Orientation,
+    line_analysis: Option<&[LineStatus]>,
+) {
     match puzzle {
         DynPuzzle::Nono(puzzle) => {
-            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, orientation);
+            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, orientation, line_analysis);
         }
         DynPuzzle::Triano(puzzle) => {
-            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, orientation);
+            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, orientation, line_analysis);
         }
     }
 }
