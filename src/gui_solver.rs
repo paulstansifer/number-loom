@@ -9,7 +9,6 @@ pub struct SolveGui {
     pub canvas: CanvasGui,
     pub clues: DynPuzzle,
     pub intended_solution: Solution,
-    pub analyze_lines: bool,
     pub detect_errors: bool,
     pub line_analysis: Option<(Vec<LineStatus>, Vec<LineStatus>)>,
 }
@@ -37,7 +36,6 @@ impl SolveGui {
             },
             clues,
             intended_solution,
-            analyze_lines: false,
             detect_errors: false,
             line_analysis: None,
         }
@@ -66,8 +64,7 @@ impl SolveGui {
 
             ui.separator();
 
-            ui.checkbox(&mut self.analyze_lines, "[auto]");
-            if ui.button("Analyze Lines").clicked() || self.analyze_lines {
+            if ui.button("Analyze Lines").clicked() {
                 self.line_analysis = Some(match &self.clues {
                     DynPuzzle::Nono(puzzle) => {
                         let grid =
@@ -84,13 +81,10 @@ impl SolveGui {
 
             ui.separator();
 
-            ui.checkbox(&mut self.detect_errors, "[auto]");
-            if ui.button("Detect errors").clicked() || self.detect_errors {
-                if self.detect_any_errors() {
-                    ui.colored_label(egui::Color32::RED, "Error detected");
-                }
-            }
-            if self.is_correctly_solved() {
+            ui.checkbox(&mut self.detect_errors, "Detect errors");
+            if self.detect_errors && self.detect_any_errors() {
+                ui.colored_label(egui::Color32::RED, "Error detected");
+            } else if self.is_correctly_solved() {
                 ui.colored_label(egui::Color32::GREEN, "Correctly solved");
             }
         });
@@ -134,7 +128,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
         egui::FontId::monospace(scale * 0.7 / width_3),
     ];
 
-    let puzz_padding = 8.0;
+    let puzz_padding = 5.0;
     let between_clues = scale * 0.5;
     let box_side = scale * 0.9;
     let box_margin = (scale - box_side) / 2.0;
@@ -194,7 +188,21 @@ fn draw_clues<C: crate::puzzle::Clue>(
                     ));
                 }
                 Err(_) => {
-                    painter.circle_filled(center, radius, Color32::RED);
+                    let stroke = egui::Stroke::new(1.0, Color32::RED);
+                    painter.line_segment(
+                        [
+                            center + Vec2::new(-radius, -radius),
+                            center + Vec2::new(radius, radius),
+                        ],
+                        stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            center + Vec2::new(radius, -radius),
+                            center + Vec2::new(-radius, radius),
+                        ],
+                        stroke,
+                    );
                 }
                 _ => {}
             }
