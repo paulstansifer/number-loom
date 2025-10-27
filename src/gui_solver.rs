@@ -126,17 +126,17 @@ impl SolveGui {
             ui.radio_value(
                 &mut self.render_style,
                 RenderStyle::TraditionalDots,
-                "traditional (dots mark background)",
+                "traditional (dots)",
             );
             ui.radio_value(
                 &mut self.render_style,
                 RenderStyle::TraditionalXes,
-                "traditional (Xes mark background)",
+                "traditional (Xes)",
             );
             ui.radio_value(
                 &mut self.render_style,
                 RenderStyle::Experimental,
-                "experimental (pattern marks unsolved)",
+                "experimental",
             );
 
             ui.separator();
