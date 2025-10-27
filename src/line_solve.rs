@@ -860,252 +860,246 @@ macro_rules! nc {
 }
 
 #[cfg(test)]
-use crate::puzzle::{Nono, Triano};
+mod tests {
+    use super::*;
+    use crate::puzzle::{Nono, Triano};
 
-// Uses `Cell` everywhere, even in the clues, for simplicity, even though clues have to be one
-// specific_color
-#[cfg(test)]
-fn nc(color: Cell, count: u16) -> Nono {
-    Nono {
-        color: color.unwrap_color(),
-        count,
-    }
-}
-
-#[cfg(test)]
-fn parse_color(c: char) -> Color {
-    match c {
-        '⬜' => Color(0),
-        '⬛' => Color(1),
-        '🟥' => Color(2),
-        '🟩' => Color(3),
-        '🮞' => Color(4),
-        '🮟' => Color(5),
-        _ => panic!("unknown color: {}", c),
-    }
-}
-
-#[cfg(test)]
-fn n(spec: &str) -> Vec<Nono> {
-    let mut res = vec![];
-    for chunk in spec.split_whitespace() {
-        let mut chunk_chars = chunk.chars();
-        let color = parse_color(chunk_chars.next().unwrap());
-        let count = chunk_chars.collect::<String>().parse::<u16>().unwrap();
-        res.push(Nono { color, count });
-    }
-    res
-}
-
-#[cfg(test)]
-fn tri(spec: &str) -> Vec<Triano> {
-    use crate::puzzle::Triano;
-
-    let mut res = vec![];
-    for chunk in spec.split_whitespace() {
-        let mut clue = Triano {
-            front_cap: None,
-            body_color: Color(1),
-            body_len: 0,
-            back_cap: None,
-        };
-        if chunk.starts_with('🮞') {
-            clue.front_cap = Some(parse_color('🮞'));
+    // Uses `Cell` everywhere, even in the clues, for simplicity, even though clues have to be one
+    // specific_color
+    fn nc(color: Cell, count: u16) -> Nono {
+        Nono {
+            color: color.unwrap_color(),
+            count,
         }
-        if chunk.ends_with('🮟') {
-            clue.back_cap = Some(parse_color('🮟'));
-        }
-        clue.body_color = parse_color('⬛');
-        clue.body_len = chunk
-            .trim_start_matches('🮞')
-            .trim_end_matches('🮟')
-            .parse()
-            .unwrap();
-
-        res.push(clue);
     }
-    res
-}
 
-#[cfg(test)]
-fn l(spec: &str) -> ndarray::Array1<Cell> {
-    let mut res = vec![];
-    for cell_spec in spec.split_whitespace() {
-        if cell_spec == "🔳" {
-            let mut bw = Cell::new_impossible();
-            bw.actually_could_be(Color(0));
-            bw.actually_could_be(Color(1));
-            res.push(bw);
-            continue;
+    fn parse_color(c: char) -> Color {
+        match c {
+            '⬜' => Color(0),
+            '⬛' => Color(1),
+            '🟥' => Color(2),
+            '🟩' => Color(3),
+            '🮞' => Color(4),
+            '🮟' => Color(5),
+            _ => panic!("unknown color: {}", c),
         }
-
-        let mut cell = Cell::new_impossible();
-        for c in cell_spec.chars() {
-            cell.actually_could_be(parse_color(c));
-        }
-        res.push(cell);
     }
-    ndarray::arr1(&res)
-}
 
-#[cfg(test)]
-fn test_exhaust<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
-    let mut working_line = l(init);
-    exhaust_line(
-        &clues,
-        &mut working_line.rows_mut().into_iter().next().unwrap(),
-    )
-    .unwrap();
-    working_line
-}
+    fn n(spec: &str) -> Vec<Nono> {
+        let mut res = vec![];
+        for chunk in spec.split_whitespace() {
+            let mut chunk_chars = chunk.chars();
+            let color = parse_color(chunk_chars.next().unwrap());
+            let count = chunk_chars.collect::<String>().parse::<u16>().unwrap();
+            res.push(Nono { color, count });
+        }
+        res
+    }
 
-#[cfg(test)]
-fn test_scrub<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
-    let mut working_line = l(init);
-    scrub_line(
-        &clues,
-        &mut working_line.rows_mut().into_iter().next().unwrap(),
-    )
-    .unwrap();
-    working_line
-}
+    fn tri(spec: &str) -> Vec<Triano> {
+        use crate::puzzle::Triano;
 
-#[cfg(test)]
-fn test_skim<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
-    let mut working_line = l(init);
-    skim_line(
-        &clues,
-        &mut working_line.rows_mut().into_iter().next().unwrap(),
-    )
-    .unwrap();
-    working_line
-}
+        let mut res = vec![];
+        for chunk in spec.split_whitespace() {
+            let mut clue = Triano {
+                front_cap: None,
+                body_color: Color(1),
+                body_len: 0,
+                back_cap: None,
+            };
+            if chunk.starts_with('🮞') {
+                clue.front_cap = Some(parse_color('🮞'));
+            }
+            if chunk.ends_with('🮟') {
+                clue.back_cap = Some(parse_color('🮟'));
+            }
+            clue.body_color = parse_color('⬛');
+            clue.body_len = chunk
+                .trim_start_matches('🮞')
+                .trim_end_matches('🮟')
+                .parse()
+                .unwrap();
 
-#[test]
-fn scrub_test() {
-    assert_eq!(test_scrub(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
+            res.push(clue);
+        }
+        res
+    }
 
-    assert_eq!(test_scrub(n("⬛1"), "⬜ 🔳 🔳 🔳"), l("⬜ 🔳 🔳 🔳"));
+    fn l(spec: &str) -> ndarray::Array1<Cell> {
+        let mut res = vec![];
+        for cell_spec in spec.split_whitespace() {
+            if cell_spec == "🔳" {
+                let mut bw = Cell::new_impossible();
+                bw.actually_could_be(Color(0));
+                bw.actually_could_be(Color(1));
+                res.push(bw);
+                continue;
+            }
 
-    assert_eq!(test_scrub(n("⬛1 ⬛2"), "🔳 🔳 🔳 🔳"), l("⬛ ⬜ ⬛ ⬛"));
+            let mut cell = Cell::new_impossible();
+            for c in cell_spec.chars() {
+                cell.actually_could_be(parse_color(c));
+            }
+            res.push(cell);
+        }
+        ndarray::arr1(&res)
+    }
 
-    assert_eq!(test_scrub(n("⬛1"), "🔳 🔳 ⬛ 🔳"), l("⬜ ⬜ ⬛ ⬜"));
+    fn test_exhaust<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+        let mut working_line = l(init);
+        exhaust_line(
+            &clues,
+            &mut working_line.rows_mut().into_iter().next().unwrap(),
+        )
+        .unwrap();
+        working_line
+    }
 
-    assert_eq!(test_scrub(n("⬛3"), "🔳 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳"));
+    fn test_scrub<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+        let mut working_line = l(init);
+        scrub_line(
+            &clues,
+            &mut working_line.rows_mut().into_iter().next().unwrap(),
+        )
+        .unwrap();
+        working_line
+    }
 
-    assert_eq!(test_scrub(n("⬛3"), "🔳 ⬛ 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳 ⬜"));
+    fn test_skim<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+        let mut working_line = l(init);
+        skim_line(
+            &clues,
+            &mut working_line.rows_mut().into_iter().next().unwrap(),
+        )
+        .unwrap();
+        working_line
+    }
 
-    assert_eq!(
-        test_scrub(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳"),
-        l("⬛ ⬛ ⬜ ⬛ ⬛")
-    );
+    #[test]
+    fn scrub_test() {
+        assert_eq!(test_scrub(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
 
-    // Different colors don't need separation, so we don't know as much:
-    assert_eq!(
-        test_scrub(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
-        l("🟥⬜ 🟥 🟥⬛⬜ ⬛ ⬛⬜")
-    );
-}
+        assert_eq!(test_scrub(n("⬛1"), "⬜ 🔳 🔳 🔳"), l("⬜ 🔳 🔳 🔳"));
 
-#[test]
-fn exhaust_test() {
-    assert_eq!(test_exhaust(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
+        assert_eq!(test_scrub(n("⬛1 ⬛2"), "🔳 🔳 🔳 🔳"), l("⬛ ⬜ ⬛ ⬛"));
 
-    assert_eq!(test_exhaust(n("⬛1"), "⬜ 🔳 🔳 🔳"), l("⬜ 🔳 🔳 🔳"));
+        assert_eq!(test_scrub(n("⬛1"), "🔳 🔳 ⬛ 🔳"), l("⬜ ⬜ ⬛ ⬜"));
 
-    assert_eq!(test_exhaust(n("⬛1 ⬛2"), "🔳 🔳 🔳 🔳"), l("⬛ ⬜ ⬛ ⬛"));
+        assert_eq!(test_scrub(n("⬛3"), "🔳 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳"));
 
-    assert_eq!(test_exhaust(n("⬛1"), "🔳 🔳 ⬛ 🔳"), l("⬜ ⬜ ⬛ ⬜"));
+        assert_eq!(test_scrub(n("⬛3"), "🔳 ⬛ 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳 ⬜"));
 
-    assert_eq!(test_exhaust(n("⬛3"), "🔳 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳"));
+        assert_eq!(
+            test_scrub(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳"),
+            l("⬛ ⬛ ⬜ ⬛ ⬛")
+        );
 
-    assert_eq!(
-        test_exhaust(n("⬛3"), "🔳 ⬛ 🔳 🔳 🔳"),
-        l("🔳 ⬛ ⬛ 🔳 ⬜")
-    );
+        // Different colors don't need separation, so we don't know as much:
+        assert_eq!(
+            test_scrub(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
+            l("🟥⬜ 🟥 🟥⬛⬜ ⬛ ⬛⬜")
+        );
+    }
 
-    assert_eq!(
-        test_exhaust(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳"),
-        l("⬛ ⬛ ⬜ ⬛ ⬛")
-    );
+    #[test]
+    fn exhaust_test() {
+        assert_eq!(test_exhaust(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
 
-    assert_eq!(
-        test_exhaust(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳 🔳"),
-        l("🔳 ⬛ 🔳 🔳 ⬛ 🔳")
-    );
+        assert_eq!(test_exhaust(n("⬛1"), "⬜ 🔳 🔳 🔳"), l("⬜ 🔳 🔳 🔳"));
 
-    // Different colors don't need separation, so we don't know as much:
-    assert_eq!(
-        test_exhaust(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
-        l("🟥⬜ 🟥 🟥⬛⬜ ⬛ ⬛⬜")
-    );
-}
+        assert_eq!(test_exhaust(n("⬛1 ⬛2"), "🔳 🔳 🔳 🔳"), l("⬛ ⬜ ⬛ ⬛"));
 
-#[test]
-fn skim_test() {
-    assert_eq!(test_skim(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
+        assert_eq!(test_exhaust(n("⬛1"), "🔳 🔳 ⬛ 🔳"), l("⬜ ⬜ ⬛ ⬜"));
 
-    assert_eq!(test_skim(n("⬛1"), "⬜ 🔳 🔳 🔳"), l("⬜ 🔳 🔳 🔳"));
+        assert_eq!(test_exhaust(n("⬛3"), "🔳 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳"));
 
-    assert_eq!(test_skim(n("⬛3"), "🔳 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳"));
+        assert_eq!(
+            test_exhaust(n("⬛3"), "🔳 ⬛ 🔳 🔳 🔳"),
+            l("🔳 ⬛ ⬛ 🔳 ⬜")
+        );
 
-    assert_eq!(test_skim(n("⬛2 ⬛1"), "🔳 🔳 🔳 🔳"), l("⬛ ⬛ ⬜ ⬛"));
+        assert_eq!(
+            test_exhaust(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳"),
+            l("⬛ ⬛ ⬜ ⬛ ⬛")
+        );
 
-    assert_eq!(test_skim(n("⬛1 ⬛2"), "🔳 🔳 🔳 🔳"), l("⬛ ⬜ ⬛ ⬛"));
+        assert_eq!(
+            test_exhaust(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳 🔳"),
+            l("🔳 ⬛ 🔳 🔳 ⬛ 🔳")
+        );
 
-    assert_eq!(
-        test_skim(n("⬛2"), "🔳 🔳 🔳 🔳 🔳 ⬛ ⬛ 🔳"),
-        l("⬜ ⬜ ⬜ ⬜ ⬜ ⬛ ⬛ ⬜")
-    );
+        // Different colors don't need separation, so we don't know as much:
+        assert_eq!(
+            test_exhaust(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
+            l("🟥⬜ 🟥 🟥⬛⬜ ⬛ ⬛⬜")
+        );
+    }
 
-    assert_eq!(test_skim(n("⬛1"), "🔳 🔳 ⬛ 🔳"), l("⬜ ⬜ ⬛ ⬜"));
+    #[test]
+    fn skim_test() {
+        assert_eq!(test_skim(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
 
-    assert_eq!(test_skim(n("⬛3"), "🔳 ⬛ 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳 ⬜"));
+        assert_eq!(test_skim(n("⬛1"), "⬜ 🔳 🔳 🔳"), l("⬜ 🔳 🔳 🔳"));
 
-    assert_eq!(
-        test_skim(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳"),
-        l("⬛ ⬛ ⬜ ⬛ ⬛")
-    );
+        assert_eq!(test_skim(n("⬛3"), "🔳 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳"));
 
-    // Different colors don't need separation, so we don't know as much:
-    assert_eq!(
-        test_skim(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
-        l("🟥⬛⬜ 🟥 🟥⬛⬜ ⬛ 🟥⬛⬜")
-    );
+        assert_eq!(test_skim(n("⬛2 ⬛1"), "🔳 🔳 🔳 🔳"), l("⬛ ⬛ ⬜ ⬛"));
 
-    // Test with longer clues
-    assert_eq!(
-        test_skim(n("⬛7"), "🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳"),
-        l("🔳 🔳 🔳 ⬛ ⬛ ⬛ ⬛ 🔳 🔳 🔳")
-    );
+        assert_eq!(test_skim(n("⬛1 ⬛2"), "🔳 🔳 🔳 🔳"), l("⬛ ⬜ ⬛ ⬛"));
 
-    // Test with more clues per line
-    assert_eq!(
-        test_skim(n("⬛1 ⬛1 ⬛1 ⬛1"), "🔳 🔳 🔳 🔳 🔳 🔳 🔳"),
-        l("⬛ ⬜ ⬛ ⬜ ⬛ ⬜ ⬛")
-    );
+        assert_eq!(
+            test_skim(n("⬛2"), "🔳 🔳 🔳 🔳 🔳 ⬛ ⬛ 🔳"),
+            l("⬜ ⬜ ⬜ ⬜ ⬜ ⬛ ⬛ ⬜")
+        );
 
-    assert_eq!(
-        test_skim(n("⬛6"), "⬛ ⬛ 🔳 🔳 ⬛ ⬛"),
-        l("⬛ ⬛ ⬛ ⬛ ⬛ ⬛")
-    );
-}
+        assert_eq!(test_skim(n("⬛1"), "🔳 🔳 ⬛ 🔳"), l("⬜ ⬜ ⬛ ⬜"));
 
-#[test]
-fn skim_tri_test() {
-    // Perhaps skimming should figure out things based on the known ends of clues?
-    assert_eq!(
-        test_skim(tri("🮞1"), "🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜"),
-        l("🮞⬛⬜ 🮞⬛⬜ 🮞⬛⬜ 🮞⬛⬜")
-    );
+        assert_eq!(test_skim(n("⬛3"), "🔳 ⬛ 🔳 🔳 🔳"), l("🔳 ⬛ ⬛ 🔳 ⬜"));
 
-    assert_eq!(
-        test_skim(tri("🮞2"), "🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜"),
-        l("🮞⬛⬜ 🮞⬛ ⬛ 🮞⬛⬜")
-    );
-}
+        assert_eq!(
+            test_skim(n("⬛2 ⬛2"), "🔳 🔳 🔳 🔳 🔳"),
+            l("⬛ ⬛ ⬜ ⬛ ⬛")
+        );
 
-macro_rules! heur {
+        // Different colors don't need separation, so we don't know as much:
+        assert_eq!(
+            test_skim(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
+            l("🟥⬛⬜ 🟥 🟥⬛⬜ ⬛ 🟥⬛⬜")
+        );
+
+        // Test with longer clues
+        assert_eq!(
+            test_skim(n("⬛7"), "🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳"),
+            l("🔳 🔳 🔳 ⬛ ⬛ ⬛ ⬛ 🔳 🔳 🔳")
+        );
+
+        // Test with more clues per line
+        assert_eq!(
+            test_skim(n("⬛1 ⬛1 ⬛1 ⬛1"), "🔳 🔳 🔳 🔳 🔳 🔳 🔳"),
+            l("⬛ ⬜ ⬛ ⬜ ⬛ ⬜ ⬛")
+        );
+
+        assert_eq!(
+            test_skim(n("⬛6"), "⬛ ⬛ 🔳 🔳 ⬛ ⬛"),
+            l("⬛ ⬛ ⬛ ⬛ ⬛ ⬛")
+        );
+    }
+
+    #[test]
+    fn skim_tri_test() {
+        // Perhaps skimming should figure out things based on the known ends of clues?
+        assert_eq!(
+            test_skim(tri("🮞1"), "🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜"),
+            l("🮞⬛⬜ 🮞⬛⬜ 🮞⬛⬜ 🮞⬛⬜")
+        );
+
+        assert_eq!(
+            test_skim(tri("🮞2"), "🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜"),
+            l("🮞⬛⬜ 🮞⬛ ⬛ 🮞⬛⬜")
+        );
+    }
+
+    macro_rules! heur {
     ([$($color:expr, $count:expr);*] $($state:expr),*) => {
         {
             let initial = ndarray::arr1(&[ $($state),* ]);
@@ -1116,50 +1110,51 @@ macro_rules! heur {
     };
 }
 
-// TODO: actually test the Triano case!
+    // TODO: actually test the Triano case!
 
-#[test]
-fn heuristic_examples() {
-    let x = Cell::new_anything();
-    let w = Cell::from_color(Color(0));
-    let b = Cell::from_color(Color(1));
+    #[test]
+    fn heuristic_examples() {
+        let x = Cell::new_anything();
+        let w = Cell::from_color(Color(0));
+        let b = Cell::from_color(Color(1));
 
-    assert_eq!(heur!([b, 1]  x, x, x, x), 1);
-    assert_eq!(heur!([b, 1]  w, x, x, x), 1);
-    assert_eq!(heur!([b, 2]  w, w, x, x), 3);
-    assert_eq!(heur!([b, 1; b, 2]  x, x, x, x), 4);
-    assert_eq!(heur!([b, 1]  x, x, b, x), 3);
-    assert_eq!(heur!([b, 3]  x, x, x, x), 5);
-    assert_eq!(heur!([b, 3]  x, b, x, x, x), 6);
+        assert_eq!(heur!([b, 1]  x, x, x, x), 1);
+        assert_eq!(heur!([b, 1]  w, x, x, x), 1);
+        assert_eq!(heur!([b, 2]  w, w, x, x), 3);
+        assert_eq!(heur!([b, 1; b, 2]  x, x, x, x), 4);
+        assert_eq!(heur!([b, 1]  x, x, b, x), 3);
+        assert_eq!(heur!([b, 3]  x, x, x, x), 5);
+        assert_eq!(heur!([b, 3]  x, b, x, x, x), 6);
 
-    assert_eq!(
-        heur!([b, 10]  x, x, x, x, x, x, x, x, x, x, x, x, x, x, x),
-        19
-    );
-    assert_eq!(
-        heur!([b, 3]  x, x, x, x, x, x, x, x, x, x, x, x, x, x, x),
-        5
-    );
-    assert_eq!(
-        heur!([b, 3]  x, x, x, x, b, x, x, x, x, x, x, x, x, x, x),
-        16
-    );
-}
+        assert_eq!(
+            heur!([b, 10]  x, x, x, x, x, x, x, x, x, x, x, x, x, x, x),
+            19
+        );
+        assert_eq!(
+            heur!([b, 3]  x, x, x, x, x, x, x, x, x, x, x, x, x, x, x),
+            5
+        );
+        assert_eq!(
+            heur!([b, 3]  x, x, x, x, b, x, x, x, x, x, x, x, x, x, x),
+            16
+        );
+    }
 
-#[test]
-fn filter_report() {
-    let mut rep = ScrubReport {
-        affected_cells: vec![0, 2, 4],
-    };
-    let orig = l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥 ⬛ ⬜");
-    let mut solved = l("🟥 🟥⬛⬜ ⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜");
-    filter_report_by_color(
-        &mut rep,
-        &orig.iter().cloned().collect::<Vec<_>>(),
-        &mut solved.view_mut(),
-        BACKGROUND,
-    );
+    #[test]
+    fn filter_report() {
+        let mut rep = ScrubReport {
+            affected_cells: vec![0, 2, 4],
+        };
+        let orig = l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥 ⬛ ⬜");
+        let mut solved = l("🟥 🟥⬛⬜ ⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜");
+        filter_report_by_color(
+            &mut rep,
+            &orig.iter().cloned().collect::<Vec<_>>(),
+            &mut solved.view_mut(),
+            BACKGROUND,
+        );
 
-    assert_eq!(rep.affected_cells, vec![4]);
-    assert_eq!(solved, l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜"));
+        assert_eq!(rep.affected_cells, vec![4]);
+        assert_eq!(solved, l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜"));
+    }
 }

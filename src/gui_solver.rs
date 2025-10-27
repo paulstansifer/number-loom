@@ -76,7 +76,7 @@ impl SolveGui {
         puzzle: &crate::puzzle::Puzzle<C>,
         options: &grid_solve::SolveOptions,
     ) -> Option<std::collections::HashMap<(usize, usize), Color>> {
-        let mut grid = grid_solve::grid_from_solution(&self.canvas.picture, puzzle);
+        let mut grid = grid_solve::solution_to_grid(&self.canvas.picture);
         if let Ok(_) = grid_solve::solve_grid(puzzle, &mut None, options, &mut grid) {
             let mut changes = std::collections::HashMap::new();
             for ((y, x), cell) in grid.indexed_iter() {
@@ -143,17 +143,11 @@ impl SolveGui {
 
             ui.checkbox(&mut self.analyze_lines, "[auto]");
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
+                let grid = crate::grid_solve::solution_to_grid(&self.canvas.picture);
+
                 self.line_analysis = Some(match &self.clues {
-                    DynPuzzle::Nono(puzzle) => {
-                        let grid =
-                            crate::grid_solve::grid_from_solution(&self.canvas.picture, puzzle);
-                        crate::grid_solve::analyze_lines(puzzle, &grid)
-                    }
-                    DynPuzzle::Triano(puzzle) => {
-                        let grid =
-                            crate::grid_solve::grid_from_solution(&self.canvas.picture, puzzle);
-                        crate::grid_solve::analyze_lines(puzzle, &grid)
-                    }
+                    DynPuzzle::Nono(puzzle) => crate::grid_solve::analyze_lines(puzzle, &grid),
+                    DynPuzzle::Triano(puzzle) => crate::grid_solve::analyze_lines(puzzle, &grid),
                 });
             }
 

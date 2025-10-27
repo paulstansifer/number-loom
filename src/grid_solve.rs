@@ -281,7 +281,7 @@ where
     }
 }
 
-pub fn grid_from_solution<C: Clue>(solution: &Solution, puzzle: &Puzzle<C>) -> Grid {
+pub fn solution_to_grid(solution: &Solution) -> Grid {
     let mut grid = Grid::from_elem(
         (solution.y_size(), solution.x_size()),
         Cell::new_impossible(),
@@ -289,7 +289,7 @@ pub fn grid_from_solution<C: Clue>(solution: &Solution, puzzle: &Puzzle<C>) -> G
     for (x, col) in solution.grid.iter().enumerate() {
         for (y, color) in col.iter().enumerate() {
             if *color == UNSOLVED {
-                grid[[y, x]] = Cell::new(puzzle);
+                grid[[y, x]] = Cell::new_anything();
             } else {
                 grid[[y, x]] = Cell::from_color(*color);
             }
@@ -616,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn test_grid_from_solution() {
+    fn test_solution_to_grid() {
         let mut palette = HashMap::new();
         palette.insert(BACKGROUND, ColorInfo::default_bg());
         palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
@@ -633,7 +633,7 @@ mod tests {
             grid: vec![vec![BACKGROUND, UNSOLVED]],
         };
 
-        let grid = grid_from_solution(&solution, &puzzle);
+        let grid = solution_to_grid(&solution);
         assert!(grid[[0, 0]].is_known_to_be(BACKGROUND));
         assert!(!grid[[1, 0]].is_known());
         assert!(grid[[1, 0]].can_be(BACKGROUND));
