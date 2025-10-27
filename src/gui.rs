@@ -1157,7 +1157,7 @@ impl eframe::App for NonogramGui {
             });
             ui.separator();
 
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 if let Some(solve_gui) = &mut self.solve_gui {
                     solve_gui.sidebar(ui);
                     egui::Grid::new("solve_grid").show(ui, |ui| {
