@@ -175,6 +175,7 @@ fn grid_to_solution<C: Clue>(grid: &Grid, puzzle: &Puzzle<C>) -> Solution {
         .into_iter()
         .map(|col| {
             col.iter()
+                // TODO: change to UNSOLVED
                 .map(|cell| cell.known_or().unwrap_or(BACKGROUND))
                 .collect::<Vec<Color>>()
         })
@@ -328,7 +329,7 @@ pub fn solve_grid<C: Clue>(
         progress.finish_and_clear();
     }
 
-    let mut cells_left = puzzle.rows.len() * puzzle.cols.len();
+    let mut cells_left = grid.iter().filter(|c| !c.is_known()).count();
     let mut solve_counts = ModeMap::new_uniform(0);
 
     let initial_allowed_failures = ModeMap {
@@ -367,8 +368,7 @@ pub fn solve_grid<C: Clue>(
                 }
             };
 
-            let mut best_grid_lane: ArrayViewMut1<Cell> =
-                get_mut_grid_lane(best_clue_lane, grid);
+            let mut best_grid_lane: ArrayViewMut1<Cell> = get_mut_grid_lane(best_clue_lane, grid);
 
             progress.set_message(format!(
                 "{solve_counts} cells left: {cells_left: >6}  {}ing {}",
@@ -400,7 +400,7 @@ pub fn solve_grid<C: Clue>(
             best_clue_lane.per_mode[current_mode].processed = true;
 
             if let Some(color) = options.only_solve_color {
-                filter_report_by_color(
+                crate::line_solve::filter_report_by_color(
                     &mut report,
                     &orig_version_of_line,
                     &mut best_grid_lane,
@@ -462,23 +462,6 @@ pub fn solve_grid<C: Clue>(
             }
         }
     }
-}
-
-fn filter_report_by_color(
-    report: &mut ScrubReport,
-    orig_lane: &[Cell],
-    new_lane: &mut ArrayViewMut1<Cell>,
-    color: Color,
-) {
-    let mut new_affected_cells = vec![];
-    for &idx in &report.affected_cells {
-        if new_lane[idx].is_known_to_be(color) {
-            new_affected_cells.push(idx);
-        } else {
-            new_lane[idx] = orig_lane[idx];
-        }
-    }
-    report.affected_cells = new_affected_cells;
 }
 
 fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
@@ -656,5 +639,50 @@ mod tests {
         assert!(!grid[[1, 0]].is_known());
         assert!(grid[[1, 0]].can_be(BACKGROUND));
         assert!(grid[[1, 0]].can_be(Color(1)));
+    }
+
+    #[test]
+    fn test_color_filtered_solve() {
+        let puz = Puzzle {
+            palette: HashMap::new(), // ignored!
+            rows: vec![vec![Nono {
+                color: Color(1),
+                count: 3,
+            }]],
+            // This is bogus, and rightfully could crash. Need to implement a new "no info" clue to
+            // make this test work legitimately:
+            cols: vec![],
+        };
+        let mut grid = Grid::from_elem((1, 7), Cell::new_anything());
+        grid[[0, 5]] = Cell::from_color(Color(1));
+
+        let bkg_solved = solve_grid(
+            &puz,
+            &mut None,
+            &SolveOptions {
+                only_solve_color: Some(BACKGROUND),
+                max_effort: SolveMode::Skim,
+                ..SolveOptions::default()
+            },
+            &mut grid,
+        )
+        .unwrap();
+
+        assert_eq!(bkg_solved.cells_left, 3);
+
+        let row: Vec<Cell> = grid.row(0).into_iter().cloned().collect();
+
+        assert_eq!(
+            row,
+            vec![
+                Cell::from_color(BACKGROUND),
+                Cell::from_color(BACKGROUND),
+                Cell::from_color(BACKGROUND),
+                Cell::new_anything(),
+                Cell::new_anything(), // Known to be 1, but not allowed to say it
+                Cell::from_color(Color(1)),
+                Cell::new_anything()
+            ]
+        )
     }
 }

@@ -68,13 +68,11 @@ impl SolveGui {
         options: &grid_solve::SolveOptions,
     ) -> Option<std::collections::HashMap<(usize, usize), Color>> {
         let mut grid = grid_solve::grid_from_solution(&self.canvas.picture, puzzle);
-        if let Ok(report) = grid_solve::solve_grid(puzzle, &mut None, options, &mut grid) {
+        if let Ok(_) = grid_solve::solve_grid(puzzle, &mut None, options, &mut grid) {
             let mut changes = std::collections::HashMap::new();
-            for (x, row) in report.solution.grid.iter().enumerate() {
-                for (y, color) in row.iter().enumerate() {
-                    if *color == BACKGROUND && self.canvas.picture.grid[x][y] != BACKGROUND {
-                        changes.insert((x, y), BACKGROUND);
-                    }
+            for ((y, x), cell) in grid.indexed_iter() {
+                if let Some(color) = cell.known_or() {
+                    changes.insert((x, y), color);
                 }
             }
             if !changes.is_empty() {
@@ -145,9 +143,9 @@ impl SolveGui {
 
             ui.separator();
 
-            ui.checkbox(&mut self.infer_background, "Infer background");
+            ui.checkbox(&mut self.infer_background, "[auto]");
             if ui.button("Infer background").clicked()
-                || (self.infer_background && self.canvas.dirtiness > Dirtiness::Clean)
+                || (self.infer_background && self.canvas.dirtiness == Dirtiness::CellsChanged)
             {
                 self.infer_background();
             }
