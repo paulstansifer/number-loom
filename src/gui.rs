@@ -31,7 +31,7 @@ pub enum Tool {
 use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
-    gui_solver::{Orientation, SolveGui, draw_dyn_clues},
+    gui_solver::{draw_dyn_clues, Orientation, RenderStyle, SolveGui},
     import,
     puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, Solution, UNSOLVED},
 };
@@ -376,7 +376,7 @@ impl CanvasGui {
         }
     }
 
-    fn canvas(&mut self, ui: &mut egui::Ui, scale: f32) {
+    fn canvas(&mut self, ui: &mut egui::Ui, scale: f32, render_style: RenderStyle) {
         let x_size = self.picture.grid.len();
         let y_size = self.picture.grid.first().unwrap().len();
 
@@ -498,7 +498,15 @@ impl CanvasGui {
                         dr = (&self.picture.palette[&c], score);
                     }
                 }
-                for shape in cell_shape(color_info, solved, dr, x, y, &to_screen) {
+                for shape in cell_shape(
+                    color_info,
+                    solved,
+                    dr,
+                    x,
+                    y,
+                    &to_screen,
+                    render_style,
+                ) {
                     shapes.push(shape);
                 }
             }
@@ -706,10 +714,15 @@ fn cell_shape(
     x: usize,
     y: usize,
     to_screen: &egui::emath::RectTransform,
+    render_style: RenderStyle,
 ) -> Vec<egui::Shape> {
     let (r, g, b) = ci.rgb;
     let color = if ci.color == UNSOLVED {
-        egui::Color32::from_rgb(160, 160, 160)
+        if render_style == RenderStyle::Experimental {
+            egui::Color32::from_rgb(160, 160, 160)
+        } else {
+            egui::Color32::WHITE
+        }
     } else {
         egui::Color32::from_rgb(r, g, b)
     };
@@ -727,7 +740,39 @@ fn cell_shape(
 
     let mut res = vec![actual_cell];
 
-    if ci.color == UNSOLVED {
+    if ci.color == BACKGROUND {
+        let center = to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
+        match render_style {
+            RenderStyle::TraditionalDots => {
+                res.push(egui::Shape::circle_filled(
+                    center,
+                    to_screen.scale().x * 0.1,
+                    egui::Color32::from_rgb(190, 190, 190),
+                ));
+            }
+            RenderStyle::TraditionalXes => {
+                let stroke = egui::Stroke::new(2.0, Color32::from_rgb(190, 190, 190));
+                let radius = to_screen.scale().x * 0.2;
+                res.push(egui::Shape::line_segment(
+                    [
+                        center + Vec2::new(-radius, -radius),
+                        center + Vec2::new(radius, radius),
+                    ],
+                    stroke,
+                ));
+                res.push(egui::Shape::line_segment(
+                    [
+                        center + Vec2::new(radius, -radius),
+                        center + Vec2::new(-radius, radius),
+                    ],
+                    stroke,
+                ));
+            }
+            RenderStyle::Experimental => {}
+        }
+    }
+
+    if ci.color == UNSOLVED && render_style == RenderStyle::Experimental {
         res.push(egui::Shape::convex_polygon(
             vec![
                 to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 0.0),
@@ -1138,12 +1183,15 @@ impl eframe::App for NonogramGui {
                             Orientation::Horizontal,
                             solve_gui.line_analysis.as_ref().map(|la| &la.0[..]),
                         );
-                        solve_gui.canvas.canvas(ui, self.scale);
+                        solve_gui
+                            .canvas
+                            .canvas(ui, self.scale, solve_gui.render_style);
                         ui.end_row();
                     });
                 } else {
                     self.sidebar(ui);
-                    self.editor_gui.canvas(ui, self.scale);
+                    self.editor_gui
+                        .canvas(ui, self.scale, RenderStyle::Experimental);
                 }
             });
 

@@ -12,6 +12,14 @@ pub struct SolveGui {
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub line_analysis: Option<(Vec<LineStatus>, Vec<LineStatus>)>,
+    pub render_style: RenderStyle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderStyle {
+    TraditionalDots,
+    TraditionalXes,
+    Experimental,
 }
 
 impl SolveGui {
@@ -40,6 +48,7 @@ impl SolveGui {
             analyze_lines: false,
             detect_errors: false,
             line_analysis: None,
+            render_style: RenderStyle::Experimental,
         }
     }
 
@@ -63,6 +72,25 @@ impl SolveGui {
         ui.vertical(|ui| {
             ui.set_width(120.0);
             self.canvas.common_sidebar_items(ui, true);
+
+            ui.separator();
+
+            ui.label("Render style");
+            ui.radio_value(
+                &mut self.render_style,
+                RenderStyle::TraditionalDots,
+                "traditional (dots mark background)",
+            );
+            ui.radio_value(
+                &mut self.render_style,
+                RenderStyle::TraditionalXes,
+                "traditional (Xes mark background)",
+            );
+            ui.radio_value(
+                &mut self.render_style,
+                RenderStyle::Experimental,
+                "experimental (pattern marks unsolved)",
+            );
 
             ui.separator();
 
