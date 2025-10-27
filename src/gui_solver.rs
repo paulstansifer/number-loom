@@ -1,8 +1,7 @@
 use crate::{
-    grid_solve,
-    grid_solve::LineStatus,
+    grid_solve::{self, LineStatus},
     gui::{Action, ActionMood, CanvasGui, Dirtiness, Disambiguator, Tool},
-    puzzle::{BACKGROUND, Color, DynPuzzle, Solution},
+    puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
@@ -71,26 +70,6 @@ impl SolveGui {
         self.canvas.picture.grid == self.intended_solution.grid
     }
 
-    fn infer_background_for_puzzle<C: crate::puzzle::Clue>(
-        &self,
-        puzzle: &crate::puzzle::Puzzle<C>,
-        options: &grid_solve::SolveOptions,
-    ) -> Option<std::collections::HashMap<(usize, usize), Color>> {
-        let mut grid = grid_solve::solution_to_grid(&self.canvas.picture);
-        if let Ok(_) = grid_solve::solve_grid(puzzle, &mut None, options, &mut grid) {
-            let mut changes = std::collections::HashMap::new();
-            for ((y, x), cell) in grid.indexed_iter() {
-                if let Some(color) = cell.known_or() {
-                    changes.insert((x, y), color);
-                }
-            }
-            if !changes.is_empty() {
-                return Some(changes);
-            }
-        }
-        None
-    }
-
     fn infer_background(&mut self) {
         if self.canvas.dirtiness == Dirtiness::Clean {
             return;
@@ -102,14 +81,20 @@ impl SolveGui {
             ..Default::default()
         };
 
-        let changes = self.clues.specialize(
-            |puzzle| self.infer_background_for_puzzle(puzzle, &options),
-            |puzzle| self.infer_background_for_puzzle(puzzle, &options),
-        );
+        let mut grid = self.canvas.picture.to_partial();
 
-        if let Some(changes) = changes {
-            self.canvas
-                .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+        if let Ok(_) = self.clues.partial_solve(&mut grid, &options) {
+            let mut changes = std::collections::HashMap::new();
+            for ((y, x), cell) in grid.indexed_iter() {
+                if let Some(color) = cell.known_or() {
+                    changes.insert((x, y), color);
+                }
+            }
+
+            if !changes.is_empty() {
+                self.canvas
+                    .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+            }
         }
 
         self.canvas.dirtiness = Dirtiness::Clean;
@@ -143,12 +128,9 @@ impl SolveGui {
 
             ui.checkbox(&mut self.analyze_lines, "[auto]");
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
-                let grid = crate::grid_solve::solution_to_grid(&self.canvas.picture);
+                let grid = self.canvas.picture.to_partial();
 
-                self.line_analysis = Some(match &self.clues {
-                    DynPuzzle::Nono(puzzle) => crate::grid_solve::analyze_lines(puzzle, &grid),
-                    DynPuzzle::Triano(puzzle) => crate::grid_solve::analyze_lines(puzzle, &grid),
-                });
+                self.line_analysis = Some(self.clues.analyze_lines(&grid));
             }
 
             ui.separator();

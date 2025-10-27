@@ -5,6 +5,7 @@ use colored::Colorize;
 use number_loom::import;
 use number_loom::import::quality_check;
 use number_loom::puzzle::NonogramFormat;
+use number_loom::puzzle::PuzzleDynOps;
 use number_loom::puzzle::Solution;
 use number_loom::{export, grid_solve, gui};
 
@@ -125,27 +126,29 @@ fn main() -> std::io::Result<()> {
                 display_cli_progress: true,
                 ..Default::default()
             };
-            match document.puzzle().solve_with_args(&options) {
+
+            match document.puzzle().solve(&options) {
                 Ok(grid_solve::Report {
                     solve_counts,
                     cells_left,
-                solution: _solution,
-                solved_mask: _solved_mask,
-            }) => {
-                if cells_left == 0 {
-                    eprintln!("Solved after {solve_counts}.");
-                } else {
-                    eprintln!(
-                        "Unable to solve. Performed {solve_counts}; {cells_left} cells left."
-                    );
+                    solution: _solution,
+                    solved_mask: _solved_mask,
+                }) => {
+                    if cells_left == 0 {
+                        eprintln!("Solved after {solve_counts}.");
+                    } else {
+                        eprintln!(
+                            "Unable to solve. Performed {solve_counts}; {cells_left} cells left."
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {:?}", e);
+                    std::process::exit(1);
                 }
             }
-            Err(e) => {
-                eprintln!("Error: {:?}", e);
-                std::process::exit(1);
-            }
         }
-    }}
+    }
 
     Ok(())
 }

@@ -33,7 +33,9 @@ use crate::{
     grid_solve::{self, disambig_candidates},
     gui_solver::{Orientation, RenderStyle, SolveGui, draw_dyn_clues},
     import,
-    puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, Solution, UNSOLVED},
+    puzzle::{
+        BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, PuzzleDynOps, Solution, UNSOLVED,
+    },
 };
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;

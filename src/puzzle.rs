@@ -1,9 +1,13 @@
+use core::panic;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use crate::import::{solution_to_puzzle, solution_to_triano_puzzle};
-pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash {
+use crate::{
+    grid_solve::{self, LineStatus, SolveOptions},
+    import::{solution_to_puzzle, solution_to_triano_puzzle},
+};
+pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash + Send {
     fn style() -> ClueStyle;
 
     fn must_be_separated_from(&self, next: &Self) -> bool;
@@ -221,6 +225,28 @@ pub struct Solution {
     pub grid: Vec<Vec<Color>>,
 }
 
+// Instead of using the special `UNSOLVED` color, uses masks to represent partial cell information.
+pub type PartialSolution = ndarray::Array2<crate::line_solve::Cell>;
+
+impl Solution {
+    pub fn to_partial(&self) -> PartialSolution {
+        let mut res = PartialSolution::from_elem(
+            (self.y_size(), self.x_size()),
+            crate::line_solve::Cell::new_impossible(),
+        );
+        for (x, col) in self.grid.iter().enumerate() {
+            for (y, color) in col.iter().enumerate() {
+                if *color == UNSOLVED {
+                    res[[y, x]] = crate::line_solve::Cell::new_anything();
+                } else {
+                    res[[y, x]] = crate::line_solve::Cell::from_color(*color);
+                }
+            }
+        }
+        res
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Puzzle<C: Clue> {
     pub palette: HashMap<Color, ColorInfo>, // should include the background!
@@ -232,6 +258,115 @@ pub struct Puzzle<C: Clue> {
 pub enum DynPuzzle {
     Nono(Puzzle<Nono>),
     Triano(Puzzle<Triano>),
+}
+
+pub trait PuzzleDynOps {
+    fn palette(&self) -> &HashMap<Color, ColorInfo>;
+    fn solve(
+        &self,
+        options: &crate::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::grid_solve::Report>;
+    fn partial_solve(
+        &self,
+        partial: &mut PartialSolution,
+        options: &crate::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::grid_solve::Report>;
+    fn plain_solve(&self) -> anyhow::Result<crate::grid_solve::Report> {
+        self.solve(&SolveOptions::default())
+    }
+    fn analyze_lines(&self, partial: &PartialSolution) -> (Vec<LineStatus>, Vec<LineStatus>);
+}
+
+impl<C: Clue> PuzzleDynOps for Puzzle<C> {
+    fn palette(&self) -> &HashMap<Color, ColorInfo> {
+        &self.palette
+    }
+
+    fn partial_solve(
+        &self,
+        partial: &mut PartialSolution,
+        options: &crate::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::grid_solve::Report> {
+        grid_solve::solve_grid(self, &mut None, options, partial)
+    }
+
+    fn solve(&self, options: &SolveOptions) -> anyhow::Result<crate::grid_solve::Report> {
+        let mut partial = PartialSolution::from_elem(
+            (self.rows.len(), self.cols.len()),
+            crate::line_solve::Cell::new(self),
+        );
+
+        grid_solve::solve_grid(self, &mut None, options, &mut partial)
+    }
+
+    fn analyze_lines(&self, partial: &PartialSolution) -> (Vec<LineStatus>, Vec<LineStatus>) {
+        grid_solve::analyze_lines(self, partial)
+    }
+}
+
+impl PuzzleDynOps for DynPuzzle {
+    // Here comes the most inane `impl` you've ever seen!
+    fn palette(&self) -> &HashMap<Color, ColorInfo> {
+        match self {
+            DynPuzzle::Nono(p) => &p.palette(),
+            DynPuzzle::Triano(p) => &p.palette(),
+        }
+    }
+
+    fn partial_solve(
+        &self,
+        partial: &mut PartialSolution,
+        options: &crate::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::grid_solve::Report> {
+        match self {
+            DynPuzzle::Nono(p) => p.partial_solve(partial, options),
+            DynPuzzle::Triano(p) => p.partial_solve(partial, options),
+        }
+    }
+
+    fn solve(
+        &self,
+        options: &crate::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::grid_solve::Report> {
+        match self {
+            DynPuzzle::Nono(p) => p.solve(options),
+            DynPuzzle::Triano(p) => p.solve(options),
+        }
+    }
+
+    fn analyze_lines(&self, partial: &PartialSolution) -> (Vec<LineStatus>, Vec<LineStatus>) {
+        match self {
+            DynPuzzle::Nono(p) => p.analyze_lines(partial),
+            DynPuzzle::Triano(p) => p.analyze_lines(partial),
+        }
+    }
+}
+
+impl DynPuzzle {
+    pub fn specialize<FN, FT, T>(&self, f_n: FN, f_t: FT) -> T
+    where
+        FN: FnOnce(&Puzzle<Nono>) -> T,
+        FT: FnOnce(&Puzzle<Triano>) -> T,
+    {
+        match self {
+            DynPuzzle::Nono(p) => f_n(p),
+            DynPuzzle::Triano(p) => f_t(p),
+        }
+    }
+
+    pub fn assume_nono(&self) -> &Puzzle<Nono> {
+        match self {
+            DynPuzzle::Nono(p) => p,
+            DynPuzzle::Triano(_) => panic!("must be a true nonogram"),
+        }
+    }
+
+    pub fn assume_triano(&self) -> &Puzzle<Triano> {
+        match self {
+            DynPuzzle::Nono(_) => panic!("must be a trianogram"),
+            DynPuzzle::Triano(p) => p,
+        }
+    }
 }
 
 pub struct DynSolveCache {
@@ -249,60 +384,10 @@ impl DynSolveCache {
 
     pub fn solve(&mut self, p: &DynPuzzle) -> anyhow::Result<crate::grid_solve::Report> {
         let options = crate::grid_solve::SolveOptions::default();
-        match p {
-            DynPuzzle::Nono(puzzle) => {
-                crate::grid_solve::solve(puzzle, &mut self.nono_cache, &options)
-            }
-            DynPuzzle::Triano(puzzle) => {
-                crate::grid_solve::solve(puzzle, &mut self.triano_cache, &options)
-            }
-        }
-    }
-}
-
-impl DynPuzzle {
-    pub fn plain_solve(&self) -> anyhow::Result<crate::grid_solve::Report> {
-        let options = crate::grid_solve::SolveOptions::default();
-        match self {
-            DynPuzzle::Nono(puzzle) => crate::grid_solve::solve(puzzle, &mut None, &options),
-            DynPuzzle::Triano(puzzle) => crate::grid_solve::solve(puzzle, &mut None, &options),
-        }
-    }
-
-    pub fn solve_with_args(
-        &self,
-        options: &crate::grid_solve::SolveOptions,
-    ) -> anyhow::Result<crate::grid_solve::Report> {
-        match self {
-            DynPuzzle::Nono(puzzle) => crate::grid_solve::solve(puzzle, &mut None, options),
-            DynPuzzle::Triano(puzzle) => crate::grid_solve::solve(puzzle, &mut None, options),
-        }
-    }
-
-    pub fn specialize<FN, FT, T>(&self, f_n: FN, f_t: FT) -> T
-    where
-        FN: FnOnce(&Puzzle<Nono>) -> T,
-        FT: FnOnce(&Puzzle<Triano>) -> T,
-    {
-        match self {
-            DynPuzzle::Nono(puzzle) => f_n(puzzle),
-            DynPuzzle::Triano(puzzle) => f_t(puzzle),
-        }
-    }
-
-    pub fn assume_nono(&self) -> &Puzzle<Nono> {
-        match self {
-            DynPuzzle::Nono(puzzle) => puzzle,
-            DynPuzzle::Triano(_) => panic!("must be a true nonogram!"),
-        }
-    }
-
-    #[cfg(test)] // Until needed normally
-    pub fn assume_triano(&self) -> &Puzzle<Triano> {
-        match self {
-            DynPuzzle::Triano(puzzle) => puzzle,
-            DynPuzzle::Nono(_) => panic!("must be a trianogram!"),
-        }
+        p.specialize(
+            |p| crate::grid_solve::solve(p, &mut self.nono_cache, &options),
+            |p| crate::grid_solve::solve(p, &mut self.triano_cache, &options),
+        )
     }
 }
 

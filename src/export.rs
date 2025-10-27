@@ -30,10 +30,7 @@ pub fn to_bytes(
         match format {
             NonogramFormat::Olsak => document.puzzle().specialize(as_olsak_nono, as_olsak_triano),
             NonogramFormat::Webpbn => as_webpbn(&document.puzzle().assume_nono()),
-            NonogramFormat::Html => match &document.puzzle() {
-                puzzle::DynPuzzle::Nono(p) => as_html(&p),
-                puzzle::DynPuzzle::Triano(p) => as_html(&p),
-            },
+            NonogramFormat::Html => document.puzzle().specialize(as_html, as_html),
             NonogramFormat::Image => panic!(),
             NonogramFormat::CharGrid => as_char_grid(document.solution()?),
         }

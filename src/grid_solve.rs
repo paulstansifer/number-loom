@@ -10,7 +10,7 @@ use crate::{
         Cell, ModeMap, ScrubReport, SolveMode, exhaust_line, scrub_heuristic, skim_heuristic,
         skim_line,
     },
-    puzzle::{BACKGROUND, Clue, Color, Puzzle, Solution, UNSOLVED},
+    puzzle::{BACKGROUND, Clue, Color, PartialSolution, Puzzle, Solution, UNSOLVED},
 };
 
 pub struct SolveOptions {
@@ -31,7 +31,6 @@ impl Default for SolveOptions {
     }
 }
 
-type Grid = ndarray::Array2<Cell>;
 pub type LineStatus = anyhow::Result<Option<SolveMode>>;
 
 pub struct Report {
@@ -82,7 +81,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
         format!("{}{}", if self.row { "R" } else { "C" }, self.index + 1)
     }
 
-    fn new(clues: &'a [C], row: bool, idx: usize, grid: &Grid) -> LaneState<'a, C> {
+    fn new(clues: &'a [C], row: bool, idx: usize, grid: &PartialSolution) -> LaneState<'a, C> {
         let mut res = LaneState {
             clues,
             row,
@@ -92,7 +91,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
         res.rescore(grid, false);
         res
     }
-    fn rescore(&mut self, grid: &Grid, was_processed: bool) {
+    fn rescore(&mut self, grid: &PartialSolution, was_processed: bool) {
         let lane = get_grid_lane(self, grid);
         if lane.iter().all(|cell| cell.is_known()) {
             for mode in SolveMode::all() {
@@ -121,7 +120,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
 
 fn get_mut_grid_lane<'a, C: Clue>(
     ls: &LaneState<'a, C>,
-    grid: &'a mut Grid,
+    grid: &'a mut PartialSolution,
 ) -> ArrayViewMut1<'a, Cell> {
     if ls.row {
         grid.row_mut(ls.index)
@@ -130,7 +129,10 @@ fn get_mut_grid_lane<'a, C: Clue>(
     }
 }
 
-fn get_grid_lane<'a, C: Clue>(ls: &LaneState<'a, C>, grid: &'a Grid) -> ArrayView1<'a, Cell> {
+fn get_grid_lane<'a, C: Clue>(
+    ls: &LaneState<'a, C>,
+    grid: &'a PartialSolution,
+) -> ArrayView1<'a, Cell> {
     if ls.row {
         grid.row(ls.index)
     } else {
@@ -158,7 +160,7 @@ fn find_best_lane<'a, 'b, C: Clue>(
     res
 }
 
-fn grid_to_solved_mask<C: Clue>(grid: &Grid) -> Vec<Vec<bool>> {
+fn grid_to_solved_mask<C: Clue>(grid: &PartialSolution) -> Vec<Vec<bool>> {
     grid.columns()
         .into_iter()
         .map(|col| {
@@ -169,7 +171,7 @@ fn grid_to_solved_mask<C: Clue>(grid: &Grid) -> Vec<Vec<bool>> {
         .collect()
 }
 
-fn grid_to_solution<C: Clue>(grid: &Grid, puzzle: &Puzzle<C>) -> Solution {
+fn grid_to_solution<C: Clue>(grid: &PartialSolution, puzzle: &Puzzle<C>) -> Solution {
     let grid = grid
         .columns()
         .into_iter()
@@ -190,7 +192,7 @@ fn display_step<'a, C: Clue>(
     clue_lane: &'a LaneState<'a, C>,
     orig_lane: Vec<Cell>,
     mode: SolveMode,
-    grid: &'a Grid,
+    grid: &'a PartialSolution,
     puzzle: &'a Puzzle<C>,
 ) {
     use std::fmt::Write;
@@ -281,29 +283,13 @@ where
     }
 }
 
-pub fn solution_to_grid(solution: &Solution) -> Grid {
-    let mut grid = Grid::from_elem(
-        (solution.y_size(), solution.x_size()),
-        Cell::new_impossible(),
-    );
-    for (x, col) in solution.grid.iter().enumerate() {
-        for (y, color) in col.iter().enumerate() {
-            if *color == UNSOLVED {
-                grid[[y, x]] = Cell::new_anything();
-            } else {
-                grid[[y, x]] = Cell::from_color(*color);
-            }
-        }
-    }
-    grid
-}
-
 pub fn solve<C: Clue>(
     puzzle: &Puzzle<C>,
     line_cache: &mut Option<LineCache<C>>,
     options: &SolveOptions,
 ) -> anyhow::Result<Report> {
-    let mut grid = Grid::from_elem((puzzle.rows.len(), puzzle.cols.len()), Cell::new(puzzle));
+    let mut grid =
+        PartialSolution::from_elem((puzzle.rows.len(), puzzle.cols.len()), Cell::new(puzzle));
     solve_grid(puzzle, line_cache, options, &mut grid)
 }
 
@@ -311,7 +297,7 @@ pub fn solve_grid<C: Clue>(
     puzzle: &Puzzle<C>,
     line_cache: &mut Option<LineCache<C>>,
     options: &SolveOptions,
-    grid: &mut Grid,
+    grid: &mut PartialSolution,
 ) -> anyhow::Result<Report> {
     let mut solve_lanes = vec![];
 
@@ -490,7 +476,7 @@ fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
 
 pub fn analyze_lines<C: Clue>(
     puzzle: &Puzzle<C>,
-    grid: &Grid,
+    grid: &PartialSolution,
 ) -> (Vec<LineStatus>, Vec<LineStatus>) {
     let mut row_techniques = vec![];
     for (idx, clues) in puzzle.rows.iter().enumerate() {
@@ -601,7 +587,7 @@ mod tests {
             cols: vec![clue(1), clue(2)], // impossible
         };
 
-        let mut grid = Grid::from_elem((2, 2), Cell::new(&puzzle));
+        let mut grid = PartialSolution::from_elem((2, 2), Cell::new(&puzzle));
         grid[[0, 0]] = Cell::from_color(BACKGROUND);
         grid[[1, 1]] = Cell::from_color(BACKGROUND);
 
@@ -633,7 +619,7 @@ mod tests {
             grid: vec![vec![BACKGROUND, UNSOLVED]],
         };
 
-        let grid = solution_to_grid(&solution);
+        let grid = solution.to_partial();
         assert!(grid[[0, 0]].is_known_to_be(BACKGROUND));
         assert!(!grid[[1, 0]].is_known());
         assert!(grid[[1, 0]].can_be(BACKGROUND));
@@ -652,7 +638,7 @@ mod tests {
             // make this test work legitimately:
             cols: vec![],
         };
-        let mut grid = Grid::from_elem((1, 7), Cell::new_anything());
+        let mut grid = PartialSolution::from_elem((1, 7), Cell::new_anything());
         grid[[0, 5]] = Cell::from_color(Color(1));
 
         let bkg_solved = solve_grid(

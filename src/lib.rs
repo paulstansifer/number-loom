@@ -6,6 +6,9 @@ pub mod import;
 pub mod line_solve;
 pub mod puzzle;
 
+#[cfg(test)]
+use crate::puzzle::PuzzleDynOps;
+
 #[test]
 // This is a consistency test, used to notice when measured difficulties change.
 fn solve_examples() {
