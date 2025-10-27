@@ -175,8 +175,7 @@ fn grid_to_solution<C: Clue>(grid: &Grid, puzzle: &Puzzle<C>) -> Solution {
         .into_iter()
         .map(|col| {
             col.iter()
-                // TODO: change to UNSOLVED
-                .map(|cell| cell.known_or().unwrap_or(BACKGROUND))
+                .map(|cell| cell.known_or().unwrap_or(UNSOLVED))
                 .collect::<Vec<Color>>()
         })
         .collect();
