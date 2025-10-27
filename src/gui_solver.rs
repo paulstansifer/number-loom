@@ -39,7 +39,7 @@ impl SolveGui {
                 drag_start_color: current_color,
                 undo_stack: vec![],
                 redo_stack: vec![],
-                current_tool: Tool::Pencil,
+                current_tool: Tool::OrthographicLine,
                 line_tool_state: None,
                 solved_mask,
                 disambiguator: Disambiguator::new(),
