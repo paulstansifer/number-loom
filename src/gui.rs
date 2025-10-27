@@ -129,6 +129,43 @@ pub async fn yield_now() {
     wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
 }
 
+type Version = u32;
+
+struct Staleable<T> {
+    val: T,
+    version: Version,
+}
+
+impl<T> Staleable<T> {
+    fn update(&mut self, val: T, version: Version) {
+        self.val = val;
+        self.version = version;
+    }
+
+    fn fresh(&self, version: Version) -> bool {
+        self.version == version
+    }
+
+    fn get_if_fresh(&self, version: Version) -> Option<&T> {
+        if self.fresh(version) {
+            Some(&self.val)
+        } else {
+            None
+        }
+    }
+
+    fn get_or_refresh<F>(&mut self, version: Version, refresh: F) -> &T
+    where
+        F: FnOnce() -> T,
+    {
+        if !self.fresh(version) {
+            self.val = refresh();
+            self.version = version;
+        }
+        &self.val
+    }
+}
+
 pub struct CanvasGui {
     pub picture: Solution,
     pub dirtiness: Dirtiness,
