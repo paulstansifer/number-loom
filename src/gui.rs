@@ -402,37 +402,31 @@ impl CanvasGui {
 
             if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
                 let pointer = &ui.input(|i| i.pointer.clone());
-                let (paint_color, button) = if pointer.middle_down() {
-                    (UNSOLVED, egui::PointerButton::Middle)
+                let paint_color = if pointer.middle_down() {
+                    UNSOLVED
                 } else if pointer.secondary_down() {
-                    (BACKGROUND, egui::PointerButton::Secondary)
+                    BACKGROUND
                 } else if self.picture.grid[x][y] != self.current_color {
-                    (self.current_color, egui::PointerButton::Primary)
+                    self.current_color
                 } else {
-                    (BACKGROUND, egui::PointerButton::Primary)
+                    BACKGROUND
                 };
-
-                // TODO: non-primary buttons still don't work right.
 
                 match self.current_tool {
                     Tool::Pencil => {
-                        if response.clicked_by(button) || response.dragged_by(button) {
-                            let mood = if response.clicked_by(button)
-                                || response.drag_started_by(button)
-                            {
-                                self.drag_start_color = paint_color;
-                                ActionMood::Normal
-                            } else {
-                                ActionMood::Merge
-                            };
+                        let mood = if pointer.any_pressed() {
+                            self.drag_start_color = paint_color;
+                            ActionMood::Normal
+                        } else {
+                            ActionMood::Merge
+                        };
 
-                            let mut changes = HashMap::new();
-                            changes.insert((x, y), self.drag_start_color);
-                            self.perform(Action::ChangeColor { changes }, mood);
-                        }
+                        let mut changes = HashMap::new();
+                        changes.insert((x, y), self.drag_start_color);
+                        self.perform(Action::ChangeColor { changes }, mood);
                     }
                     Tool::FloodFill => {
-                        if response.clicked_by(button) {
+                        if pointer.any_click() {
                             let original_color = self.current_color;
                             self.current_color = paint_color;
                             self.flood_fill(x, y);
@@ -440,7 +434,7 @@ impl CanvasGui {
                         }
                     }
                     Tool::OrthographicLine => {
-                        if response.clicked_by(button) || response.drag_started_by(button) {
+                        if pointer.any_pressed() {
                             self.drag_start_color = paint_color;
 
                             self.line_tool_state = Some((x, y));
@@ -451,7 +445,7 @@ impl CanvasGui {
                                 },
                                 ActionMood::Normal,
                             );
-                        } else if response.dragged_by(button) {
+                        } else if pointer.any_down() {
                             if let Some((start_x, start_y)) = self.line_tool_state {
                                 let mut new_points = HashMap::new();
 
@@ -477,7 +471,7 @@ impl CanvasGui {
                                     ActionMood::ReplaceAction,
                                 );
                             }
-                        } else if response.drag_stopped() {
+                        } else if pointer.any_released() {
                             self.line_tool_state = None;
                         }
                     }
