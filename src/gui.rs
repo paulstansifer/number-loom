@@ -1188,12 +1188,15 @@ impl eframe::App for NonogramGui {
                     solve_gui.sidebar(ui);
                     egui::Grid::new("solve_grid").show(ui, |ui| {
                         ui.label(""); // Top-left is empty
+                        let is_stale = !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
+                        let line_analysis = solve_gui.line_analysis.val.as_ref();
                         draw_dyn_clues(
                             ui,
                             &solve_gui.clues,
                             self.scale,
                             Orientation::Vertical,
-                            solve_gui.line_analysis.as_ref().map(|la| &la.1[..]),
+                            line_analysis.map(|la| &la.1[..]),
+                            is_stale,
                         );
                         ui.end_row();
 
@@ -1202,7 +1205,8 @@ impl eframe::App for NonogramGui {
                             &solve_gui.clues,
                             self.scale,
                             Orientation::Horizontal,
-                            solve_gui.line_analysis.as_ref().map(|la| &la.0[..]),
+                            line_analysis.map(|la| &la.0[..]),
+                            is_stale,
                         );
                         solve_gui
                             .canvas

@@ -12,8 +12,9 @@ pub struct SolveGui {
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
-    pub line_analysis: Option<(Vec<LineStatus>, Vec<LineStatus>)>,
+    pub line_analysis: Staleable<Option<(Vec<LineStatus>, Vec<LineStatus>)>>,
     pub render_style: RenderStyle,
+    last_inferred_version: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,8 +56,12 @@ impl SolveGui {
             analyze_lines: false,
             detect_errors: false,
             infer_background: false,
-            line_analysis: None,
+            line_analysis: Staleable {
+                val: None,
+                version: u32::MAX,
+            },
             render_style: RenderStyle::Experimental,
+            last_inferred_version: u32::MAX,
         }
     }
 
@@ -130,9 +135,10 @@ impl SolveGui {
 
             ui.checkbox(&mut self.analyze_lines, "[auto]");
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
+                let clues = &self.clues;
                 let grid = self.canvas.picture.to_partial();
-
-                self.line_analysis = Some(self.clues.analyze_lines(&grid));
+                self.line_analysis
+                    .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }
 
             ui.separator();
@@ -151,11 +157,10 @@ impl SolveGui {
 
             ui.checkbox(&mut self.infer_background, "[auto]");
             if ui.button("Infer background").clicked() || self.infer_background {
-                let mut staleable = Staleable {
-                    val: (),
-                    version: self.canvas.version.wrapping_sub(1),
-                };
-                staleable.get_or_refresh(self.canvas.version, || self.infer_background());
+                if self.last_inferred_version != self.canvas.version {
+                    self.infer_background();
+                    self.last_inferred_version = self.canvas.version;
+                }
             }
         });
     }
@@ -175,6 +180,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
     scale: f32,
     orientation: Orientation,
     line_analysis: Option<&[LineStatus]>,
+    is_stale: bool,
 ) {
     let base_font = egui::FontId::monospace(scale * 0.7);
 
@@ -239,10 +245,15 @@ fn draw_clues<C: crate::puzzle::Clue>(
                 ),
             };
             let radius = scale * 0.2;
+            let color = if is_stale {
+                Color32::from_gray(192)
+            } else {
+                Color32::BLACK
+            };
 
             match &analysis[i] {
                 Ok(Some(SolveMode::Skim)) => {
-                    painter.circle_filled(center, radius, Color32::BLACK);
+                    painter.circle_filled(center, radius, color);
                 }
                 Ok(Some(SolveMode::Scrub)) => {
                     let points = vec![
@@ -253,7 +264,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
                     ];
                     painter.add(egui::Shape::convex_polygon(
                         points,
-                        Color32::BLACK,
+                        color,
                         egui::Stroke::NONE,
                     ));
                 }
@@ -355,13 +366,14 @@ pub fn draw_dyn_clues(
     scale: f32,
     orientation: Orientation,
     line_analysis: Option<&[LineStatus]>,
+    is_stale: bool,
 ) {
     match puzzle {
         DynPuzzle::Nono(puzzle) => {
-            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, orientation, line_analysis);
+            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, orientation, line_analysis, is_stale);
         }
         DynPuzzle::Triano(puzzle) => {
-            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, orientation, line_analysis);
+            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, orientation, line_analysis, is_stale);
         }
     }
 }
