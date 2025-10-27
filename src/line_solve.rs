@@ -833,6 +833,23 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
     Ok(ScrubReport { affected_cells })
 }
 
+pub fn filter_report_by_color(
+    report: &mut ScrubReport,
+    orig_lane: &[Cell],
+    new_lane: &mut ArrayViewMut1<Cell>,
+    color: Color,
+) {
+    let mut new_affected_cells = vec![];
+    for &idx in &report.affected_cells {
+        if new_lane[idx].is_known_to_be(color) {
+            new_affected_cells.push(idx);
+        } else {
+            new_lane[idx] = orig_lane[idx];
+        }
+    }
+    report.affected_cells = new_affected_cells;
+}
+
 macro_rules! nc {
     ($color:expr, $count:expr) => {
         crate::puzzle::Nono {
@@ -1127,4 +1144,22 @@ fn heuristic_examples() {
         heur!([b, 3]  x, x, x, x, b, x, x, x, x, x, x, x, x, x, x),
         16
     );
+}
+
+#[test]
+fn filter_report() {
+    let mut rep = ScrubReport {
+        affected_cells: vec![0, 2, 4],
+    };
+    let orig = l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥 ⬛ ⬜");
+    let mut solved = l("🟥 🟥⬛⬜ ⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜");
+    filter_report_by_color(
+        &mut rep,
+        &orig.iter().cloned().collect::<Vec<_>>(),
+        &mut solved.view_mut(),
+        BACKGROUND,
+    );
+
+    assert_eq!(rep.affected_cells, vec![4]);
+    assert_eq!(solved, l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜"));
 }

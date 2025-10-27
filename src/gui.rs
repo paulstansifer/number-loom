@@ -895,7 +895,6 @@ impl NonogramGui {
                     }
                     Err(e) => self.solve_report = format!("Error: {:?}", e),
                 }
-                self.editor_gui.dirtiness = Dirtiness::Clean;
             }
 
             ui.colored_label(

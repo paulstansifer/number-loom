@@ -13,6 +13,24 @@ use crate::{
     puzzle::{BACKGROUND, Clue, Color, Puzzle, Solution, UNSOLVED},
 };
 
+pub struct SolveOptions {
+    pub trace_solve: bool,
+    pub display_cli_progress: bool,
+    pub only_solve_color: Option<Color>,
+    pub max_effort: SolveMode,
+}
+
+impl Default for SolveOptions {
+    fn default() -> Self {
+        SolveOptions {
+            trace_solve: false,
+            display_cli_progress: false,
+            only_solve_color: None,
+            max_effort: SolveMode::Scrub,
+        }
+    }
+}
+
 type Grid = ndarray::Array2<Cell>;
 pub type LineStatus = anyhow::Result<Option<SolveMode>>;
 
@@ -157,7 +175,7 @@ fn grid_to_solution<C: Clue>(grid: &Grid, puzzle: &Puzzle<C>) -> Solution {
         .into_iter()
         .map(|col| {
             col.iter()
-                .map(|cell| cell.known_or().unwrap_or(BACKGROUND))
+                .map(|cell| cell.known_or().unwrap_or(UNSOLVED))
                 .collect::<Vec<Color>>()
         })
         .collect();
@@ -283,10 +301,18 @@ pub fn grid_from_solution<C: Clue>(solution: &Solution, puzzle: &Puzzle<C>) -> G
 pub fn solve<C: Clue>(
     puzzle: &Puzzle<C>,
     line_cache: &mut Option<LineCache<C>>,
-    trace_solve: bool,
+    options: &SolveOptions,
 ) -> anyhow::Result<Report> {
     let mut grid = Grid::from_elem((puzzle.rows.len(), puzzle.cols.len()), Cell::new(puzzle));
+    solve_grid(puzzle, line_cache, options, &mut grid)
+}
 
+pub fn solve_grid<C: Clue>(
+    puzzle: &Puzzle<C>,
+    line_cache: &mut Option<LineCache<C>>,
+    options: &SolveOptions,
+    grid: &mut Grid,
+) -> anyhow::Result<Report> {
     let mut solve_lanes = vec![];
 
     for (idx, clue_row) in puzzle.rows.iter().enumerate() {
@@ -298,11 +324,11 @@ pub fn solve<C: Clue>(
     }
 
     let progress = indicatif::ProgressBar::new_spinner();
-    if trace_solve {
+    if options.trace_solve || !options.display_cli_progress {
         progress.finish_and_clear();
     }
 
-    let mut cells_left = puzzle.rows.len() * puzzle.cols.len();
+    let mut cells_left = grid.iter().filter(|c| !c.is_known()).count();
     let mut solve_counts = ModeMap::new_uniform(0);
 
     let initial_allowed_failures = ModeMap {
@@ -314,10 +340,10 @@ pub fn solve<C: Clue>(
 
     loop {
         progress.tick();
-        let mut current_mode = SolveMode::last();
+        let mut current_mode = options.max_effort;
         for mode in SolveMode::all() {
             if allowed_failures[*mode] > 0 {
-                current_mode = *mode;
+                current_mode = std::cmp::min(current_mode, *mode);
                 break;
             }
         }
@@ -326,7 +352,7 @@ pub fn solve<C: Clue>(
             let best_clue_lane = match find_best_lane(&mut solve_lanes, current_mode) {
                 Some(lane) => lane,
                 None => {
-                    if current_mode == SolveMode::last() {
+                    if current_mode >= options.max_effort {
                         // Nothing left to try; can't solve.
                         return Ok(Report {
                             solve_counts,
@@ -341,8 +367,7 @@ pub fn solve<C: Clue>(
                 }
             };
 
-            let mut best_grid_lane: ArrayViewMut1<Cell> =
-                get_mut_grid_lane(best_clue_lane, &mut grid);
+            let mut best_grid_lane: ArrayViewMut1<Cell> = get_mut_grid_lane(best_clue_lane, grid);
 
             progress.set_message(format!(
                 "{solve_counts} cells left: {cells_left: >6}  {}ing {}",
@@ -353,7 +378,7 @@ pub fn solve<C: Clue>(
             let orig_version_of_line: Vec<Cell> = best_grid_lane.iter().cloned().collect();
 
             solve_counts[current_mode] += 1;
-            let report = match current_mode {
+            let mut report = match current_mode {
                 SolveMode::Scrub => op_or_cache(
                     exhaust_line,
                     best_clue_lane,
@@ -373,19 +398,28 @@ pub fn solve<C: Clue>(
             };
             best_clue_lane.per_mode[current_mode].processed = true;
 
+            if let Some(color) = options.only_solve_color {
+                crate::line_solve::filter_report_by_color(
+                    &mut report,
+                    &orig_version_of_line,
+                    &mut best_grid_lane,
+                    color,
+                );
+            }
+
             let known_before = orig_version_of_line.iter().filter(|c| c.is_known()).count();
             let known_after = best_grid_lane.iter().filter(|c| c.is_known()).count();
 
-            best_clue_lane.rescore(&grid, /*was_processed=*/ true);
+            best_clue_lane.rescore(grid, /*was_processed=*/ true);
 
             cells_left -= known_after - known_before;
 
-            if trace_solve {
+            if options.trace_solve {
                 display_step(
                     best_clue_lane,
                     orig_version_of_line,
                     current_mode,
-                    &grid,
+                    grid,
                     puzzle,
                 );
             }
@@ -408,7 +442,7 @@ pub fn solve<C: Clue>(
             allowed_failures = initial_allowed_failures;
         }
 
-        if current_mode != SolveMode::last() {
+        if current_mode != options.max_effort {
             if report.affected_cells.is_empty() {
                 allowed_failures[current_mode] -= 1;
             } else {
@@ -604,5 +638,50 @@ mod tests {
         assert!(!grid[[1, 0]].is_known());
         assert!(grid[[1, 0]].can_be(BACKGROUND));
         assert!(grid[[1, 0]].can_be(Color(1)));
+    }
+
+    #[test]
+    fn test_color_filtered_solve() {
+        let puz = Puzzle {
+            palette: HashMap::new(), // ignored!
+            rows: vec![vec![Nono {
+                color: Color(1),
+                count: 3,
+            }]],
+            // This is bogus, and rightfully could crash. Need to implement a new "no info" clue to
+            // make this test work legitimately:
+            cols: vec![],
+        };
+        let mut grid = Grid::from_elem((1, 7), Cell::new_anything());
+        grid[[0, 5]] = Cell::from_color(Color(1));
+
+        let bkg_solved = solve_grid(
+            &puz,
+            &mut None,
+            &SolveOptions {
+                only_solve_color: Some(BACKGROUND),
+                max_effort: SolveMode::Skim,
+                ..SolveOptions::default()
+            },
+            &mut grid,
+        )
+        .unwrap();
+
+        assert_eq!(bkg_solved.cells_left, 3);
+
+        let row: Vec<Cell> = grid.row(0).into_iter().cloned().collect();
+
+        assert_eq!(
+            row,
+            vec![
+                Cell::from_color(BACKGROUND),
+                Cell::from_color(BACKGROUND),
+                Cell::from_color(BACKGROUND),
+                Cell::new_anything(),
+                Cell::new_anything(), // Known to be 1, but not allowed to say it
+                Cell::from_color(Color(1)),
+                Cell::new_anything()
+            ]
+        )
     }
 }
