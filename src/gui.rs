@@ -410,10 +410,14 @@ impl CanvasGui {
                     (BACKGROUND, egui::PointerButton::Primary)
                 };
 
+                // TODO: non-primary buttons still don't work right.
+
                 match self.current_tool {
                     Tool::Pencil => {
                         if response.clicked_by(button) || response.dragged_by(button) {
-                            let mood = if response.clicked() || response.drag_started() {
+                            let mood = if response.clicked_by(button)
+                                || response.drag_started_by(button)
+                            {
                                 self.drag_start_color = paint_color;
                                 ActionMood::Normal
                             } else {
@@ -646,10 +650,8 @@ impl NonogramGui {
         let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
 
         let mut current_color = BACKGROUND;
-        for (c, ci) in picture.palette.iter() {
-            if ci.rgb == (0, 0, 0) && ci.corner.is_none() {
-                current_color = *c;
-            }
+        if picture.palette.contains_key(&Color(1)) {
+            current_color = Color(1);
         }
 
         NonogramGui {
@@ -660,7 +662,7 @@ impl NonogramGui {
                 drag_start_color: current_color,
                 undo_stack: vec![],
                 redo_stack: vec![],
-                current_tool: Tool::Pencil,
+                current_tool: Tool::OrthographicLine,
                 line_tool_state: None,
                 solved_mask,
                 disambiguator: Disambiguator::new(),
