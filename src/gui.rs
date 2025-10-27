@@ -4,23 +4,6 @@ use std::{
     sync::mpsc,
 };
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
-pub enum Dirtiness {
-    Clean,
-    CellsChanged,
-    DimensionsChanged,
-}
-
-impl Dirtiness {
-    pub fn change_cells(&mut self) {
-        *self = max(*self, Dirtiness::CellsChanged);
-    }
-
-    pub fn change_dimensions(&mut self) {
-        *self = max(*self, Dirtiness::DimensionsChanged);
-    }
-}
-
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Tool {
     Pencil,
@@ -131,18 +114,18 @@ pub async fn yield_now() {
 
 type Version = u32;
 
-struct Staleable<T> {
-    val: T,
-    version: Version,
+pub struct Staleable<T> {
+    pub val: T,
+    pub version: Version,
 }
 
 impl<T> Staleable<T> {
-    fn update(&mut self, val: T, version: Version) {
+    pub fn update(&mut self, val: T, version: Version) {
         self.val = val;
         self.version = version;
     }
 
-    fn fresh(&self, version: Version) -> bool {
+    pub fn fresh(&self, version: Version) -> bool {
         self.version == version
     }
 
@@ -154,7 +137,7 @@ impl<T> Staleable<T> {
         }
     }
 
-    fn get_or_refresh<F>(&mut self, version: Version, refresh: F) -> &T
+    pub fn get_or_refresh<'a, F>(&'a mut self, version: Version, refresh: F) -> &'a mut T
     where
         F: FnOnce() -> T,
     {
@@ -162,21 +145,21 @@ impl<T> Staleable<T> {
             self.val = refresh();
             self.version = version;
         }
-        &self.val
+        &mut self.val
     }
 }
 
 pub struct CanvasGui {
     pub picture: Solution,
-    pub dirtiness: Dirtiness,
+    pub version: Version,
     pub current_color: Color,
     pub drag_start_color: Color,
     pub undo_stack: Vec<Action>,
     pub redo_stack: Vec<Action>,
     pub current_tool: Tool,
     pub line_tool_state: Option<(usize, usize)>,
-    pub solved_mask: Vec<Vec<bool>>,
-    pub disambiguator: Disambiguator,
+    pub solved_mask: Staleable<(String, Vec<Vec<bool>>)>,
+    pub disambiguator: Staleable<Disambiguator>,
 }
 
 struct NonogramGui {
@@ -246,7 +229,7 @@ impl CanvasGui {
                         changes.retain(|(x, y), old_col| {
                             if !new_changes.contains_key(&(*x, *y)) {
                                 self.picture.grid[*x][*y] = *old_col;
-                                self.dirtiness.change_cells();
+                                self.version += 1;
                                 false
                             } else {
                                 true
@@ -255,7 +238,7 @@ impl CanvasGui {
                         for ((x, y), col) in new_changes {
                             if self.picture.grid[*x][*y] != *col {
                                 self.picture.grid[*x][*y] = *col;
-                                self.dirtiness.change_cells();
+                                self.version += 1;
                             }
                         }
                         return;
@@ -267,7 +250,7 @@ impl CanvasGui {
                                 // Otherwise, we'd be flipping cells back and forth as long as we
                                 // were in them!
                                 self.picture.grid[*x][*y] = *col;
-                                self.dirtiness.change_cells();
+                                self.version += 1;
                             }
                         }
                         return;
@@ -286,13 +269,13 @@ impl CanvasGui {
                 for ((x, y), new_color) in changes {
                     if self.picture.grid[x][y] != new_color {
                         self.picture.grid[x][y] = new_color;
-                        self.dirtiness.change_cells();
+                        self.version += 1;
                     }
                 }
             }
             Action::ReplacePicture { picture } => {
                 self.picture = picture;
-                self.dirtiness.change_dimensions();
+                self.version += 1;
             }
         }
 
@@ -517,23 +500,24 @@ impl CanvasGui {
         }
 
         let mut shapes = vec![];
-        let disambig_report = &self.disambiguator.report;
+        let disambiguator = self.disambiguator.get_if_fresh(self.version);
+        let disambig_report = disambiguator.as_ref().and_then(|d| d.report.as_ref());
 
         for y in 0..y_size {
             for x in 0..x_size {
                 let cell = self.picture.grid[x][y];
                 let color_info = &self.picture.palette[&cell];
-                let solved = self.dirtiness != Dirtiness::Clean
-                    || self.solved_mask[x][y]
+                let solved = self
+                    .solved_mask
+                    .get_if_fresh(self.version)
+                    .map_or(false, |sm| sm.1[x][y])
                     || disambig_report.is_some()
-                    || (self.disambiguator.progress > 0.0 && self.disambiguator.progress < 1.0);
+                    || disambiguator.map_or(false, |d| d.progress > 0.0 && d.progress < 1.0);
                 let mut dr = (&self.picture.palette[&BACKGROUND], 1.0);
 
                 if let Some(disambig_report) = disambig_report.as_ref() {
-                    if self.dirtiness != Dirtiness::DimensionsChanged {
-                        let (c, score) = disambig_report[x][y];
-                        dr = (&self.picture.palette[&c], score);
-                    }
+                    let (c, score) = disambig_report[x][y];
+                    dr = (&self.picture.palette[&c], score);
                 }
                 for shape in cell_shape(color_info, solved, dr, x, y, &to_screen, render_style) {
                     shapes.push(shape);
@@ -690,15 +674,21 @@ impl NonogramGui {
         NonogramGui {
             editor_gui: CanvasGui {
                 picture,
-                dirtiness: Dirtiness::Clean,
+                version: 0,
                 current_color,
                 drag_start_color: current_color,
                 undo_stack: vec![],
                 redo_stack: vec![],
                 current_tool: Tool::Pencil,
                 line_tool_state: None,
-                solved_mask,
-                disambiguator: Disambiguator::new(),
+                solved_mask: Staleable {
+                    val: ("".to_string(), solved_mask),
+                    version: 0,
+                },
+                disambiguator: Staleable {
+                    val: Disambiguator::new(),
+                    version: 0,
+                },
             },
             file_name: "blank.xml".to_string(),
             scale: 16.0,
@@ -950,27 +940,31 @@ impl NonogramGui {
 
             ui.separator();
             ui.checkbox(&mut self.auto_solve, "auto-solve");
-            if ui.button("Solve").clicked()
-                || (self.auto_solve && self.editor_gui.dirtiness == Dirtiness::CellsChanged)
-            {
+            if ui.button("Solve").clicked() || self.auto_solve {
                 let puzzle = self.editor_gui.picture.to_puzzle();
 
-                match puzzle.plain_solve() {
-                    Ok(grid_solve::Report {
-                        solve_counts,
-                        cells_left,
-                        solution: _solution,
-                        solved_mask,
-                    }) => {
-                        self.solve_report = format!("{solve_counts} unsolved cells: {cells_left}");
-                        self.editor_gui.solved_mask = solved_mask;
-                    }
-                    Err(e) => self.solve_report = format!("Error: {:?}", e),
-                }
+                let (report, _solved_mask) =
+                    self.editor_gui
+                        .solved_mask
+                        .get_or_refresh(self.editor_gui.version, || {
+                            match puzzle.plain_solve() {
+                                Ok(grid_solve::Report {
+                                    solve_counts,
+                                    cells_left,
+                                    solution: _solution,
+                                    solved_mask,
+                                }) => (
+                                    format!("{solve_counts} unsolved cells: {cells_left}"),
+                                    solved_mask,
+                                ),
+                                Err(e) => (format!("Error: {:?}", e), vec![]),
+                            }
+                        });
+                self.solve_report = report.clone();
             }
 
             ui.colored_label(
-                if self.editor_gui.dirtiness == Dirtiness::Clean {
+                if self.editor_gui.solved_mask.fresh(self.editor_gui.version) {
                     Color32::BLACK
                 } else {
                     Color32::GRAY
@@ -982,6 +976,7 @@ impl NonogramGui {
 
             self.editor_gui
                 .disambiguator
+                .get_or_refresh(self.editor_gui.version, Disambiguator::new)
                 .disambig_widget(&self.editor_gui.picture, ui);
         });
     }
@@ -1220,16 +1215,6 @@ impl eframe::App for NonogramGui {
                         .canvas(ui, self.scale, RenderStyle::Experimental);
                 }
             });
-
-            if self.editor_gui.dirtiness == Dirtiness::DimensionsChanged {
-                self.editor_gui.solved_mask =
-                    vec![
-                        vec![false; self.editor_gui.picture.grid[0].len()];
-                        self.editor_gui.picture.grid.len()
-                    ];
-                self.editor_gui.disambiguator.reset();
-                self.editor_gui.dirtiness = Dirtiness::CellsChanged;
-            }
         });
     }
 }

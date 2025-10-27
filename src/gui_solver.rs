@@ -1,6 +1,6 @@
 use crate::{
     grid_solve::{self, LineStatus},
-    gui::{Action, ActionMood, CanvasGui, Dirtiness, Disambiguator, Tool},
+    gui::{Action, CanvasGui, Disambiguator, Staleable, Tool},
     puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
@@ -34,15 +34,21 @@ impl SolveGui {
         SolveGui {
             canvas: CanvasGui {
                 picture,
-                dirtiness: Dirtiness::Clean,
+                version: 0,
                 current_color,
                 drag_start_color: current_color,
                 undo_stack: vec![],
                 redo_stack: vec![],
                 current_tool: Tool::OrthographicLine,
                 line_tool_state: None,
-                solved_mask,
-                disambiguator: Disambiguator::new(),
+                solved_mask: Staleable {
+                    val: ("".to_string(), solved_mask),
+                    version: 0,
+                },
+                disambiguator: Staleable {
+                    val: Disambiguator::new(),
+                    version: 0,
+                },
             },
             clues,
             intended_solution,
@@ -71,10 +77,6 @@ impl SolveGui {
     }
 
     fn infer_background(&mut self) {
-        if self.canvas.dirtiness == Dirtiness::Clean {
-            return;
-        }
-
         let options = grid_solve::SolveOptions {
             max_effort: crate::line_solve::SolveMode::Skim,
             only_solve_color: Some(BACKGROUND),
@@ -92,12 +94,12 @@ impl SolveGui {
             }
 
             if !changes.is_empty() {
-                self.canvas
-                    .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+                self.canvas.perform(
+                    Action::ChangeColor { changes },
+                    crate::gui::ActionMood::Normal,
+                );
             }
         }
-
-        self.canvas.dirtiness = Dirtiness::Clean;
     }
 
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
@@ -148,10 +150,12 @@ impl SolveGui {
             ui.separator();
 
             ui.checkbox(&mut self.infer_background, "[auto]");
-            if ui.button("Infer background").clicked()
-                || (self.infer_background && self.canvas.dirtiness == Dirtiness::CellsChanged)
-            {
-                self.infer_background();
+            if ui.button("Infer background").clicked() || self.infer_background {
+                let mut staleable = Staleable {
+                    val: (),
+                    version: self.canvas.version.wrapping_sub(1),
+                };
+                staleable.get_or_refresh(self.canvas.version, || self.infer_background());
             }
         });
     }
