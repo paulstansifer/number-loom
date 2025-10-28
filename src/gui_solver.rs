@@ -1,6 +1,6 @@
 use crate::{
     grid_solve::{self, LineStatus},
-    gui::{Action, CanvasGui, Disambiguator, Staleable, Tool},
+    gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
     puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
@@ -99,10 +99,8 @@ impl SolveGui {
             }
 
             if !changes.is_empty() {
-                self.canvas.perform(
-                    Action::ChangeColor { changes },
-                    crate::gui::ActionMood::Normal,
-                );
+                self.canvas
+                    .perform(Action::ChangeColor { changes }, ActionMood::Normal);
             }
         }
     }
@@ -370,10 +368,24 @@ pub fn draw_dyn_clues(
 ) {
     match puzzle {
         DynPuzzle::Nono(puzzle) => {
-            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, orientation, line_analysis, is_stale);
+            draw_clues::<crate::puzzle::Nono>(
+                ui,
+                puzzle,
+                scale,
+                orientation,
+                line_analysis,
+                is_stale,
+            );
         }
         DynPuzzle::Triano(puzzle) => {
-            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, orientation, line_analysis, is_stale);
+            draw_clues::<crate::puzzle::Triano>(
+                ui,
+                puzzle,
+                scale,
+                orientation,
+                line_analysis,
+                is_stale,
+            );
         }
     }
 }

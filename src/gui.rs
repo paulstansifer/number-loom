@@ -510,7 +510,7 @@ impl CanvasGui {
                 let solved = self
                     .solved_mask
                     .get_if_fresh(self.version)
-                    .map_or(false, |sm| sm.1[x][y])
+                    .map_or(true, |sm| sm.1[x][y])
                     || disambig_report.is_some()
                     || disambiguator.map_or(false, |d| d.progress > 0.0 && d.progress < 1.0);
                 let mut dr = (&self.picture.palette[&BACKGROUND], 1.0);
@@ -946,19 +946,17 @@ impl NonogramGui {
                 let (report, _solved_mask) =
                     self.editor_gui
                         .solved_mask
-                        .get_or_refresh(self.editor_gui.version, || {
-                            match puzzle.plain_solve() {
-                                Ok(grid_solve::Report {
-                                    solve_counts,
-                                    cells_left,
-                                    solution: _solution,
-                                    solved_mask,
-                                }) => (
-                                    format!("{solve_counts} unsolved cells: {cells_left}"),
-                                    solved_mask,
-                                ),
-                                Err(e) => (format!("Error: {:?}", e), vec![]),
-                            }
+                        .get_or_refresh(self.editor_gui.version, || match puzzle.plain_solve() {
+                            Ok(grid_solve::Report {
+                                solve_counts,
+                                cells_left,
+                                solution: _solution,
+                                solved_mask,
+                            }) => (
+                                format!("{solve_counts} unsolved cells: {cells_left}"),
+                                solved_mask,
+                            ),
+                            Err(e) => (format!("Error: {:?}", e), vec![]),
                         });
                 self.solve_report = report.clone();
             }
