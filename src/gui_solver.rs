@@ -1,6 +1,6 @@
 use crate::{
     grid_solve::{self, LineStatus},
-    gui::{Action, ActionMood, CanvasGui, Dirtiness, Disambiguator, Tool},
+    gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
     puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
@@ -12,8 +12,9 @@ pub struct SolveGui {
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
-    pub line_analysis: Option<(Vec<LineStatus>, Vec<LineStatus>)>,
+    pub line_analysis: Staleable<Option<(Vec<LineStatus>, Vec<LineStatus>)>>,
     pub render_style: RenderStyle,
+    last_inferred_version: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,23 +35,33 @@ impl SolveGui {
         SolveGui {
             canvas: CanvasGui {
                 picture,
-                dirtiness: Dirtiness::Clean,
+                version: 0,
                 current_color,
                 drag_start_color: current_color,
                 undo_stack: vec![],
                 redo_stack: vec![],
                 current_tool: Tool::OrthographicLine,
                 line_tool_state: None,
-                solved_mask,
-                disambiguator: Disambiguator::new(),
+                solved_mask: Staleable {
+                    val: ("".to_string(), solved_mask),
+                    version: 0,
+                },
+                disambiguator: Staleable {
+                    val: Disambiguator::new(),
+                    version: 0,
+                },
             },
             clues,
             intended_solution,
             analyze_lines: false,
             detect_errors: false,
             infer_background: false,
-            line_analysis: None,
+            line_analysis: Staleable {
+                val: None,
+                version: u32::MAX,
+            },
             render_style: RenderStyle::Experimental,
+            last_inferred_version: u32::MAX,
         }
     }
 
@@ -71,10 +82,6 @@ impl SolveGui {
     }
 
     fn infer_background(&mut self) {
-        if self.canvas.dirtiness == Dirtiness::Clean {
-            return;
-        }
-
         let options = grid_solve::SolveOptions {
             max_effort: crate::line_solve::SolveMode::Skim,
             only_solve_color: Some(BACKGROUND),
@@ -96,8 +103,6 @@ impl SolveGui {
                     .perform(Action::ChangeColor { changes }, ActionMood::Normal);
             }
         }
-
-        self.canvas.dirtiness = Dirtiness::Clean;
     }
 
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
@@ -128,9 +133,10 @@ impl SolveGui {
 
             ui.checkbox(&mut self.analyze_lines, "[auto]");
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
+                let clues = &self.clues;
                 let grid = self.canvas.picture.to_partial();
-
-                self.line_analysis = Some(self.clues.analyze_lines(&grid));
+                self.line_analysis
+                    .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }
 
             ui.separator();
@@ -148,10 +154,11 @@ impl SolveGui {
             ui.separator();
 
             ui.checkbox(&mut self.infer_background, "[auto]");
-            if ui.button("Infer background").clicked()
-                || (self.infer_background && self.canvas.dirtiness == Dirtiness::CellsChanged)
-            {
-                self.infer_background();
+            if ui.button("Infer background").clicked() || self.infer_background {
+                if self.last_inferred_version != self.canvas.version {
+                    self.infer_background();
+                    self.last_inferred_version = self.canvas.version;
+                }
             }
         });
     }
@@ -171,6 +178,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
     scale: f32,
     orientation: Orientation,
     line_analysis: Option<&[LineStatus]>,
+    is_stale: bool,
 ) {
     let base_font = egui::FontId::monospace(scale * 0.7);
 
@@ -235,10 +243,15 @@ fn draw_clues<C: crate::puzzle::Clue>(
                 ),
             };
             let radius = scale * 0.2;
+            let color = if is_stale {
+                Color32::from_gray(192)
+            } else {
+                Color32::BLACK
+            };
 
             match &analysis[i] {
                 Ok(Some(SolveMode::Skim)) => {
-                    painter.circle_filled(center, radius, Color32::BLACK);
+                    painter.circle_filled(center, radius, color);
                 }
                 Ok(Some(SolveMode::Scrub)) => {
                     let points = vec![
@@ -249,7 +262,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
                     ];
                     painter.add(egui::Shape::convex_polygon(
                         points,
-                        Color32::BLACK,
+                        color,
                         egui::Stroke::NONE,
                     ));
                 }
@@ -351,13 +364,28 @@ pub fn draw_dyn_clues(
     scale: f32,
     orientation: Orientation,
     line_analysis: Option<&[LineStatus]>,
+    is_stale: bool,
 ) {
     match puzzle {
         DynPuzzle::Nono(puzzle) => {
-            draw_clues::<crate::puzzle::Nono>(ui, puzzle, scale, orientation, line_analysis);
+            draw_clues::<crate::puzzle::Nono>(
+                ui,
+                puzzle,
+                scale,
+                orientation,
+                line_analysis,
+                is_stale,
+            );
         }
         DynPuzzle::Triano(puzzle) => {
-            draw_clues::<crate::puzzle::Triano>(ui, puzzle, scale, orientation, line_analysis);
+            draw_clues::<crate::puzzle::Triano>(
+                ui,
+                puzzle,
+                scale,
+                orientation,
+                line_analysis,
+                is_stale,
+            );
         }
     }
 }
