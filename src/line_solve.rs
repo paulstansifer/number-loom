@@ -12,17 +12,19 @@ use ndarray::{ArrayView1, ArrayViewMut1};
 pub enum SolveMode {
     // Listed in order from quickest to most comprehensive:
     Skim,
+    Settle,
     Scrub,
 }
 
 impl SolveMode {
     pub fn all() -> &'static [SolveMode] {
-        &[SolveMode::Skim, SolveMode::Scrub]
+        &[SolveMode::Skim, SolveMode::Settle, SolveMode::Scrub]
     }
 
     pub fn name(self) -> &'static str {
         match self {
             SolveMode::Skim => "skim",
+            SolveMode::Settle => "settle",
             SolveMode::Scrub => "scrub",
         }
     }
@@ -30,6 +32,7 @@ impl SolveMode {
     pub fn colorized_name(self) -> ColoredString {
         match self {
             SolveMode::Skim => self.name().green(),
+            SolveMode::Settle => self.name().yellow(),
             SolveMode::Scrub => self.name().red(),
         }
     }
@@ -37,6 +40,7 @@ impl SolveMode {
     pub fn ch(self) -> char {
         match self {
             SolveMode::Skim => '-',
+            SolveMode::Settle => '.',
             SolveMode::Scrub => '+',
         }
     }
@@ -44,13 +48,15 @@ impl SolveMode {
     pub fn prev(self) -> Option<SolveMode> {
         match self {
             SolveMode::Skim => None,
-            SolveMode::Scrub => Some(SolveMode::Skim),
+            SolveMode::Settle => Some(SolveMode::Skim),
+            SolveMode::Scrub => Some(SolveMode::Settle),
         }
     }
 
     pub fn next(self) -> Option<SolveMode> {
         match self {
-            SolveMode::Skim => Some(SolveMode::Scrub),
+            SolveMode::Skim => Some(SolveMode::Settle),
+            SolveMode::Settle => Some(SolveMode::Scrub),
             SolveMode::Scrub => None,
         }
     }
@@ -67,6 +73,7 @@ impl SolveMode {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ModeMap<T> {
     pub skim: T,
+    pub settle: T,
     pub scrub: T,
 }
 
@@ -74,6 +81,7 @@ impl<T: Clone> ModeMap<T> {
     pub fn new_uniform(value: T) -> ModeMap<T> {
         ModeMap {
             skim: value.clone(),
+            settle: value.clone(),
             scrub: value,
         }
     }
@@ -98,6 +106,7 @@ impl<T> std::ops::Index<SolveMode> for ModeMap<T> {
     fn index(&self, index: SolveMode) -> &Self::Output {
         match index {
             SolveMode::Skim => &self.skim,
+            SolveMode::Settle => &self.settle,
             SolveMode::Scrub => &self.scrub,
         }
     }
@@ -107,6 +116,7 @@ impl<T> std::ops::IndexMut<SolveMode> for ModeMap<T> {
     fn index_mut(&mut self, index: SolveMode) -> &mut Self::Output {
         match index {
             SolveMode::Skim => &mut self.skim,
+            SolveMode::Settle => &mut self.settle,
             SolveMode::Scrub => &mut self.scrub,
         }
     }
@@ -567,6 +577,52 @@ pub fn skim_line<C: Clue + Copy>(
     })
 }
 
+pub fn settle_line<C: Clue + Copy>(
+    clues: &[C],
+    lane: &mut ArrayViewMut1<Cell>,
+) -> anyhow::Result<ScrubReport> {
+    let mut affected = Vec::<usize>::new();
+    if clues.is_empty() {
+        return Ok(ScrubReport {
+            affected_cells: affected,
+        });
+    }
+
+    let left_packed_right_extents = packed_extents(clues, &lane, false)?;
+    let right_packed_left_extents = packed_extents(clues, &lane, true)?;
+
+    for i in 0..clues.len() {
+        let clue = &clues[i];
+        let right_extent = left_packed_right_extents[i];
+        let left_extent = right_packed_left_extents[i];
+
+        if right_extent < left_extent {
+            continue; // Impossible placement, skip
+        }
+
+        let is_fixed = (right_extent - left_extent + 1) == clue.len();
+
+        if is_fixed {
+            // Check before
+            if left_extent > 0 {
+                if i == 0 || clues[i - 1].must_be_separated_from(clue) {
+                    learn_cell(BACKGROUND, lane, left_extent - 1, &mut affected)?;
+                }
+            }
+            // Check after
+            if right_extent < lane.len() - 1 {
+                if i == clues.len() - 1 || clue.must_be_separated_from(&clues[i + 1]) {
+                    learn_cell(BACKGROUND, lane, right_extent + 1, &mut affected)?;
+                }
+            }
+        }
+    }
+
+    Ok(ScrubReport {
+        affected_cells: affected,
+    })
+}
+
 pub fn skim_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
     if clues.is_empty() {
         return 1000; // Can solve it right away!
@@ -975,6 +1031,16 @@ mod tests {
         working_line
     }
 
+    fn test_settle<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+        let mut working_line = l(init);
+        settle_line(
+            &clues,
+            &mut working_line.rows_mut().into_iter().next().unwrap(),
+        )
+        .unwrap();
+        working_line
+    }
+
     #[test]
     fn scrub_test() {
         assert_eq!(test_scrub(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
@@ -1096,6 +1162,14 @@ mod tests {
         assert_eq!(
             test_skim(tri("🮞2"), "🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜"),
             l("🮞⬛⬜ 🮞⬛ ⬛ 🮞⬛⬜")
+        );
+    }
+
+    #[test]
+    fn settle_test() {
+        assert_eq!(
+            test_settle(n("⬛1 ⬛1"), "⬛ 🔳 🔳 🔳 ⬛"),
+            l("⬛ ⬜ 🔳 ⬜ ⬛")
         );
     }
 

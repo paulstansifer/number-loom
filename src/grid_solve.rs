@@ -107,6 +107,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
             }
             s.score = match mode {
                 SolveMode::Scrub => scrub_heuristic(self.clues, lane),
+                SolveMode::Settle => std::i32::MIN,
                 SolveMode::Skim => skim_heuristic(self.clues, lane),
             };
         }
@@ -232,6 +233,7 @@ fn display_step<'a, C: Clue>(
             scrub_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap()),
             clue_lane.per_mode[mode].score,
         ),
+        SolveMode::Settle => (0, 0),
         SolveMode::Skim => (
             skim_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap()),
             clue_lane.per_mode[mode].score,
@@ -319,6 +321,7 @@ pub fn solve_grid<C: Clue>(
 
     let initial_allowed_failures = ModeMap {
         skim: 10,
+        settle: 10,
         scrub: 0, /*ignored */
     };
 
@@ -375,6 +378,13 @@ pub fn solve_grid<C: Clue>(
                     "scrubbing {:?} with {:?}",
                     best_clue_lane, orig_version_of_line
                 ))?,
+                SolveMode::Settle => {
+                    crate::line_solve::settle_line(best_clue_lane.clues, &mut best_grid_lane)
+                        .context(format!(
+                            "settling {:?} with {:?}",
+                            best_clue_lane, orig_version_of_line
+                        ))?
+                }
                 SolveMode::Skim => {
                     skim_line(best_clue_lane.clues, &mut best_grid_lane).context(format!(
                         "skimming {:?} with {:?}",
@@ -462,6 +472,13 @@ fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
     skim_line(clues, &mut skim_lane.view_mut())?;
     if any_newly_known(lane, skim_lane.view()) {
         return Ok(Some(SolveMode::Skim));
+    }
+
+    // Try settling
+    let mut settle_lane = lane.to_owned();
+    crate::line_solve::settle_line(clues, &mut settle_lane.view_mut())?;
+    if any_newly_known(lane, settle_lane.view()) {
+        return Ok(Some(SolveMode::Settle));
     }
 
     // Try scrubbing
