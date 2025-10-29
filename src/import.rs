@@ -35,25 +35,25 @@ pub fn load(filename: &str, bytes: Vec<u8>, format: Option<NonogramFormat>) -> D
             let img = image::load_from_memory(&bytes).unwrap();
             let solution = image_to_solution(&img);
 
-            Document::new(None, Some(solution), filename.to_string())
+            Document::new(None, Some(solution), filename.to_string(), None, None)
         }
         NonogramFormat::Webpbn => {
             let webpbn_string = String::from_utf8(bytes).unwrap();
-            let puzzle: puzzle::Puzzle<puzzle::Nono> = webpbn_to_puzzle(&webpbn_string);
-
-            Document::new(Some(Nono::to_dyn(puzzle)), None, filename.to_string())
+            let mut doc = webpbn_to_document(&webpbn_string);
+            doc.file = filename.to_string();
+            doc
         }
         NonogramFormat::CharGrid => {
             let grid_string = String::from_utf8(bytes).unwrap();
             let solution = char_grid_to_solution(&grid_string);
 
-            Document::new(None, Some(solution), filename.to_string())
+            Document::new(None, Some(solution), filename.to_string(), None, None)
         }
         NonogramFormat::Olsak => {
             let olsak_string = String::from_utf8(bytes).unwrap();
             let puzzle = olsak_to_puzzle(&olsak_string).unwrap();
 
-            Document::new(Some(puzzle), None, filename.to_string())
+            Document::new(Some(puzzle), None, filename.to_string(), None, None)
         }
     }
 }
@@ -318,26 +318,38 @@ pub fn get_single_child<'a, 'input>(
     Ok(res.pop().unwrap())
 }
 
-pub fn webpbn_to_puzzle(webpbn: &str) -> Puzzle<Nono> {
+pub fn webpbn_to_document(webpbn: &str) -> Document {
     let doc = roxmltree::Document::parse(webpbn).unwrap();
     let puzzleset = doc.root_element();
-    let puzzle = get_single_child(puzzleset, "puzzle").unwrap();
+    let puzzle_node = get_single_child(puzzleset, "puzzle").unwrap();
 
-    let default_color = puzzle
+    let mut title = None;
+    let mut description = None;
+
+    let default_color = puzzle_node
         .attribute("defaultcolor")
         .expect("Expected a 'defaultcolor");
     let mut next_color_index = 1;
 
     let mut named_colors = HashMap::<String, Color>::new();
 
-    let mut res = Puzzle {
+    let mut puzzle = Puzzle {
         palette: HashMap::<Color, ColorInfo>::new(),
         rows: vec![],
         cols: vec![],
     };
 
-    for puzzle_part in puzzle.children() {
-        if puzzle_part.tag_name().name() == "color" {
+    for puzzle_part in puzzle_node.children() {
+        if !puzzle_part.is_element() {
+            continue;
+        }
+
+        let tag_name = puzzle_part.tag_name().name();
+        if tag_name == "title" {
+            title = puzzle_part.text().map(|s| s.trim().to_string());
+        } else if tag_name == "description" {
+            description = puzzle_part.text().map(|s| s.trim().to_string());
+        } else if tag_name == "color" {
             let color_name = puzzle_part.attribute("name").unwrap();
             let color = if color_name == default_color {
                 BACKGROUND
@@ -376,9 +388,9 @@ pub fn webpbn_to_puzzle(webpbn: &str) -> Puzzle<Nono> {
                 corner: None, // webpbn isn't intended to represent Triano clues
             };
 
-            res.palette.insert(color, color_info);
+            puzzle.palette.insert(color, color_info);
             named_colors.insert(color_name.to_string(), color);
-        } else if puzzle_part.tag_name().name() == "clues" {
+        } else if tag_name == "clues" {
             let row = if puzzle_part.attribute("type") == Some("rows") {
                 true
             } else if puzzle_part.attribute("type") == Some("columns") {
@@ -404,14 +416,20 @@ pub fn webpbn_to_puzzle(webpbn: &str) -> Puzzle<Nono> {
             }
 
             if row {
-                res.rows = clue_lanes;
+                puzzle.rows = clue_lanes;
             } else {
-                res.cols = clue_lanes;
+                puzzle.cols = clue_lanes;
             }
         }
     }
 
-    res
+    Document::new(
+        Some(Nono::to_dyn(puzzle)),
+        None,
+        "".to_string(),
+        title,
+        description,
+    )
 }
 
 #[derive(Debug, PartialEq, Eq)]
