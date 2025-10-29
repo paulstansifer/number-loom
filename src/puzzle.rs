@@ -7,6 +7,7 @@ use crate::{
     grid_solve::{self, LineStatus, SolveOptions},
     import::{solution_to_puzzle, solution_to_triano_puzzle},
 };
+use sha2::{Digest, Sha256};
 pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash + Send {
     fn style() -> ClueStyle;
 
@@ -491,6 +492,23 @@ impl Document {
     #[allow(dead_code)] // it's a little weird how this is easy to get but never used
     pub fn file(&self) -> &str {
         &self.file
+    }
+
+    pub fn get_or_make_up_title(&mut self) -> anyhow::Result<String> {
+        if self.title.is_some() {
+            return Ok(self.title.as_ref().unwrap().clone());
+        }
+
+        let solution = self.solution()?.grid.clone();
+        let mut hasher = Sha256::new();
+        for row in solution {
+            for color in row {
+                hasher.update(color.0.to_le_bytes());
+            }
+        }
+        let hash = hasher.finalize();
+
+        Ok(mnemonic::to_string(&hash[0..4]))
     }
 
     #[allow(dead_code)]

@@ -2534,6 +2534,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnemonic"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2b8f3a258db515d5e91a904ce4ae3f73e091149b90cadbdb93d210bee07f63b"
+
+[[package]]
 name = "naga"
 version = "24.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2765,12 +2771,14 @@ dependencies = [
  "indoc",
  "itertools 0.14.0",
  "js-sys",
+ "mnemonic",
  "ndarray",
  "quick-xml 0.37.5",
  "rand 0.8.5",
  "regex",
  "rfd",
  "roxmltree",
+ "sha2",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -3824,6 +3832,17 @@ name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures",
