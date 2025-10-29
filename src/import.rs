@@ -34,8 +34,7 @@ pub fn load(filename: &str, bytes: Vec<u8>, format: Option<NonogramFormat>) -> D
         NonogramFormat::Image => {
             let img = image::load_from_memory(&bytes).unwrap();
             let solution = image_to_solution(&img);
-
-            Document::new(None, Some(solution), filename.to_string(), None, None)
+            Document::from_solution(solution, filename.to_string())
         }
         NonogramFormat::Webpbn => {
             let webpbn_string = String::from_utf8(bytes).unwrap();
@@ -46,14 +45,12 @@ pub fn load(filename: &str, bytes: Vec<u8>, format: Option<NonogramFormat>) -> D
         NonogramFormat::CharGrid => {
             let grid_string = String::from_utf8(bytes).unwrap();
             let solution = char_grid_to_solution(&grid_string);
-
-            Document::new(None, Some(solution), filename.to_string(), None, None)
+            Document::from_solution(solution, filename.to_string())
         }
         NonogramFormat::Olsak => {
             let olsak_string = String::from_utf8(bytes).unwrap();
             let puzzle = olsak_to_puzzle(&olsak_string).unwrap();
-
-            Document::new(Some(puzzle), None, filename.to_string(), None, None)
+            Document::from_puzzle(puzzle, filename.to_string())
         }
     }
 }
@@ -325,6 +322,8 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
 
     let mut title = None;
     let mut description = None;
+    let mut author = None;
+    let mut authorid = None;
 
     let default_color = puzzle_node
         .attribute("defaultcolor")
@@ -349,6 +348,10 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
             title = puzzle_part.text().map(|s| s.trim().to_string());
         } else if tag_name == "description" {
             description = puzzle_part.text().map(|s| s.trim().to_string());
+        } else if tag_name == "author" {
+            author = puzzle_part.text().map(|s| s.trim().to_string());
+        } else if tag_name == "authorid" {
+            authorid = puzzle_part.text().map(|s| s.trim().to_string());
         } else if tag_name == "color" {
             let color_name = puzzle_part.attribute("name").unwrap();
             let color = if color_name == default_color {
@@ -429,6 +432,7 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
         "".to_string(),
         title,
         description,
+        author.or(authorid),
     )
 }
 
