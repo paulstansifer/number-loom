@@ -35,6 +35,8 @@ console_error_panic_hook = "0.1.7"
 tokio = { version = "1", features = ["rt"] }         # Using only wasm-safe features
 mnemonic = "1.1.1"
 sha2 = "0.10.9"
+reqwest = { version = "0.12.24", features = ["blocking"] }
+zip = "6.0.0"
 
 [dev-dependencies]
 rand = "0.8.5"

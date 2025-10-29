@@ -3,6 +3,7 @@ use image::{DynamicImage, GenericImageView, Pixel, Rgba};
 use std::{
     char::from_digit,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    io::Cursor,
     io::Read,
     iter::FromIterator,
     path::PathBuf,
@@ -964,6 +965,30 @@ pub fn bw_palette() -> HashMap<Color, ColorInfo> {
     palette.insert(BACKGROUND, ColorInfo::default_bg());
     palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
     palette
+}
+
+pub fn load_zip_from_url(url: &str) -> anyhow::Result<Vec<Document>> {
+    let response = reqwest::blocking::get(url)?;
+    let zip_bytes = response.bytes()?;
+    let zip_cursor = Cursor::new(zip_bytes);
+
+    let mut archive = zip::ZipArchive::new(zip_cursor)?;
+    let mut documents = vec![];
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let filename = file.name().to_string();
+
+        if file.is_dir() {
+            continue;
+        }
+
+        let mut bytes = vec![];
+        file.read_to_end(&mut bytes)?;
+        documents.push(load(&filename, bytes, None));
+    }
+
+    Ok(documents)
 }
 
 pub fn triano_palette() -> HashMap<Color, ColorInfo> {

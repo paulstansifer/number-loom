@@ -167,6 +167,10 @@ struct NonogramGui {
     file_name: String,
     scale: f32,
     opened_file_receiver: mpsc::Receiver<(Solution, String)>,
+    gallery_receiver: mpsc::Receiver<anyhow::Result<Vec<Document>>>,
+    show_gallery: bool,
+    gallery_docs: Option<Vec<Document>>,
+    gallery_error: Option<String>,
     new_dialog: Option<NewPuzzleDialog>,
     auto_solve: bool,
     lines_to_affect_string: String,
@@ -693,6 +697,10 @@ impl NonogramGui {
             file_name: "blank.xml".to_string(),
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
+            gallery_receiver: mpsc::channel().1,
+            show_gallery: false,
+            gallery_docs: None,
+            gallery_error: None,
             new_dialog: None,
             auto_solve: false,
             lines_to_affect_string: "5".to_string(),
@@ -1140,7 +1148,69 @@ impl eframe::App for NonogramGui {
                     self.new_dialog = None;
                 }
 
+                if let Ok(gallery_result) = self.gallery_receiver.try_recv() {
+                    match gallery_result {
+                        Ok(docs) => {
+                            self.gallery_docs = Some(docs);
+                            self.gallery_error = None;
+                            self.show_gallery = true;
+                        }
+                        Err(e) => {
+                            self.gallery_docs = None;
+                            self.gallery_error = Some(e.to_string());
+                            self.show_gallery = true;
+                        }
+                    }
+                }
+
+                let mut puzzle_to_load = None;
+                if self.show_gallery {
+                    let mut still_open = true;
+                    egui::Window::new("Puzzle Gallery")
+                        .open(&mut still_open)
+                        .show(ctx, |ui| {
+                            if let Some(error) = &self.gallery_error {
+                                ui.colored_label(Color32::RED, error);
+                            } else if let Some(docs) = &mut self.gallery_docs {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    for doc in docs {
+                                        if crate::gui_gallery::gallery_puzzle_preview(ui, doc)
+                                            .clicked()
+                                        {
+                                            puzzle_to_load =
+                                                Some((*doc).clone().take_solution().unwrap());
+                                        }
+                                    }
+                                });
+                            }
+                        });
+
+                    if !still_open || puzzle_to_load.is_some() {
+                        self.show_gallery = false;
+                    }
+                }
+
+                if let Some(picture) = puzzle_to_load {
+                    self.editor_gui.perform(
+                        Action::ReplacePicture { picture },
+                        ActionMood::Normal,
+                    );
+                    self.solve_mode = true;
+                }
+
+
                 self.loader(ui);
+                if ui.button("Gallery").clicked() {
+                    let (sender, receiver) = mpsc::channel();
+                    self.gallery_receiver = receiver;
+
+                    spawn_async(async move {
+                        let result = crate::import::load_zip_from_url(
+                            "https://webpbn.com/export/!marti.2024-07-29.220143.zip",
+                        );
+                        sender.send(result).unwrap();
+                    });
+                }
                 ui.add(egui::TextEdit::singleline(&mut self.file_name).desired_width(150.0));
                 self.saver(ui);
 

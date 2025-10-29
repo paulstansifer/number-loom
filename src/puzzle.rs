@@ -474,6 +474,7 @@ pub fn infer_format(path: &str, format_arg: Option<NonogramFormat>) -> NonogramF
     }
 }
 
+#[derive(Clone)]
 pub struct Document {
     p: Option<DynPuzzle>,
     s: Option<Solution>,

@@ -35,7 +35,7 @@ fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &mut Document) {
 }
 
 /// Draws a gallery item for a document.
-pub fn draw_gallery_item(ui: &mut egui::Ui, doc: &mut Document) {
+pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &mut Document) -> egui::Response {
     let title = doc
         .get_or_make_up_title()
         .unwrap_or_else(|_| "Untitled".to_string());
@@ -61,7 +61,7 @@ pub fn draw_gallery_item(ui: &mut egui::Ui, doc: &mut Document) {
             .specialize(|_| "nonogram", |_| "triangogram")
     };
 
-    egui::Frame::new()
+    let inner_response = egui::Frame::new()
         .corner_radius(CornerRadius::same(5))
         .stroke(egui::Stroke::new(1.0, egui::Color32::GRAY))
         .inner_margin(egui::Margin::same(5))
@@ -69,7 +69,7 @@ pub fn draw_gallery_item(ui: &mut egui::Ui, doc: &mut Document) {
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new(title).strong());
                 let (mut rect, _response) =
-                    ui.allocate_exact_size(egui::vec2(250.0, 10.0), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(250.0, 10.0), egui::Sense::hover());
 
                 rect = rect.expand2(Vec2::new(5.0, 0.0));
 
@@ -81,6 +81,16 @@ pub fn draw_gallery_item(ui: &mut egui::Ui, doc: &mut Document) {
                 });
             });
         });
+
+    let response = ui.interact(
+        inner_response.response.rect,
+        ui.next_auto_id(),
+        egui::Sense::click(),
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
 }
 
 fn count_colors(doc: &Document) -> HashMap<(u8, u8, u8), usize> {
