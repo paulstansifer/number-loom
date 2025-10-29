@@ -1038,7 +1038,13 @@ impl NonogramGui {
                     .await;
 
                 if let Some(handle) = handle {
-                    let mut document = Document::new(None, Some(solution_copy), handle.file_name());
+                    let mut document = Document::new(
+                        None,
+                        Some(solution_copy),
+                        handle.file_name(),
+                        None,
+                        None,
+                    );
                     let bytes = to_bytes(&mut document, Some(handle.file_name()), None).unwrap();
                     handle.write(&bytes).await.unwrap();
                 }

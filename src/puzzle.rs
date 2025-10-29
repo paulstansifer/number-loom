@@ -465,16 +465,26 @@ pub struct Document {
     p: Option<DynPuzzle>,
     s: Option<Solution>,
     /// Path if native, just a filename, if on the Web
-    file: String,
+    pub file: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
 }
 
 impl Document {
-    pub fn new(puzzle: Option<DynPuzzle>, solution: Option<Solution>, file: String) -> Document {
+    pub fn new(
+        puzzle: Option<DynPuzzle>,
+        solution: Option<Solution>,
+        file: String,
+        title: Option<String>,
+        description: Option<String>,
+    ) -> Document {
         assert!(puzzle.is_some() || solution.is_some());
         Document {
             p: puzzle,
             s: solution,
             file,
+            title,
+            description,
         }
     }
 
