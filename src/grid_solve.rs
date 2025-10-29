@@ -293,6 +293,19 @@ pub fn solve<C: Clue>(
     solve_grid(puzzle, line_cache, options, &mut grid)
 }
 
+pub fn settle_solution<C: Clue>(
+    puzzle: &Puzzle<C>,
+    grid: &mut PartialSolution,
+) -> anyhow::Result<()> {
+    for (idx, clue_row) in puzzle.rows.iter().enumerate() {
+        crate::line_solve::settle_line(clue_row, &mut grid.row_mut(idx))?;
+    }
+    for (idx, clue_col) in puzzle.cols.iter().enumerate() {
+        crate::line_solve::settle_line(clue_col, &mut grid.column_mut(idx))?;
+    }
+    Ok(())
+}
+
 pub fn solve_grid<C: Clue>(
     puzzle: &Puzzle<C>,
     line_cache: &mut Option<LineCache<C>>,
@@ -669,5 +682,33 @@ mod tests {
                 Cell::new_anything()
             ]
         )
+    }
+
+    #[test]
+    fn test_settle_solution() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+
+        let clue = |n| {
+            vec![Nono {
+                color: Color(1),
+                count: n,
+            }]
+        };
+        let puzzle = Puzzle {
+            palette,
+            rows: vec![clue(1), clue(1)],
+            cols: vec![clue(1), clue(1)],
+        };
+
+        let mut grid = PartialSolution::from_elem((2, 2), Cell::new(&puzzle));
+        grid[[0, 0]] = Cell::from_color(Color(1));
+        grid[[1, 1]] = Cell::from_color(Color(1));
+
+        settle_solution(&puzzle, &mut grid).unwrap();
+
+        assert!(grid[[0, 1]].is_known_to_be(BACKGROUND));
+        assert!(grid[[1, 0]].is_known_to_be(BACKGROUND));
     }
 }

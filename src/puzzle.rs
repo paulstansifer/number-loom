@@ -276,6 +276,7 @@ pub trait PuzzleDynOps {
         self.solve(&SolveOptions::default())
     }
     fn analyze_lines(&self, partial: &PartialSolution) -> (Vec<LineStatus>, Vec<LineStatus>);
+    fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()>;
 }
 
 impl<C: Clue> PuzzleDynOps for Puzzle<C> {
@@ -302,6 +303,10 @@ impl<C: Clue> PuzzleDynOps for Puzzle<C> {
 
     fn analyze_lines(&self, partial: &PartialSolution) -> (Vec<LineStatus>, Vec<LineStatus>) {
         grid_solve::analyze_lines(self, partial)
+    }
+
+    fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()> {
+        grid_solve::settle_solution(self, partial)
     }
 }
 
@@ -339,6 +344,13 @@ impl PuzzleDynOps for DynPuzzle {
         match self {
             DynPuzzle::Nono(p) => p.analyze_lines(partial),
             DynPuzzle::Triano(p) => p.analyze_lines(partial),
+        }
+    }
+
+    fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()> {
+        match self {
+            DynPuzzle::Nono(p) => p.settle_solution(partial),
+            DynPuzzle::Triano(p) => p.settle_solution(partial),
         }
     }
 }

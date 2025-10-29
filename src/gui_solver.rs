@@ -1,7 +1,7 @@
 use crate::{
-    grid_solve::{self, LineStatus},
+    grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
-    puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution},
+    puzzle::{Color, DynPuzzle, PuzzleDynOps, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
@@ -82,19 +82,14 @@ impl SolveGui {
     }
 
     fn infer_background(&mut self) {
-        let options = grid_solve::SolveOptions {
-            max_effort: crate::line_solve::SolveMode::Skim,
-            only_solve_color: Some(BACKGROUND),
-            ..Default::default()
-        };
-
         let mut grid = self.canvas.picture.to_partial();
 
-        if let Ok(_) = self.clues.partial_solve(&mut grid, &options) {
+        if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
             for ((y, x), cell) in grid.indexed_iter() {
-                if let Some(color) = cell.known_or() {
-                    changes.insert((x, y), color);
+                let current_color = self.canvas.picture.grid[x][y];
+                if cell.is_known() && cell.known_or() != Some(current_color) {
+                    changes.insert((x, y), cell.known_or().unwrap());
                 }
             }
 

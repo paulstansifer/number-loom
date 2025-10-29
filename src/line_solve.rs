@@ -332,6 +332,10 @@ fn packed_extents<C: Clue + Copy>(
     lane: &ArrayViewMut1<Cell>,
     reversed: bool,
 ) -> anyhow::Result<Vec<usize>> {
+    if clues.is_empty() {
+        return Ok(vec![]);
+    }
+
     let mut extents: Vec<usize> = vec![];
 
     let lane_at = |idx: usize| -> Cell {
@@ -560,6 +564,64 @@ pub fn skim_line<C: Clue + Copy>(
     }
     for i in rightmost..lane.len() {
         learn_cell(BACKGROUND, lane, i, &mut affected).context(format!("ropen: {}", i))?;
+    }
+
+    Ok(ScrubReport {
+        affected_cells: affected,
+    })
+}
+
+pub fn settle_line<C: Clue + Copy>(
+    clues: &[C],
+    lane: &mut ArrayViewMut1<Cell>,
+) -> anyhow::Result<ScrubReport> {
+    let mut affected = Vec::<usize>::new();
+
+    let left_packed_right_extents = packed_extents(clues, &lane, false)?;
+    let right_packed_left_extents = packed_extents(clues, &lane, true)?;
+
+    let mut prev_known_end = Some(0); // Left edge is known!
+    for i in 0..clues.len() {
+        let clue = &clues[i];
+        let right_extent = left_packed_right_extents[i];
+        let left_extent = right_packed_left_extents[i];
+
+        let is_known = (right_extent + 1) == clue.len() + left_extent
+            && (left_extent..=right_extent).all(|j| lane[j].is_known());
+
+        if is_known {
+            // Separator background before
+            if left_extent > 0 {
+                if i > 0 && clues[i - 1].must_be_separated_from(clue) {
+                    learn_cell(BACKGROUND, lane, left_extent - 1, &mut affected)?;
+                }
+            }
+            // Separator background after
+            if right_extent < lane.len() - 1 {
+                if i < clues.len() - 1 && clue.must_be_separated_from(&clues[i + 1]) {
+                    learn_cell(BACKGROUND, lane, right_extent + 1, &mut affected)?;
+                }
+            }
+
+            if let Some(prev_end) = prev_known_end {
+                for i in prev_end..left_extent {
+                    learn_cell(BACKGROUND, lane, i, &mut affected)?;
+                }
+            }
+        }
+
+        if is_known {
+            prev_known_end = Some(right_extent + 1);
+        } else {
+            prev_known_end = None;
+        }
+    }
+
+    // Right edge is known too:
+    if let Some(prev_end) = prev_known_end {
+        for i in prev_end..lane.len() {
+            learn_cell(BACKGROUND, lane, i, &mut affected)?;
+        }
     }
 
     Ok(ScrubReport {
@@ -975,6 +1037,16 @@ mod tests {
         working_line
     }
 
+    fn test_settle<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+        let mut working_line = l(init);
+        settle_line(
+            &clues,
+            &mut working_line.rows_mut().into_iter().next().unwrap(),
+        )
+        .unwrap();
+        working_line
+    }
+
     #[test]
     fn scrub_test() {
         assert_eq!(test_scrub(n("⬛1"), "🔳 🔳 🔳 🔳"), l("🔳 🔳 🔳 🔳"));
@@ -1097,6 +1169,32 @@ mod tests {
             test_skim(tri("🮞2"), "🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜"),
             l("🮞⬛⬜ 🮞⬛ ⬛ 🮞⬛⬜")
         );
+    }
+
+    #[test]
+    fn settle_test() {
+        // TODO: I feel like it shouldn't need the separators around the final clue to get this.
+        // Maybe `packed_extents` should be improved in some way?
+        assert_eq!(
+            test_settle(
+                n("⬛1 ⬛3 ⬛2"),
+                "🔳 🔳 ⬜ ⬛ ⬛ ⬛ ⬜ 🔳 🔳 ⬜ ⬛ ⬛ ⬜ 🔳"
+            ),
+            l("🔳 🔳 ⬜ ⬛ ⬛ ⬛ ⬜ ⬜ ⬜ ⬜ ⬛ ⬛ ⬜ ⬜")
+        );
+
+        assert_eq!(
+            test_settle(n("⬛1 ⬛1"), "⬛ 🔳 🔳 🔳 ⬛"),
+            l("⬛ ⬜ ⬜ ⬜ ⬛")
+        );
+
+        // Without filled cells, we can't do anything:
+        assert_eq!(
+            test_settle(n("⬛1 ⬛1 ⬛1"), "🔳 🔳 🔳 🔳 🔳"),
+            l("🔳 🔳 🔳 🔳 🔳")
+        );
+
+        assert_eq!(test_settle(n(""), "🔳 🔳 🔳 🔳 🔳"), l("⬜ ⬜ ⬜ ⬜ ⬜"));
     }
 
     macro_rules! heur {
