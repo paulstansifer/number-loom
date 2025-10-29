@@ -107,7 +107,6 @@ impl<'a, C: Clue> LaneState<'a, C> {
             }
             s.score = match mode {
                 SolveMode::Scrub => scrub_heuristic(self.clues, lane),
-                SolveMode::Settle => std::i32::MIN,
                 SolveMode::Skim => skim_heuristic(self.clues, lane),
             };
         }
@@ -233,7 +232,6 @@ fn display_step<'a, C: Clue>(
             scrub_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap()),
             clue_lane.per_mode[mode].score,
         ),
-        SolveMode::Settle => (0, 0),
         SolveMode::Skim => (
             skim_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap()),
             clue_lane.per_mode[mode].score,
@@ -295,6 +293,19 @@ pub fn solve<C: Clue>(
     solve_grid(puzzle, line_cache, options, &mut grid)
 }
 
+pub fn settle_solution<C: Clue>(
+    puzzle: &Puzzle<C>,
+    grid: &mut PartialSolution,
+) -> anyhow::Result<()> {
+    for (idx, clue_row) in puzzle.rows.iter().enumerate() {
+        crate::line_solve::settle_line(clue_row, &mut grid.row_mut(idx))?;
+    }
+    for (idx, clue_col) in puzzle.cols.iter().enumerate() {
+        crate::line_solve::settle_line(clue_col, &mut grid.column_mut(idx))?;
+    }
+    Ok(())
+}
+
 pub fn solve_grid<C: Clue>(
     puzzle: &Puzzle<C>,
     line_cache: &mut Option<LineCache<C>>,
@@ -321,7 +332,6 @@ pub fn solve_grid<C: Clue>(
 
     let initial_allowed_failures = ModeMap {
         skim: 10,
-        settle: 10,
         scrub: 0, /*ignored */
     };
 
@@ -378,13 +388,6 @@ pub fn solve_grid<C: Clue>(
                     "scrubbing {:?} with {:?}",
                     best_clue_lane, orig_version_of_line
                 ))?,
-                SolveMode::Settle => {
-                    crate::line_solve::settle_line(best_clue_lane.clues, &mut best_grid_lane)
-                        .context(format!(
-                            "settling {:?} with {:?}",
-                            best_clue_lane, orig_version_of_line
-                        ))?
-                }
                 SolveMode::Skim => {
                     skim_line(best_clue_lane.clues, &mut best_grid_lane).context(format!(
                         "skimming {:?} with {:?}",
@@ -472,13 +475,6 @@ fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
     skim_line(clues, &mut skim_lane.view_mut())?;
     if any_newly_known(lane, skim_lane.view()) {
         return Ok(Some(SolveMode::Skim));
-    }
-
-    // Try settling
-    let mut settle_lane = lane.to_owned();
-    crate::line_solve::settle_line(clues, &mut settle_lane.view_mut())?;
-    if any_newly_known(lane, settle_lane.view()) {
-        return Ok(Some(SolveMode::Settle));
     }
 
     // Try scrubbing
@@ -686,5 +682,33 @@ mod tests {
                 Cell::new_anything()
             ]
         )
+    }
+
+    #[test]
+    fn test_settle_solution() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+
+        let clue = |n| {
+            vec![Nono {
+                color: Color(1),
+                count: n,
+            }]
+        };
+        let puzzle = Puzzle {
+            palette,
+            rows: vec![clue(1), clue(1)],
+            cols: vec![clue(1), clue(1)],
+        };
+
+        let mut grid = PartialSolution::from_elem((2, 2), Cell::new(&puzzle));
+        grid[[0, 0]] = Cell::from_color(Color(1));
+        grid[[1, 1]] = Cell::from_color(Color(1));
+
+        settle_solution(&puzzle, &mut grid).unwrap();
+
+        assert!(grid[[0, 1]].is_known_to_be(BACKGROUND));
+        assert!(grid[[1, 0]].is_known_to_be(BACKGROUND));
     }
 }
