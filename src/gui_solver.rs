@@ -1,7 +1,7 @@
 use crate::{
     grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
-    puzzle::{Color, DynPuzzle, PuzzleDynOps, Solution},
+    puzzle::{Color, DynPuzzle, PuzzleDynOps, Solution, Document},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
@@ -26,15 +26,15 @@ pub enum RenderStyle {
 
 impl SolveGui {
     pub fn new(
-        picture: Solution,
-        clues: DynPuzzle,
+        intended_solution: Document,
+        mut wip_document: Document,
         current_color: Color,
-        intended_solution: Solution,
     ) -> Self {
-        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
+        let solved_mask =
+            vec![vec![true; wip_document.mut_solution().grid[0].len()]; wip_document.mut_solution().grid.len()];
         SolveGui {
             canvas: CanvasGui {
-                picture,
+                document: wip_document,
                 version: 0,
                 current_color,
                 drag_start_color: current_color,
@@ -51,8 +51,8 @@ impl SolveGui {
                     version: 0,
                 },
             },
-            clues,
-            intended_solution,
+            clues: intended_solution.try_puzzle().unwrap().clone(),
+            intended_solution: intended_solution.take_solution().unwrap(),
             analyze_lines: false,
             detect_errors: false,
             infer_background: false,
@@ -66,7 +66,7 @@ impl SolveGui {
     }
 
     fn detect_any_errors(&self) -> bool {
-        for (x, row) in self.canvas.picture.grid.iter().enumerate() {
+        for (x, row) in self.canvas.document.try_solution().unwrap().grid.iter().enumerate() {
             for (y, color) in row.iter().enumerate() {
                 if *color != self.intended_solution.grid[x][y] && *color != crate::puzzle::UNSOLVED
                 {
@@ -77,17 +77,17 @@ impl SolveGui {
         false
     }
 
-    fn is_correctly_solved(&self) -> bool {
-        self.canvas.picture.grid == self.intended_solution.grid
+    pub fn is_correctly_solved(&self) -> bool {
+        self.canvas.document.try_solution().unwrap().grid == self.intended_solution.grid
     }
 
     fn infer_background(&mut self) {
-        let mut grid = self.canvas.picture.to_partial();
+        let mut grid = self.canvas.document.mut_solution().to_partial();
 
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
             for ((y, x), cell) in grid.indexed_iter() {
-                let current_color = self.canvas.picture.grid[x][y];
+                let current_color = self.canvas.document.try_solution().unwrap().grid[x][y];
                 if cell.is_known() && cell.known_or() != Some(current_color) {
                     changes.insert((x, y), cell.known_or().unwrap());
                 }
@@ -129,7 +129,7 @@ impl SolveGui {
             ui.checkbox(&mut self.analyze_lines, "[auto]");
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
                 let clues = &self.clues;
-                let grid = self.canvas.picture.to_partial();
+                let grid = self.canvas.document.mut_solution().to_partial();
                 self.line_analysis
                     .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }

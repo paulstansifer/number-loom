@@ -24,18 +24,18 @@ use egui::{Color32, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn edit_image(solution: Solution) {
+pub fn edit_image(document: Document) {
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "Number Loom",
         native_options,
-        Box::new(|cc| Ok(Box::new(NonogramGui::new(cc, solution)))),
+        Box::new(|cc| Ok(Box::new(NonogramGui::new(cc, document)))),
     )
     .unwrap()
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn edit_image(solution: Solution) {
+pub fn edit_image(document: Document) {
     use eframe::wasm_bindgen::JsCast as _;
 
     let web_options = eframe::WebOptions::default();
@@ -56,7 +56,7 @@ pub fn edit_image(solution: Solution) {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(NonogramGui::new(cc, solution)))),
+                Box::new(|cc| Ok(Box::new(NonogramGui::new(cc, document)))),
             )
             .await;
 
@@ -150,7 +150,7 @@ impl<T> Staleable<T> {
 }
 
 pub struct CanvasGui {
-    pub picture: Solution,
+    pub document: Document,
     pub version: Version,
     pub current_color: Color,
     pub drag_start_color: Color,
@@ -166,7 +166,7 @@ struct NonogramGui {
     editor_gui: CanvasGui,
     file_name: String,
     scale: f32,
-    opened_file_receiver: mpsc::Receiver<(Solution, String)>,
+    opened_file_receiver: mpsc::Receiver<Document>,
     new_dialog: Option<NewPuzzleDialog>,
     auto_solve: bool,
     lines_to_affect_string: String,
@@ -180,8 +180,8 @@ pub enum Action {
     ChangeColor {
         changes: HashMap<(usize, usize), Color>,
     },
-    ReplacePicture {
-        picture: Solution,
+    ReplaceDocument {
+        document: Document,
     },
 }
 
@@ -197,14 +197,17 @@ pub enum ActionMood {
 impl CanvasGui {
     fn reversed(&self, action: &Action) -> Action {
         match action {
-            Action::ChangeColor { changes } => Action::ChangeColor {
-                changes: changes
-                    .keys()
-                    .map(|(x, y)| ((*x, *y), self.picture.grid[*x][*y]))
-                    .collect::<HashMap<_, _>>(),
-            },
-            Action::ReplacePicture { picture: _ } => Action::ReplacePicture {
-                picture: self.picture.clone(),
+            Action::ChangeColor { changes } => {
+                let s = self.document.try_solution().unwrap();
+                Action::ChangeColor {
+                    changes: changes
+                        .keys()
+                        .map(|(x, y)| ((*x, *y), s.grid[*x][*y]))
+                        .collect::<HashMap<_, _>>(),
+                }
+            }
+            Action::ReplaceDocument { document: _ } => Action::ReplaceDocument {
+                document: self.document.clone(),
             },
         }
     }
@@ -222,13 +225,14 @@ impl CanvasGui {
                         changes: new_changes,
                     },
                 ) => {
+                    let s = self.document.mut_solution();
                     if mood == ReplaceAction {
                         for ((x, y), _) in new_changes {
-                            changes.entry((*x, *y)).or_insert(self.picture.grid[*x][*y]);
+                            changes.entry((*x, *y)).or_insert(s.grid[*x][*y]);
                         }
                         changes.retain(|(x, y), old_col| {
                             if !new_changes.contains_key(&(*x, *y)) {
-                                self.picture.grid[*x][*y] = *old_col;
+                                s.grid[*x][*y] = *old_col;
                                 self.version += 1;
                                 false
                             } else {
@@ -236,8 +240,8 @@ impl CanvasGui {
                             }
                         });
                         for ((x, y), col) in new_changes {
-                            if self.picture.grid[*x][*y] != *col {
-                                self.picture.grid[*x][*y] = *col;
+                            if s.grid[*x][*y] != *col {
+                                s.grid[*x][*y] = *col;
                                 self.version += 1;
                             }
                         }
@@ -245,11 +249,11 @@ impl CanvasGui {
                     } else {
                         for ((x, y), col) in new_changes {
                             if !changes.contains_key(&(*x, *y)) {
-                                changes.insert((*x, *y), self.picture.grid[*x][*y]);
+                                changes.insert((*x, *y), s.grid[*x][*y]);
                                 // Crucially, this only fires on a new cell!
                                 // Otherwise, we'd be flipping cells back and forth as long as we
                                 // were in them!
-                                self.picture.grid[*x][*y] = *col;
+                                s.grid[*x][*y] = *col;
                                 self.version += 1;
                             }
                         }
@@ -266,15 +270,16 @@ impl CanvasGui {
 
         match action {
             Action::ChangeColor { changes } => {
+                let s = self.document.mut_solution();
                 for ((x, y), new_color) in changes {
-                    if self.picture.grid[x][y] != new_color {
-                        self.picture.grid[x][y] = new_color;
+                    if s.grid[x][y] != new_color {
+                        s.grid[x][y] = new_color;
                         self.version += 1;
                     }
                 }
             }
-            Action::ReplacePicture { picture } => {
-                self.picture = picture;
+            Action::ReplaceDocument { document } => {
+                self.document = document;
                 self.version += 1;
             }
         }
@@ -359,7 +364,8 @@ impl CanvasGui {
     }
 
     fn flood_fill(&mut self, x: usize, y: usize) {
-        let target_color = self.picture.grid[x][y];
+        let s = self.document.mut_solution();
+        let target_color = s.grid[x][y];
         if target_color == self.current_color {
             return; // Nothing to do
         }
@@ -371,8 +377,8 @@ impl CanvasGui {
         let mut visited = std::collections::HashSet::new();
         visited.insert((x, y));
 
-        let x_size = self.picture.grid.len();
-        let y_size = self.picture.grid.first().unwrap().len();
+        let x_size = s.grid.len();
+        let y_size = s.grid.first().unwrap().len();
 
         while let Some((px, py)) = q.pop_front() {
             changes.insert((px, py), self.current_color);
@@ -385,7 +391,7 @@ impl CanvasGui {
             ];
 
             for (nx, ny) in neighbors {
-                if nx < x_size && ny < y_size && self.picture.grid[nx][ny] == target_color {
+                if nx < x_size && ny < y_size && s.grid[nx][ny] == target_color {
                     if visited.insert((nx, ny)) {
                         q.push_back((nx, ny));
                     }
@@ -399,8 +405,9 @@ impl CanvasGui {
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui, scale: f32, render_style: RenderStyle) {
-        let x_size = self.picture.grid.len();
-        let y_size = self.picture.grid.first().unwrap().len();
+        let s = self.document.mut_solution();
+        let x_size = s.grid.len();
+        let y_size = s.grid.first().unwrap().len();
 
         let (mut response, painter) = ui.allocate_painter(
             Vec2::new(scale * x_size as f32, scale * y_size as f32) + Vec2::new(2.0, 2.0), // for the border
@@ -426,7 +433,7 @@ impl CanvasGui {
                     UNSOLVED
                 } else if pointer.secondary_down() {
                     BACKGROUND
-                } else if self.picture.grid[x][y] != self.current_color {
+                } else if s.grid[x][y] != self.current_color {
                     self.current_color
                 } else {
                     BACKGROUND
@@ -503,21 +510,23 @@ impl CanvasGui {
         let disambiguator = self.disambiguator.get_if_fresh(self.version);
         let disambig_report = disambiguator.as_ref().and_then(|d| d.report.as_ref());
 
+        let s = self.document.mut_solution();
+
         for y in 0..y_size {
             for x in 0..x_size {
-                let cell = self.picture.grid[x][y];
-                let color_info = &self.picture.palette[&cell];
+                let cell = s.grid[x][y];
+                let color_info = &s.palette[&cell];
                 let solved = self
                     .solved_mask
                     .get_if_fresh(self.version)
                     .map_or(true, |sm| sm.1[x][y])
                     || disambig_report.is_some()
                     || disambiguator.map_or(false, |d| d.progress > 0.0 && d.progress < 1.0);
-                let mut dr = (&self.picture.palette[&BACKGROUND], 1.0);
+                let mut dr = (&s.palette[&BACKGROUND], 1.0);
 
                 if let Some(disambig_report) = disambig_report.as_ref() {
                     let (c, score) = disambig_report[x][y];
-                    dr = (&self.picture.palette[&c], score);
+                    dr = (&s.palette[&c], score);
                 }
                 for shape in cell_shape(color_info, solved, dr, x, y, &to_screen, render_style) {
                     shapes.push(shape);
@@ -561,7 +570,8 @@ impl CanvasGui {
         use itertools::Itertools;
 
         for (color, color_info) in self
-            .picture
+            .document
+            .mut_solution()
             .palette
             .iter_mut()
             .sorted_by_key(|(color, _)| *color)
@@ -622,26 +632,28 @@ impl CanvasGui {
         }
 
         if let Some(removed_color) = removed_color {
-            let mut new_picture = self.picture.clone();
-            for row in new_picture.grid.iter_mut() {
+            let mut new_document = self.document.clone();
+            let new_solution = new_document.mut_solution();
+            for row in new_solution.grid.iter_mut() {
                 for cell in row.iter_mut() {
                     if *cell == removed_color {
                         *cell = self.current_color;
                     }
                 }
             }
-            new_picture.palette.remove(&removed_color);
+            new_solution.palette.remove(&removed_color);
             self.perform(
-                Action::ReplacePicture {
-                    picture: new_picture,
+                Action::ReplaceDocument {
+                    document: new_document,
                 },
                 ActionMood::Normal,
             );
         }
         if add_color {
-            let next_color = Color(self.picture.palette.keys().map(|k| k.0).max().unwrap() + 1);
-            let mut new_picture = self.picture.clone();
-            new_picture.palette.insert(
+            let mut new_document = self.document.clone();
+            let new_solution = new_document.mut_solution();
+            let next_color = Color(new_solution.palette.keys().map(|k| k.0).max().unwrap() + 1);
+            new_solution.palette.insert(
                 next_color,
                 ColorInfo {
                     ch: (next_color.0 + 65) as char, // TODO: will break chargrid export
@@ -652,8 +664,8 @@ impl CanvasGui {
                 },
             );
             self.perform(
-                Action::ReplacePicture {
-                    picture: new_picture,
+                Action::ReplaceDocument {
+                    document: new_document,
                 },
                 ActionMood::Normal,
             );
@@ -662,18 +674,19 @@ impl CanvasGui {
 }
 
 impl NonogramGui {
-    fn new(cc: &eframe::CreationContext<'_>, picture: Solution) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, document: Document) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
-        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
+        let s = document.try_solution().unwrap();
+        let solved_mask = vec![vec![true; s.grid[0].len()]; s.grid.len()];
 
         let mut current_color = BACKGROUND;
-        if picture.palette.contains_key(&Color(1)) {
+        if s.palette.contains_key(&Color(1)) {
             current_color = Color(1);
         }
 
         NonogramGui {
             editor_gui: CanvasGui {
-                picture,
+                document,
                 version: 0,
                 current_color,
                 drag_start_color: current_color,
@@ -827,7 +840,6 @@ fn cell_shape(
 
 impl NonogramGui {
     fn resize(&mut self, top: Option<bool>, left: Option<bool>, add: bool) {
-        let mut g = self.editor_gui.picture.grid.clone();
         let lines = match self.lines_to_affect_string.parse::<usize>() {
             Ok(lines) => lines,
             Err(_) => {
@@ -835,6 +847,11 @@ impl NonogramGui {
                 return;
             }
         };
+
+        let mut new_document = self.editor_gui.document.clone();
+        let s = new_document.mut_solution();
+        let mut g = s.grid.clone();
+
         if let Some(left) = left {
             if add {
                 g.resize(g.len() + lines, vec![BACKGROUND; g.first().unwrap().len()]);
@@ -865,22 +882,21 @@ impl NonogramGui {
             }
         }
 
+        s.grid = g;
         self.editor_gui.perform(
-            Action::ReplacePicture {
-                picture: Solution {
-                    grid: g,
-                    ..self.editor_gui.picture.clone()
-                },
+            Action::ReplaceDocument {
+                document: new_document,
             },
             ActionMood::Normal,
         );
     }
 
     fn resizer(&mut self, ui: &mut egui::Ui) {
+        let s = self.editor_gui.document.mut_solution();
         ui.label(format!(
             "Canvas size: {}x{}",
-            self.editor_gui.picture.x_size(),
-            self.editor_gui.picture.y_size(),
+            s.x_size(),
+            s.y_size(),
         ));
 
         egui::Grid::new("resizer").show(ui, |ui| {
@@ -941,7 +957,7 @@ impl NonogramGui {
             ui.separator();
             ui.checkbox(&mut self.auto_solve, "auto-solve");
             if ui.button("Solve").clicked() || self.auto_solve {
-                let puzzle = self.editor_gui.picture.to_puzzle();
+                let puzzle = self.editor_gui.document.puzzle();
 
                 let (report, _solved_mask) =
                     self.editor_gui
@@ -975,13 +991,14 @@ impl NonogramGui {
             self.editor_gui
                 .disambiguator
                 .get_or_refresh(self.editor_gui.version, Disambiguator::new)
-                .disambig_widget(&self.editor_gui.picture, ui);
+                .disambig_widget(self.editor_gui.document.mut_solution(), ui);
         });
     }
 
     fn loader(&mut self, ui: &mut egui::Ui) {
         if ui.button("Open").clicked() {
-            let (sender, receiver) = mpsc::channel();
+            let (sender, receiver): (mpsc::Sender<Document>, mpsc::Receiver<Document>) =
+                mpsc::channel();
             self.opened_file_receiver = receiver;
 
             spawn_async(async move {
@@ -1001,25 +1018,23 @@ impl NonogramGui {
                     let document =
                         crate::import::load(&handle.file_name(), handle.read().await, None);
 
-                    sender
-                        .send((document.take_solution().unwrap(), handle.file_name()))
-                        .unwrap();
+                    sender.send(document).unwrap();
                 }
             });
         }
 
-        if let Ok((solution, file)) = self.opened_file_receiver.try_recv() {
+        if let Ok(document) = self.opened_file_receiver.try_recv() {
+            self.file_name = document.file.clone();
             self.editor_gui.perform(
-                Action::ReplacePicture { picture: solution },
+                Action::ReplaceDocument { document },
                 ActionMood::Normal,
             );
-            self.file_name = file;
         }
     }
 
     fn saver(&mut self, ui: &mut egui::Ui) {
         if ui.button("Save").clicked() {
-            let solution_copy = self.editor_gui.picture.clone();
+            let mut document_copy = self.editor_gui.document.clone();
             let file_copy = self.file_name.clone();
 
             spawn_async(async move {
@@ -1038,16 +1053,8 @@ impl NonogramGui {
                     .await;
 
                 if let Some(handle) = handle {
-                    let mut document =
-                        Document::new(
-                            None,
-                            Some(solution_copy),
-                            handle.file_name(),
-                            None,
-                            None,
-                            None,
-                        );
-                    let bytes = to_bytes(&mut document, Some(handle.file_name()), None).unwrap();
+                    let bytes =
+                        to_bytes(&mut document_copy, Some(handle.file_name()), None).unwrap();
                     handle.write(&bytes).await.unwrap();
                 }
             });
@@ -1076,11 +1083,8 @@ impl eframe::App for NonogramGui {
         };
         ctx.set_style(style);
 
-        let _background_color = Color32::from_rgb(
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.0,
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.1,
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.2,
-        );
+        let bg_color = self.editor_gui.document.mut_solution().palette[&BACKGROUND].rgb;
+        let _background_color = Color32::from_rgb(bg_color.0, bg_color.1, bg_color.2);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -1095,10 +1099,11 @@ impl eframe::App for NonogramGui {
                     self.scale = (self.scale - 2.0).max(1.0);
                 }
                 if ui.button("New blank").clicked() {
+                    let s = self.editor_gui.document.mut_solution();
                     self.new_dialog = Some(NewPuzzleDialog {
-                        clue_style: self.editor_gui.picture.clue_style,
-                        x_size: self.editor_gui.picture.x_size(),
-                        y_size: self.editor_gui.picture.y_size(),
+                        clue_style: s.clue_style,
+                        x_size: s.x_size(),
+                        y_size: s.y_size(),
                     });
                 }
                 let mut new_picture = None;
@@ -1139,8 +1144,8 @@ impl eframe::App for NonogramGui {
 
                 if let Some(new_picture) = new_picture {
                     self.editor_gui.perform(
-                        Action::ReplacePicture {
-                            picture: new_picture,
+                        Action::ReplaceDocument {
+                            document: Document::from_solution(new_picture, "blank.xml".to_owned()),
                         },
                         ActionMood::Normal,
                     );
@@ -1162,7 +1167,8 @@ impl eframe::App for NonogramGui {
                     .selectable_value(&mut self.solve_mode, true, "Puzzle")
                     .clicked()
                 {
-                    let mut blank_solution = self.editor_gui.picture.clone();
+                    let mut new_document = self.editor_gui.document.clone();
+                    let blank_solution = new_document.mut_solution();
                     for row in blank_solution.grid.iter_mut() {
                         for cell in row.iter_mut() {
                             *cell = UNSOLVED;
@@ -1180,10 +1186,12 @@ impl eframe::App for NonogramGui {
                     );
 
                     self.solve_gui = Some(crate::gui_solver::SolveGui::new(
-                        blank_solution,
-                        self.editor_gui.picture.to_puzzle(),
+                        Document::from_solution(
+                            self.editor_gui.document.mut_solution().clone(),
+                            self.editor_gui.document.file.clone(),
+                        ),
+                        new_document,
                         self.editor_gui.current_color,
-                        self.editor_gui.picture.clone(),
                     ));
                 }
             });
@@ -1192,9 +1200,20 @@ impl eframe::App for NonogramGui {
             ui.horizontal_top(|ui| {
                 if let Some(solve_gui) = &mut self.solve_gui {
                     solve_gui.sidebar(ui);
-                    egui::Grid::new("solve_grid").show(ui, |ui| {
-                        ui.label(""); // Top-left is empty
-                        let is_stale = !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
+
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(title) = &solve_gui.canvas.document.title {
+                                ui.label(RichText::new(title).strong());
+                            }
+                            if let Some(author) = &solve_gui.canvas.document.author {
+                                ui.label(format!("by {}", author));
+                            }
+                        });
+                        egui::Grid::new("solve_grid").show(ui, |ui| {
+                            ui.label(""); // Top-left is empty
+                            let is_stale =
+                                !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
                         let line_analysis = solve_gui.line_analysis.val.as_ref();
                         draw_dyn_clues(
                             ui,
@@ -1219,10 +1238,35 @@ impl eframe::App for NonogramGui {
                             .canvas(ui, self.scale, solve_gui.render_style);
                         ui.end_row();
                     });
+                        if solve_gui.is_correctly_solved() {
+                            if let Some(desc) = &solve_gui.canvas.document.description {
+                                ui.label(desc);
+                            }
+                        }
+                    });
                 } else {
                     self.sidebar(ui);
-                    self.editor_gui
-                        .canvas(ui, self.scale, RenderStyle::Experimental);
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Title:");
+                            ui.text_edit_singleline(
+                                self.editor_gui.document.title.get_or_insert("".to_owned()),
+                            );
+                            ui.label("Author:");
+                            ui.text_edit_singleline(
+                                self.editor_gui.document.author.get_or_insert("".to_owned()),
+                            );
+                        });
+                        self.editor_gui
+                            .canvas(ui, self.scale, RenderStyle::Experimental);
+                        ui.label("Description:");
+                        ui.text_edit_multiline(
+                            self.editor_gui
+                                .document
+                                .description
+                                .get_or_insert("".to_owned()),
+                        );
+                    });
                 }
             });
         });
@@ -1255,7 +1299,7 @@ impl Disambiguator {
         self.progress = 0.0;
     }
 
-    pub fn disambig_widget(&mut self, picture: &Solution, ui: &mut egui::Ui) {
+    pub fn disambig_widget(&mut self, solution: &Solution, ui: &mut egui::Ui) {
         while let Ok(progress) = self.progress_r.try_recv() {
             self.progress = progress;
         }
@@ -1270,7 +1314,7 @@ impl Disambiguator {
                 self.terminate_s = t_s;
                 self.report_r = r_r;
 
-                let solution = picture.clone();
+                let solution = solution.clone();
                 spawn_async(async move {
                     let result = disambig_candidates(&solution, p_s, t_r).await;
                     r_s.send(result).unwrap();
