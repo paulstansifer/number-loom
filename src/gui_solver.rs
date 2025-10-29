@@ -100,7 +100,7 @@ impl SolveGui {
 
             if !changes.is_empty() {
                 self.canvas
-                    .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+                    .perform(Action::ChangeColor { changes }, ActionMood::Merge);
             }
         }
     }
