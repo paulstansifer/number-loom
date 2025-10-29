@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<puzzleset>
+<puzzle type="grid" defaultcolor="white">
+<title>Not Invented Yet #1</title>
+<description>A fire submarine with an orca (dalmations can't dive, you see)</description>
+<author>Paul Stansifer</author>
+<copyright>CC-BY 4.0</copyright>
+<source>number-loom</source>
+<color name="white" char=" ">FFFFFF</color>
+<color name="bF42020" char="b">F42020</color>
+<color name="a130801" char="a">130801</color>
+<clues type="columns"><line><count color="bF42020">2</count></line>
+<line><count color="bF42020">4</count></line>
+<line><count color="bF42020">6</count></line>
+<line><count color="bF42020">1</count><count color="bF42020">2</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count></line>
+<line><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">4</count></line>
+<line><count color="bF42020">7</count><count color="bF42020">2</count></line>
+<line><count color="a130801">2</count><count color="bF42020">10</count><count color="bF42020">1</count></line>
+<line><count color="bF42020">11</count><count color="a130801">1</count><count color="bF42020">1</count></line>
+<line><count color="a130801">1</count><count color="bF42020">6</count><count color="bF42020">2</count><count color="bF42020">1</count><count color="a130801">1</count><count color="bF42020">1</count></line>
+<line><count color="bF42020">6</count><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">5</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">2</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">2</count><count color="bF42020">2</count><count color="bF42020">2</count></line>
+<line><count color="bF42020">1</count><count color="a130801">2</count><count color="bF42020">5</count></line>
+<line><count color="a130801">3</count><count color="bF42020">4</count></line>
+<line><count color="a130801">2</count><count color="a130801">1</count><count color="bF42020">4</count></line>
+<line><count color="a130801">1</count><count color="a130801">1</count><count color="bF42020">4</count></line>
+<line><count color="a130801">8</count><count color="bF42020">4</count></line>
+<line><count color="a130801">6</count><count color="bF42020">4</count></line>
+<line><count color="a130801">5</count><count color="bF42020">3</count></line>
+<line><count color="a130801">5</count><count color="bF42020">4</count></line>
+<line><count color="a130801">6</count><count color="bF42020">4</count></line>
+<line><count color="a130801">3</count><count color="a130801">3</count><count color="bF42020">2</count></line>
+<line><count color="a130801">3</count><count color="bF42020">4</count></line>
+<line><count color="a130801">4</count><count color="bF42020">4</count></line>
+<line><count color="a130801">3</count><count color="bF42020">6</count></line>
+<line><count color="a130801">3</count><count color="bF42020">6</count></line>
+<line><count color="a130801">2</count><count color="bF42020">1</count><count color="a130801">4</count><count color="bF42020">1</count></line>
+</clues>
+<clues type="rows"><line><count color="a130801">1</count></line>
+<line><count color="a130801">1</count><count color="a130801">1</count><count color="a130801">1</count></line>
+<line><count color="bF42020">5</count><count color="a130801">2</count><count color="a130801">4</count></line>
+<line><count color="bF42020">6</count><count color="a130801">11</count></line>
+<line><count color="bF42020">6</count><count color="a130801">10</count></line>
+<line><count color="bF42020">17</count><count color="a130801">10</count></line>
+<line><count color="bF42020">22</count><count color="a130801">2</count><count color="a130801">5</count></line>
+<line><count color="bF42020">23</count><count color="a130801">2</count><count color="a130801">6</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">2</count><count color="bF42020">1</count><count color="bF42020">1</count><count color="bF42020">3</count><count color="a130801">5</count><count color="a130801">2</count><count color="bF42020">4</count><count color="a130801">1</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">4</count><count color="bF42020">2</count><count color="bF42020">2</count><count color="bF42020">2</count><count color="bF42020">3</count><count color="bF42020">2</count><count color="a130801">1</count><count color="bF42020">4</count><count color="a130801">1</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">4</count><count color="bF42020">2</count><count color="bF42020">2</count><count color="bF42020">2</count><count color="bF42020">16</count><count color="a130801">1</count></line>
+<line><count color="bF42020">3</count><count color="bF42020">1</count><count color="bF42020">1</count><count color="bF42020">2</count><count color="bF42020">14</count><count color="a130801">1</count></line>
+<line><count color="bF42020">6</count><count color="bF42020">24</count><count color="bF42020">3</count></line>
+<line><count color="bF42020">5</count><count color="a130801">2</count><count color="bF42020">19</count></line>
+<line><count color="bF42020">17</count></line>
+</clues>
+</puzzle></puzzleset>

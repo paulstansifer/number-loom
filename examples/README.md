@@ -1,0 +1,1 @@
+These are for testing purposes! If you want to solve puzzles, look in the puzzles/ directory. There's a lot of overlap, but some of these puzzles are not fun, some of them overlap with each other, and there's less metadata. Also, the names in this directory spoil the puzzle solutions if you care about that.s
