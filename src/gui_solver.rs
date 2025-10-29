@@ -1,7 +1,7 @@
 use crate::{
-    grid_solve::{self, LineStatus},
+    grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
-    puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution},
+    puzzle::{Color, DynPuzzle, PuzzleDynOps, Solution},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
