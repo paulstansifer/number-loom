@@ -29,7 +29,7 @@ pub fn to_bytes(
     } else {
         match format {
             NonogramFormat::Olsak => document.puzzle().specialize(as_olsak_nono, as_olsak_triano),
-            NonogramFormat::Webpbn => as_webpbn(&document.puzzle().assume_nono()),
+            NonogramFormat::Webpbn => as_webpbn(document),
             NonogramFormat::Html => document.puzzle().specialize(as_html, as_html),
             NonogramFormat::Image => panic!(),
             NonogramFormat::CharGrid => as_char_grid(document.solution()?),
@@ -132,8 +132,10 @@ table td:last-child {
     html.to_string()
 }
 
-pub fn as_webpbn(puzzle: &Puzzle<Nono>) -> String {
+pub fn as_webpbn(document: &Document) -> String {
     use indoc::indoc;
+
+    let puzzle = document.try_puzzle().unwrap().assume_nono();
 
     let mut res = String::new();
     // If you add <!DOCTYPE pbn SYSTEM "https://webpbn.com/pbn-0.3.dtd">, `pbnsolve` emits a warning.
@@ -143,6 +145,15 @@ pub fn as_webpbn(puzzle: &Puzzle<Nono>) -> String {
         <puzzle type="grid" defaultcolor="white">
         <source>number-loom</source>
         "#});
+    if let Some(title) = &document.title {
+        res.push_str(&format!("<title>{}</title>\n", title));
+    }
+    if let Some(description) = &document.description {
+        res.push_str(&format!("<description>{}</description>\n", description));
+    }
+    if let Some(author) = &document.author {
+        res.push_str(&format!("<author>{}</author>\n", author));
+    }
     for color in puzzle.palette.values() {
         let (r, g, b) = color.rgb;
         res.push_str(&format!(

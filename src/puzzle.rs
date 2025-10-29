@@ -481,6 +481,7 @@ pub struct Document {
     pub file: String,
     pub title: Option<String>,
     pub description: Option<String>,
+    pub author: Option<String>,
 }
 
 impl Document {
@@ -490,6 +491,7 @@ impl Document {
         file: String,
         title: Option<String>,
         description: Option<String>,
+        author: Option<String>,
     ) -> Document {
         assert!(puzzle.is_some() || solution.is_some());
         Document {
@@ -498,6 +500,7 @@ impl Document {
             file,
             title,
             description,
+            author,
         }
     }
 
@@ -550,6 +553,28 @@ impl Document {
         match self.s {
             Some(s) => Ok(s),
             None => self.p.unwrap().plain_solve().map(|r| r.solution),
+        }
+    }
+
+    pub fn from_puzzle(puzzle: DynPuzzle, file: String) -> Self {
+        Self {
+            p: Some(puzzle),
+            s: None,
+            file,
+            title: None,
+            description: None,
+            author: None,
+        }
+    }
+
+    pub fn from_solution(solution: Solution, file: String) -> Self {
+        Self {
+            p: None,
+            s: Some(solution),
+            file,
+            title: None,
+            description: None,
+            author: None,
         }
     }
 }
