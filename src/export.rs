@@ -135,7 +135,8 @@ table td:last-child {
 pub fn as_webpbn(document: &Document) -> String {
     use indoc::indoc;
 
-    let puzzle = document.try_puzzle().unwrap().assume_nono();
+    let mut document_with_puzzle = document.clone();
+    let puzzle = document_with_puzzle.puzzle().assume_nono();
 
     let mut res = String::new();
     // If you add <!DOCTYPE pbn SYSTEM "https://webpbn.com/pbn-0.3.dtd">, `pbnsolve` emits a warning.
