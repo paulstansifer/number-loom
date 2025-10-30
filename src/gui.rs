@@ -929,7 +929,7 @@ impl NonogramGui {
         });
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
+    fn edit_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(120.0);
             self.editor_gui.common_sidebar_items(ui, false);
@@ -1073,37 +1073,9 @@ impl NonogramGui {
             self.editor_gui.picture.clone(),
         ));
     }
-}
 
-struct NewPuzzleDialog {
-    clue_style: crate::puzzle::ClueStyle,
-    x_size: usize,
-    y_size: usize,
-}
-
-impl eframe::App for NonogramGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Styling. Has to be here instead of `edit_image` to take effect on the Web.
-        let spacing = egui::Spacing {
-            interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
-            ..egui::Spacing::default()
-        };
-        let style = Style {
-            visuals: Visuals::light(),
-            spacing,
-
-            ..Style::default()
-        };
-        ctx.set_style(style);
-
-        let _background_color = Color32::from_rgb(
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.0,
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.1,
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.2,
-        );
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
+    fn main_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
                 if ui.button(icons::ICON_ZOOM_IN).clicked()
                     || ui.input(|i| i.key_pressed(egui::Key::Equals))
                 {
@@ -1224,44 +1196,76 @@ impl eframe::App for NonogramGui {
                     self.enter_solve_mode();
                 }
             });
-            ui.separator();
+        ui.separator();
 
-            ui.horizontal_top(|ui| {
-                if let Some(solve_gui) = &mut self.solve_gui {
-                    solve_gui.sidebar(ui);
-                    egui::Grid::new("solve_grid").show(ui, |ui| {
-                        ui.label(""); // Top-left is empty
-                        let is_stale = !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
-                        let line_analysis = solve_gui.line_analysis.val.as_ref();
-                        draw_dyn_clues(
-                            ui,
-                            &solve_gui.clues,
-                            self.scale,
-                            Orientation::Vertical,
-                            line_analysis.map(|la| &la.1[..]),
-                            is_stale,
-                        );
-                        ui.end_row();
+        ui.horizontal_top(|ui| {
+            if let Some(solve_gui) = &mut self.solve_gui {
+                solve_gui.sidebar(ui);
+                egui::Grid::new("solve_grid").show(ui, |ui| {
+                    ui.label(""); // Top-left is empty
+                    let is_stale = !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
+                    let line_analysis = solve_gui.line_analysis.val.as_ref();
+                    draw_dyn_clues(
+                        ui,
+                        &solve_gui.clues,
+                        self.scale,
+                        Orientation::Vertical,
+                        line_analysis.map(|la| &la.1[..]),
+                        is_stale,
+                    );
+                    ui.end_row();
 
-                        draw_dyn_clues(
-                            ui,
-                            &solve_gui.clues,
-                            self.scale,
-                            Orientation::Horizontal,
-                            line_analysis.map(|la| &la.0[..]),
-                            is_stale,
-                        );
-                        solve_gui
-                            .canvas
-                            .canvas(ui, self.scale, solve_gui.render_style);
-                        ui.end_row();
-                    });
-                } else {
-                    self.sidebar(ui);
-                    self.editor_gui
-                        .canvas(ui, self.scale, RenderStyle::Experimental);
-                }
-            });
+                    draw_dyn_clues(
+                        ui,
+                        &solve_gui.clues,
+                        self.scale,
+                        Orientation::Horizontal,
+                        line_analysis.map(|la| &la.0[..]),
+                        is_stale,
+                    );
+                    solve_gui
+                        .canvas
+                        .canvas(ui, self.scale, solve_gui.render_style);
+                    ui.end_row();
+                });
+            } else {
+                self.edit_sidebar(ui);
+                self.editor_gui
+                    .canvas(ui, self.scale, RenderStyle::Experimental);
+            }
+        });
+    }
+}
+
+struct NewPuzzleDialog {
+    clue_style: crate::puzzle::ClueStyle,
+    x_size: usize,
+    y_size: usize,
+}
+
+impl eframe::App for NonogramGui {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Styling. Has to be here instead of `edit_image` to take effect on the Web.
+        let spacing = egui::Spacing {
+            interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
+            ..egui::Spacing::default()
+        };
+        let style = Style {
+            visuals: Visuals::light(),
+            spacing,
+
+            ..Style::default()
+        };
+        ctx.set_style(style);
+
+        let _background_color = Color32::from_rgb(
+            self.editor_gui.picture.palette[&BACKGROUND].rgb.0,
+            self.editor_gui.picture.palette[&BACKGROUND].rgb.1,
+            self.editor_gui.picture.palette[&BACKGROUND].rgb.2,
+        );
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.main_ui(ctx, ui);
         });
     }
 }
