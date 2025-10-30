@@ -1,7 +1,7 @@
 use crate::{
     grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
-    puzzle::{Color, DynPuzzle, PuzzleDynOps, Solution},
+    puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution, UNSOLVED},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
@@ -26,17 +26,36 @@ pub enum RenderStyle {
 }
 
 impl SolveGui {
-    pub fn new(
-        document: Document,
-        clues: DynPuzzle,
-        current_color: Color,
-        intended_solution: Solution,
-    ) -> Self {
-        let picture = document.try_solution().unwrap();
-        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
+    pub fn new(mut document: Document) -> Self {
+        let mut working_doc = document.clone();
+        for line in &mut working_doc.solution_mut().grid {
+            for cell in line {
+                *cell = UNSOLVED;
+            }
+        }
+        working_doc.solution_mut().palette.insert(
+            UNSOLVED,
+            crate::puzzle::ColorInfo {
+                ch: '?',
+                name: "unknown".to_owned(),
+                rgb: (128, 128, 128),
+                color: UNSOLVED,
+                corner: None,
+            },
+        );
+        let mut current_color = BACKGROUND;
+        if working_doc.solution_mut().palette.contains_key(&Color(1)) {
+            current_color = Color(1)
+        }
+
+        let clues = document.puzzle().clone();
+        let solved_mask = vec![
+            vec![true; document.solution_mut().grid[0].len()];
+            document.solution_mut().grid.len()
+        ];
         SolveGui {
             canvas: CanvasGui {
-                document,
+                document: working_doc,
                 version: 0,
                 current_color,
                 drag_start_color: current_color,
@@ -54,7 +73,7 @@ impl SolveGui {
                 },
             },
             clues,
-            intended_solution,
+            intended_solution: document.take_solution().unwrap(),
             analyze_lines: false,
             detect_errors: false,
             infer_background: false,
@@ -85,7 +104,7 @@ impl SolveGui {
     }
 
     fn infer_background(&mut self) {
-        let picture = self.canvas.document.solution_mut().unwrap();
+        let picture = self.canvas.document.solution_mut();
         let mut grid = picture.to_partial();
 
         if self.clues.settle_solution(&mut grid).is_ok() {

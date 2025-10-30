@@ -200,12 +200,7 @@ impl CanvasGui {
             Action::ChangeColor { changes } => Action::ChangeColor {
                 changes: changes
                     .keys()
-                    .map(|(x, y)| {
-                        (
-                            (*x, *y),
-                            self.document.try_solution().unwrap().grid[*x][*y],
-                        )
-                    })
+                    .map(|(x, y)| ((*x, *y), self.document.try_solution().unwrap().grid[*x][*y]))
                     .collect::<HashMap<_, _>>(),
             },
             Action::ReplaceDocument { document: _ } => Action::ReplaceDocument {
@@ -227,7 +222,7 @@ impl CanvasGui {
                         changes: new_changes,
                     },
                 ) => {
-                    let picture = self.document.solution_mut().unwrap();
+                    let picture = self.document.solution_mut();
                     if mood == ReplaceAction {
                         for ((x, y), _) in new_changes {
                             changes.entry((*x, *y)).or_insert(picture.grid[*x][*y]);
@@ -272,7 +267,7 @@ impl CanvasGui {
 
         match action {
             Action::ChangeColor { changes } => {
-                let picture = self.document.solution_mut().unwrap();
+                let picture = self.document.solution_mut();
                 for ((x, y), new_color) in changes {
                     if picture.grid[x][y] != new_color {
                         picture.grid[x][y] = new_color;
@@ -366,7 +361,7 @@ impl CanvasGui {
     }
 
     fn flood_fill(&mut self, x: usize, y: usize) {
-        let picture = self.document.solution_mut().unwrap();
+        let picture = self.document.solution_mut();
         let target_color = picture.grid[x][y];
         if target_color == self.current_color {
             return; // Nothing to do
@@ -407,7 +402,7 @@ impl CanvasGui {
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui, scale: f32, render_style: RenderStyle) {
-        let picture = self.document.solution_mut().unwrap();
+        let picture = self.document.solution_mut();
         let x_size = picture.grid.len();
         let y_size = picture.grid.first().unwrap().len();
 
@@ -573,7 +568,6 @@ impl CanvasGui {
         for (color, color_info) in self
             .document
             .solution_mut()
-            .unwrap()
             .palette
             .iter_mut()
             .sorted_by_key(|(color, _)| *color)
@@ -635,7 +629,7 @@ impl CanvasGui {
 
         if let Some(removed_color) = removed_color {
             let mut new_document = self.document.clone();
-            let new_picture = new_document.solution_mut().unwrap();
+            let new_picture = new_document.solution_mut();
             for row in new_picture.grid.iter_mut() {
                 for cell in row.iter_mut() {
                     if *cell == removed_color {
@@ -653,7 +647,7 @@ impl CanvasGui {
         }
         if add_color {
             let mut new_document = self.document.clone();
-            let new_picture = new_document.solution_mut().unwrap();
+            let new_picture = new_document.solution_mut();
             let next_color = Color(new_picture.palette.keys().map(|k| k.0).max().unwrap() + 1);
             new_picture.palette.insert(
                 next_color,
@@ -840,7 +834,7 @@ impl NonogramGui {
     }
 
     fn resize(&mut self, top: Option<bool>, left: Option<bool>, add: bool) {
-        let picture = self.editor_gui.document.solution_mut().unwrap();
+        let picture = self.editor_gui.document.solution_mut();
         let mut g = picture.grid.clone();
         let lines = match self.lines_to_affect_string.parse::<usize>() {
             Ok(lines) => lines,
@@ -880,7 +874,7 @@ impl NonogramGui {
         }
 
         let mut new_doc = self.editor_gui.document.clone();
-        new_doc.solution_mut().unwrap().grid = g;
+        new_doc.solution_mut().grid = g;
         self.editor_gui.perform(
             Action::ReplaceDocument { document: new_doc },
             ActionMood::Normal,
@@ -953,12 +947,7 @@ impl NonogramGui {
             ui.separator();
             ui.checkbox(&mut self.auto_solve, "auto-solve");
             if ui.button("Solve").clicked() || self.auto_solve {
-                let puzzle = self
-                    .editor_gui
-                    .document
-                    .try_solution()
-                    .unwrap()
-                    .to_puzzle();
+                let puzzle = self.editor_gui.document.try_solution().unwrap().to_puzzle();
 
                 let (report, _solved_mask) =
                     self.editor_gui
@@ -1024,10 +1013,8 @@ impl NonogramGui {
         }
 
         if let Ok(document) = self.opened_file_receiver.try_recv() {
-            self.editor_gui.perform(
-                Action::ReplaceDocument { document },
-                ActionMood::Normal,
-            );
+            self.editor_gui
+                .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
         }
     }
 
@@ -1061,31 +1048,9 @@ impl NonogramGui {
 
     fn enter_solve_mode(&mut self) {
         self.solve_mode = true;
-        let picture = self.editor_gui.document.solution_mut().unwrap();
-        let mut blank_solution = picture.clone();
-        for row in blank_solution.grid.iter_mut() {
-            for cell in row.iter_mut() {
-                *cell = UNSOLVED;
-            }
-        }
-        blank_solution.palette.insert(
-            UNSOLVED,
-            ColorInfo {
-                ch: '?',
-                name: "unknown".to_owned(),
-                rgb: (128, 128, 128),
-                color: UNSOLVED,
-                corner: None,
-            },
-        );
 
-        let puzzle = picture.to_puzzle();
-        let intended_solution = picture.clone();
         self.solve_gui = Some(crate::gui_solver::SolveGui::new(
-            Document::from_solution(blank_solution, self.editor_gui.document.file.clone()),
-            puzzle,
-            self.editor_gui.current_color,
-            intended_solution,
+            self.editor_gui.document.clone(),
         ));
     }
 

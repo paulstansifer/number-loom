@@ -562,11 +562,11 @@ impl Document {
         Ok(self.s.as_ref().unwrap())
     }
 
-    pub fn solution_mut(&mut self) -> anyhow::Result<&mut Solution> {
+    pub fn solution_mut(&mut self) -> &mut Solution {
         if self.s.is_none() {
-            self.s = Some(self.p.as_ref().unwrap().plain_solve()?.solution)
+            self.s = Some(self.p.as_ref().unwrap().plain_solve().unwrap().solution)
         }
-        Ok(self.s.as_mut().unwrap())
+        self.s.as_mut().unwrap()
     }
 
     pub fn take_solution(self) -> anyhow::Result<Solution> {
