@@ -798,7 +798,8 @@ fn cell_shape(
 }
 
 impl NonogramGui {
-    fn new(document: Document) -> Self {
+    pub fn new(document: Document) -> Self {
+        // (Public for testing)
         let picture = document.try_solution().unwrap();
         let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
 
