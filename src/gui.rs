@@ -162,7 +162,7 @@ pub struct CanvasGui {
     pub disambiguator: Staleable<Disambiguator>,
 }
 
-struct NonogramGui {
+pub struct NonogramGui {
     editor_gui: CanvasGui,
     scale: f32,
     opened_file_receiver: mpsc::Receiver<Document>,
@@ -401,7 +401,7 @@ impl CanvasGui {
         }
     }
 
-    fn canvas(&mut self, ui: &mut egui::Ui, scale: f32, render_style: RenderStyle) {
+    pub fn canvas(&mut self, ui: &mut egui::Ui, scale: f32, render_style: RenderStyle) {
         let picture = self.document.solution_mut();
         let x_size = picture.grid.len();
         let y_size = picture.grid.first().unwrap().len();
@@ -1054,7 +1054,7 @@ impl NonogramGui {
         ));
     }
 
-    fn main_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+    pub fn main_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button(icons::ICON_ZOOM_IN).clicked()
                 || ui.input(|i| i.key_pressed(egui::Key::Equals))
@@ -1201,33 +1201,7 @@ impl NonogramGui {
         ui.horizontal_top(|ui| {
             if let Some(solve_gui) = &mut self.solve_gui {
                 solve_gui.sidebar(ui);
-                egui::Grid::new("solve_grid").show(ui, |ui| {
-                    ui.label(""); // Top-left is empty
-                    let is_stale = !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
-                    let line_analysis = solve_gui.line_analysis.val.as_ref();
-                    draw_dyn_clues(
-                        ui,
-                        &solve_gui.clues,
-                        self.scale,
-                        Orientation::Vertical,
-                        line_analysis.map(|la| &la.1[..]),
-                        is_stale,
-                    );
-                    ui.end_row();
-
-                    draw_dyn_clues(
-                        ui,
-                        &solve_gui.clues,
-                        self.scale,
-                        Orientation::Horizontal,
-                        line_analysis.map(|la| &la.0[..]),
-                        is_stale,
-                    );
-                    solve_gui
-                        .canvas
-                        .canvas(ui, self.scale, solve_gui.render_style);
-                    ui.end_row();
-                });
+                solve_gui.body(ui, self.scale);
             } else {
                 self.edit_sidebar(ui);
                 self.editor_gui

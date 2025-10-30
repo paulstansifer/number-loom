@@ -193,6 +193,34 @@ impl SolveGui {
             }
         });
     }
+
+    pub fn body(&mut self, ui: &mut egui::Ui, scale: f32) {
+        egui::Grid::new("solve_grid").show(ui, |ui| {
+            ui.label(""); // Top-left is empty
+            let is_stale = !self.line_analysis.fresh(self.canvas.version);
+            let line_analysis = self.line_analysis.val.as_ref();
+            draw_dyn_clues(
+                ui,
+                &self.clues,
+                scale,
+                Orientation::Vertical,
+                line_analysis.map(|la| &la.1[..]),
+                is_stale,
+            );
+            ui.end_row();
+
+            draw_dyn_clues(
+                ui,
+                &self.clues,
+                scale,
+                Orientation::Horizontal,
+                line_analysis.map(|la| &la.0[..]),
+                is_stale,
+            );
+            self.canvas.canvas(ui, scale, self.render_style);
+            ui.end_row();
+        });
+    }
 }
 
 #[derive(Clone, Copy)]
