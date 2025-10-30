@@ -167,6 +167,7 @@ struct NonogramGui {
     file_name: String,
     scale: f32,
     opened_file_receiver: mpsc::Receiver<(Solution, String)>,
+    gallery_dialog: Option<Vec<Document>>,
     new_dialog: Option<NewPuzzleDialog>,
     auto_solve: bool,
     lines_to_affect_string: String,
@@ -661,48 +662,6 @@ impl CanvasGui {
     }
 }
 
-impl NonogramGui {
-    fn new(cc: &eframe::CreationContext<'_>, picture: Solution) -> Self {
-        egui_material_icons::initialize(&cc.egui_ctx);
-        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
-
-        let mut current_color = BACKGROUND;
-        if picture.palette.contains_key(&Color(1)) {
-            current_color = Color(1);
-        }
-
-        NonogramGui {
-            editor_gui: CanvasGui {
-                picture,
-                version: 0,
-                current_color,
-                drag_start_color: current_color,
-                undo_stack: vec![],
-                redo_stack: vec![],
-                current_tool: Tool::Pencil,
-                line_tool_state: None,
-                solved_mask: Staleable {
-                    val: ("".to_string(), solved_mask),
-                    version: 0,
-                },
-                disambiguator: Staleable {
-                    val: Disambiguator::new(),
-                    version: 0,
-                },
-            },
-            file_name: "blank.xml".to_string(),
-            scale: 16.0,
-            opened_file_receiver: mpsc::channel().1,
-            new_dialog: None,
-            auto_solve: false,
-            lines_to_affect_string: "5".to_string(),
-            solve_report: "".to_string(),
-            solve_mode: false,
-            solve_gui: None,
-        }
-    }
-}
-
 pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui::Shape {
     let Corner { left, upper } = corner;
 
@@ -826,6 +785,47 @@ fn cell_shape(
 }
 
 impl NonogramGui {
+    fn new(cc: &eframe::CreationContext<'_>, picture: Solution) -> Self {
+        egui_material_icons::initialize(&cc.egui_ctx);
+        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
+
+        let mut current_color = BACKGROUND;
+        if picture.palette.contains_key(&Color(1)) {
+            current_color = Color(1);
+        }
+
+        NonogramGui {
+            editor_gui: CanvasGui {
+                picture,
+                version: 0,
+                current_color,
+                drag_start_color: current_color,
+                undo_stack: vec![],
+                redo_stack: vec![],
+                current_tool: Tool::Pencil,
+                line_tool_state: None,
+                solved_mask: Staleable {
+                    val: ("".to_string(), solved_mask),
+                    version: 0,
+                },
+                disambiguator: Staleable {
+                    val: Disambiguator::new(),
+                    version: 0,
+                },
+            },
+            file_name: "blank.xml".to_string(),
+            scale: 16.0,
+            opened_file_receiver: mpsc::channel().1,
+            new_dialog: None,
+            gallery_dialog: None,
+            auto_solve: false,
+            lines_to_affect_string: "5".to_string(),
+            solve_report: "".to_string(),
+            solve_mode: false,
+            solve_gui: None,
+        }
+    }
+
     fn resize(&mut self, top: Option<bool>, left: Option<bool>, add: bool) {
         let mut g = self.editor_gui.picture.grid.clone();
         let lines = match self.lines_to_affect_string.parse::<usize>() {
@@ -929,7 +929,7 @@ impl NonogramGui {
         });
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
+    fn edit_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(120.0);
             self.editor_gui.common_sidebar_items(ui, false);
@@ -1053,37 +1053,36 @@ impl NonogramGui {
             });
         }
     }
-}
 
-struct NewPuzzleDialog {
-    clue_style: crate::puzzle::ClueStyle,
-    x_size: usize,
-    y_size: usize,
-}
-
-impl eframe::App for NonogramGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Styling. Has to be here instead of `edit_image` to take effect on the Web.
-        let spacing = egui::Spacing {
-            interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
-            ..egui::Spacing::default()
-        };
-        let style = Style {
-            visuals: Visuals::light(),
-            spacing,
-
-            ..Style::default()
-        };
-        ctx.set_style(style);
-
-        let _background_color = Color32::from_rgb(
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.0,
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.1,
-            self.editor_gui.picture.palette[&BACKGROUND].rgb.2,
+    fn enter_solve_mode(&mut self) {
+        self.solve_mode = true;
+        let mut blank_solution = self.editor_gui.picture.clone();
+        for row in blank_solution.grid.iter_mut() {
+            for cell in row.iter_mut() {
+                *cell = UNSOLVED;
+            }
+        }
+        blank_solution.palette.insert(
+            UNSOLVED,
+            ColorInfo {
+                ch: '?',
+                name: "unknown".to_owned(),
+                rgb: (128, 128, 128),
+                color: UNSOLVED,
+                corner: None,
+            },
         );
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
+        self.solve_gui = Some(crate::gui_solver::SolveGui::new(
+            blank_solution,
+            self.editor_gui.picture.to_puzzle(),
+            self.editor_gui.current_color,
+            self.editor_gui.picture.clone(),
+        ));
+    }
+
+    fn main_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
                 if ui.button(icons::ICON_ZOOM_IN).clicked()
                     || ui.input(|i| i.key_pressed(egui::Key::Equals))
                 {
@@ -1137,6 +1136,39 @@ impl eframe::App for NonogramGui {
                     });
                 }
 
+
+
+                self.loader(ui);
+                if ui.button("Gallery").clicked() {
+                    let result = crate::import::load_zip_from_url(
+                            "https://github.com/paulstansifer/number-loom/releases/download/latest/puzzles.zip",
+                        );
+                    self.gallery_dialog = result.ok();
+                }
+
+                let mut close_gallery = None;  // Contains a bool indicating whether to solve
+                if let Some(docs) = &self.gallery_dialog {
+                    egui::Window::new("Puzzle Gallery")
+                        .show(ctx, |ui| {
+                            ui.vertical(|ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    for doc in docs {
+                                        if crate::gui_gallery::gallery_puzzle_preview(ui, doc)
+                                            .clicked()
+                                        {
+                                            new_picture =
+                                                Some(doc.clone().take_solution().unwrap());
+                                            close_gallery = Some(true);
+                                        }
+                                    }
+                                });
+                                if ui.button("Cancel").clicked() {
+                                    close_gallery = Some(false);
+                                }
+                            });
+                        });
+                }
+
                 if let Some(new_picture) = new_picture {
                     self.editor_gui.perform(
                         Action::ReplacePicture {
@@ -1145,9 +1177,15 @@ impl eframe::App for NonogramGui {
                         ActionMood::Normal,
                     );
                     self.new_dialog = None;
+                    self.gallery_dialog = None;
+                }
+                if let Some(enter_solve_mode) = close_gallery {
+                    self.gallery_dialog = None;
+                    if enter_solve_mode {
+                        self.enter_solve_mode();
+                    }
                 }
 
-                self.loader(ui);
                 ui.add(egui::TextEdit::singleline(&mut self.file_name).desired_width(150.0));
                 self.saver(ui);
 
@@ -1162,69 +1200,79 @@ impl eframe::App for NonogramGui {
                     .selectable_value(&mut self.solve_mode, true, "Puzzle")
                     .clicked()
                 {
-                    let mut blank_solution = self.editor_gui.picture.clone();
-                    for row in blank_solution.grid.iter_mut() {
-                        for cell in row.iter_mut() {
-                            *cell = UNSOLVED;
-                        }
-                    }
-                    blank_solution.palette.insert(
-                        UNSOLVED,
-                        ColorInfo {
-                            ch: '?',
-                            name: "unknown".to_owned(),
-                            rgb: (128, 128, 128),
-                            color: UNSOLVED,
-                            corner: None,
-                        },
+                    self.enter_solve_mode();
+                }
+            });
+        ui.separator();
+
+        ui.horizontal_top(|ui| {
+            if let Some(solve_gui) = &mut self.solve_gui {
+                solve_gui.sidebar(ui);
+                egui::Grid::new("solve_grid").show(ui, |ui| {
+                    ui.label(""); // Top-left is empty
+                    let is_stale = !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
+                    let line_analysis = solve_gui.line_analysis.val.as_ref();
+                    draw_dyn_clues(
+                        ui,
+                        &solve_gui.clues,
+                        self.scale,
+                        Orientation::Vertical,
+                        line_analysis.map(|la| &la.1[..]),
+                        is_stale,
                     );
+                    ui.end_row();
 
-                    self.solve_gui = Some(crate::gui_solver::SolveGui::new(
-                        blank_solution,
-                        self.editor_gui.picture.to_puzzle(),
-                        self.editor_gui.current_color,
-                        self.editor_gui.picture.clone(),
-                    ));
-                }
-            });
-            ui.separator();
+                    draw_dyn_clues(
+                        ui,
+                        &solve_gui.clues,
+                        self.scale,
+                        Orientation::Horizontal,
+                        line_analysis.map(|la| &la.0[..]),
+                        is_stale,
+                    );
+                    solve_gui
+                        .canvas
+                        .canvas(ui, self.scale, solve_gui.render_style);
+                    ui.end_row();
+                });
+            } else {
+                self.edit_sidebar(ui);
+                self.editor_gui
+                    .canvas(ui, self.scale, RenderStyle::Experimental);
+            }
+        });
+    }
+}
 
-            ui.horizontal_top(|ui| {
-                if let Some(solve_gui) = &mut self.solve_gui {
-                    solve_gui.sidebar(ui);
-                    egui::Grid::new("solve_grid").show(ui, |ui| {
-                        ui.label(""); // Top-left is empty
-                        let is_stale = !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
-                        let line_analysis = solve_gui.line_analysis.val.as_ref();
-                        draw_dyn_clues(
-                            ui,
-                            &solve_gui.clues,
-                            self.scale,
-                            Orientation::Vertical,
-                            line_analysis.map(|la| &la.1[..]),
-                            is_stale,
-                        );
-                        ui.end_row();
+struct NewPuzzleDialog {
+    clue_style: crate::puzzle::ClueStyle,
+    x_size: usize,
+    y_size: usize,
+}
 
-                        draw_dyn_clues(
-                            ui,
-                            &solve_gui.clues,
-                            self.scale,
-                            Orientation::Horizontal,
-                            line_analysis.map(|la| &la.0[..]),
-                            is_stale,
-                        );
-                        solve_gui
-                            .canvas
-                            .canvas(ui, self.scale, solve_gui.render_style);
-                        ui.end_row();
-                    });
-                } else {
-                    self.sidebar(ui);
-                    self.editor_gui
-                        .canvas(ui, self.scale, RenderStyle::Experimental);
-                }
-            });
+impl eframe::App for NonogramGui {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Styling. Has to be here instead of `edit_image` to take effect on the Web.
+        let spacing = egui::Spacing {
+            interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
+            ..egui::Spacing::default()
+        };
+        let style = Style {
+            visuals: Visuals::light(),
+            spacing,
+
+            ..Style::default()
+        };
+        ctx.set_style(style);
+
+        let _background_color = Color32::from_rgb(
+            self.editor_gui.picture.palette[&BACKGROUND].rgb.0,
+            self.editor_gui.picture.palette[&BACKGROUND].rgb.1,
+            self.editor_gui.picture.palette[&BACKGROUND].rgb.2,
+        );
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.main_ui(ctx, ui);
         });
     }
 }

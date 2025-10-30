@@ -1,13 +1,12 @@
 use core::panic;
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::{collections::HashMap, hash::Hasher};
 
 use crate::{
     grid_solve::{self, LineStatus, SolveOptions},
     import::{solution_to_puzzle, solution_to_triano_puzzle},
 };
-use sha2::{Digest, Sha256};
 pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash + Send {
     fn style() -> ClueStyle;
 
@@ -181,7 +180,7 @@ pub static BACKGROUND: Color = Color(0);
 pub static UNSOLVED: Color = Color(255);
 
 // A triangle-shaped half of a square. `true` means solid in the given direction.
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct Corner {
     pub upper: bool,
     pub left: bool,
@@ -189,7 +188,7 @@ pub struct Corner {
 
 // Note that `rgb` is not necessarily unique!
 // But `ch` and `name` ought to be, along with `rgb` + `corner`.
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Hash)]
 pub struct ColorInfo {
     pub ch: char,
     pub name: String,
@@ -255,7 +254,14 @@ pub struct Puzzle<C: Clue> {
     pub cols: Vec<Vec<C>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl<C: Clue> Hash for Puzzle<C> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.rows.hash(state);
+        self.cols.hash(state);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DynPuzzle {
     Nono(Puzzle<Nono>),
     Triano(Puzzle<Triano>),
@@ -474,6 +480,7 @@ pub fn infer_format(path: &str, format_arg: Option<NonogramFormat>) -> NonogramF
     }
 }
 
+#[derive(Clone)]
 pub struct Document {
     p: Option<DynPuzzle>,
     s: Option<Solution>,
@@ -509,19 +516,25 @@ impl Document {
         &self.file
     }
 
-    pub fn get_or_make_up_title(&mut self) -> anyhow::Result<String> {
+    pub fn get_or_make_up_title(&self) -> anyhow::Result<String> {
         if self.title.is_some() {
             return Ok(self.title.as_ref().unwrap().clone());
         }
 
-        let solution = self.solution()?.grid.clone();
-        let mut hasher = Sha256::new();
-        for row in solution {
-            for color in row {
-                hasher.update(color.0.to_le_bytes());
+        let mut hasher = std::hash::DefaultHasher::new();
+
+        if let Some(solution) = self.try_solution() {
+            for row in &solution.grid {
+                for color in row {
+                    color.hash(&mut hasher);
+                }
             }
+        } else {
+            let puzzle = self.try_puzzle().unwrap();
+            puzzle.hash(&mut hasher);
         }
-        let hash = hasher.finalize();
+
+        let hash = hasher.finish().to_le_bytes();
 
         Ok(mnemonic::to_string(&hash[0..4]))
     }

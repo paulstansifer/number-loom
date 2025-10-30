@@ -3,14 +3,15 @@ use image::{DynamicImage, GenericImageView, Pixel, Rgba};
 use std::{
     char::from_digit,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    io::Cursor,
     io::Read,
     iter::FromIterator,
     path::PathBuf,
 };
 
 use crate::puzzle::{
-    self, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Nono, NonogramFormat,
-    Puzzle, Solution, Triano, BACKGROUND,
+    self, BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Nono,
+    NonogramFormat, Puzzle, Solution, Triano,
 };
 
 pub fn load_path(path: &PathBuf, format: Option<NonogramFormat>) -> Document {
@@ -137,7 +138,9 @@ pub fn char_grid_to_solution(char_grid: &str) -> Solution {
     let bg_ch = match bg_ch {
         Some(x) => x,
         None => {
-            eprintln!("number-loom: Warning: unable to guess which character is supposed to be the background; using the upper-left corner");
+            eprintln!(
+                "number-loom: Warning: unable to guess which character is supposed to be the background; using the upper-left corner"
+            );
             char_grid.trim_start().chars().next().unwrap()
         }
     };
@@ -968,6 +971,30 @@ pub fn bw_palette() -> HashMap<Color, ColorInfo> {
     palette.insert(BACKGROUND, ColorInfo::default_bg());
     palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
     palette
+}
+
+pub fn load_zip_from_url(url: &str) -> anyhow::Result<Vec<Document>> {
+    let response = reqwest::blocking::get(url)?;
+    let zip_bytes = response.bytes()?;
+    let zip_cursor = Cursor::new(zip_bytes);
+
+    let mut archive = zip::ZipArchive::new(zip_cursor)?;
+    let mut documents = vec![];
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let filename = file.name().to_string();
+
+        if file.is_dir() {
+            continue;
+        }
+
+        let mut bytes = vec![];
+        file.read_to_end(&mut bytes)?;
+        documents.push(load(&filename, bytes, None));
+    }
+
+    Ok(documents)
 }
 
 pub fn triano_palette() -> HashMap<Color, ColorInfo> {
