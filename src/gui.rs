@@ -662,49 +662,6 @@ impl CanvasGui {
     }
 }
 
-impl NonogramGui {
-    fn new(cc: &eframe::CreationContext<'_>, picture: Solution) -> Self {
-        egui_material_icons::initialize(&cc.egui_ctx);
-        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
-
-        let mut current_color = BACKGROUND;
-        if picture.palette.contains_key(&Color(1)) {
-            current_color = Color(1);
-        }
-
-        NonogramGui {
-            editor_gui: CanvasGui {
-                picture,
-                version: 0,
-                current_color,
-                drag_start_color: current_color,
-                undo_stack: vec![],
-                redo_stack: vec![],
-                current_tool: Tool::Pencil,
-                line_tool_state: None,
-                solved_mask: Staleable {
-                    val: ("".to_string(), solved_mask),
-                    version: 0,
-                },
-                disambiguator: Staleable {
-                    val: Disambiguator::new(),
-                    version: 0,
-                },
-            },
-            file_name: "blank.xml".to_string(),
-            scale: 16.0,
-            opened_file_receiver: mpsc::channel().1,
-            new_dialog: None,
-            gallery_dialog: None,
-            auto_solve: false,
-            lines_to_affect_string: "5".to_string(),
-            solve_report: "".to_string(),
-            solve_mode: false,
-            solve_gui: None,
-        }
-    }
-}
-
 pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui::Shape {
     let Corner { left, upper } = corner;
 
@@ -828,6 +785,47 @@ fn cell_shape(
 }
 
 impl NonogramGui {
+    fn new(cc: &eframe::CreationContext<'_>, picture: Solution) -> Self {
+        egui_material_icons::initialize(&cc.egui_ctx);
+        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
+
+        let mut current_color = BACKGROUND;
+        if picture.palette.contains_key(&Color(1)) {
+            current_color = Color(1);
+        }
+
+        NonogramGui {
+            editor_gui: CanvasGui {
+                picture,
+                version: 0,
+                current_color,
+                drag_start_color: current_color,
+                undo_stack: vec![],
+                redo_stack: vec![],
+                current_tool: Tool::Pencil,
+                line_tool_state: None,
+                solved_mask: Staleable {
+                    val: ("".to_string(), solved_mask),
+                    version: 0,
+                },
+                disambiguator: Staleable {
+                    val: Disambiguator::new(),
+                    version: 0,
+                },
+            },
+            file_name: "blank.xml".to_string(),
+            scale: 16.0,
+            opened_file_receiver: mpsc::channel().1,
+            new_dialog: None,
+            gallery_dialog: None,
+            auto_solve: false,
+            lines_to_affect_string: "5".to_string(),
+            solve_report: "".to_string(),
+            solve_mode: false,
+            solve_gui: None,
+        }
+    }
+
     fn resize(&mut self, top: Option<bool>, left: Option<bool>, add: bool) {
         let mut g = self.editor_gui.picture.grid.clone();
         let lines = match self.lines_to_affect_string.parse::<usize>() {
