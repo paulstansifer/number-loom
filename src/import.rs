@@ -979,10 +979,16 @@ pub fn bw_palette() -> HashMap<Color, ColorInfo> {
 pub async fn puzzles_from_github() -> anyhow::Result<Vec<Document>> {
     let client = reqwest::Client::new();
 
-    let contents_url =
+    let puzzles_url =
         "https://api.github.com/repos/paulstansifer/number-loom/contents/puzzles?ref=main";
 
-    let contents = client.get(contents_url).send().await?.bytes().await?;
+    let contents = client
+        .get(puzzles_url)
+        .header("User-Agent", "number-loom")
+        .send()
+        .await?
+        .bytes()
+        .await?;
 
     let files: Vec<serde_json::Value> = serde_json::from_slice(&contents)?;
 
