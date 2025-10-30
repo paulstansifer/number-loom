@@ -3,7 +3,7 @@ use crate::{
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
     puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution, UNSOLVED},
 };
-use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
+use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
 
 use crate::puzzle::Document;
 pub struct SolveGui {
@@ -125,13 +125,13 @@ impl SolveGui {
 
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            ui.set_width(120.0);
+            ui.set_width(150.0);
 
             if let Some(title) = &self.canvas.document.title {
-                ui.label(title);
+                ui.label(RichText::new(title).strong());
             }
             if let Some(author) = &self.canvas.document.author {
-                ui.label(author);
+                ui.label(format!("by {}", author));
             }
 
             self.canvas.common_sidebar_items(ui, true);
@@ -195,30 +195,32 @@ impl SolveGui {
     }
 
     pub fn body(&mut self, ui: &mut egui::Ui, scale: f32) {
-        egui::Grid::new("solve_grid").show(ui, |ui| {
-            ui.label(""); // Top-left is empty
-            let is_stale = !self.line_analysis.fresh(self.canvas.version);
-            let line_analysis = self.line_analysis.val.as_ref();
-            draw_dyn_clues(
-                ui,
-                &self.clues,
-                scale,
-                Orientation::Vertical,
-                line_analysis.map(|la| &la.1[..]),
-                is_stale,
-            );
-            ui.end_row();
+        ui.vertical(|ui| {
+            egui::Grid::new("solve_grid").show(ui, |ui| {
+                ui.label(""); // Top-left is empty
+                let is_stale = !self.line_analysis.fresh(self.canvas.version);
+                let line_analysis = self.line_analysis.val.as_ref();
+                draw_dyn_clues(
+                    ui,
+                    &self.clues,
+                    scale,
+                    Orientation::Vertical,
+                    line_analysis.map(|la| &la.1[..]),
+                    is_stale,
+                );
+                ui.end_row();
 
-            draw_dyn_clues(
-                ui,
-                &self.clues,
-                scale,
-                Orientation::Horizontal,
-                line_analysis.map(|la| &la.0[..]),
-                is_stale,
-            );
-            self.canvas.canvas(ui, scale, self.render_style);
-            ui.end_row();
+                draw_dyn_clues(
+                    ui,
+                    &self.clues,
+                    scale,
+                    Orientation::Horizontal,
+                    line_analysis.map(|la| &la.0[..]),
+                    is_stale,
+                );
+                self.canvas.canvas(ui, scale, self.render_style);
+                ui.end_row();
+            });
         });
     }
 }

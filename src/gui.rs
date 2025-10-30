@@ -59,7 +59,10 @@ pub fn edit_image(document: Document) {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(NonogramGui::new(cc, document)))),
+                Box::new(|cc| {
+                    egui_material_icons::initialize(&cc.egui_ctx);
+                    Ok(Box::new(NonogramGui::new(document)))
+                }),
             )
             .await;
 
@@ -939,7 +942,32 @@ impl NonogramGui {
 
     fn edit_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            ui.set_width(120.0);
+            ui.set_width(140.0);
+            let mut title = String::new();
+            if let Some(t) = &self.editor_gui.document.title {
+                title = t.clone();
+            }
+            if ui
+                .add(egui::TextEdit::singleline(&mut title).hint_text("Title"))
+                .changed()
+            {
+                self.editor_gui.document.title = Some(title.clone());
+            }
+
+            let mut author = String::new();
+            if let Some(a) = &self.editor_gui.document.author {
+                author = a.clone();
+            }
+            ui.horizontal(|ui| {
+                ui.label("by ");
+                if ui
+                    .add(egui::TextEdit::singleline(&mut author).hint_text("Author"))
+                    .changed()
+                {
+                    self.editor_gui.document.author = Some(author.clone());
+                }
+            });
+
             self.editor_gui.common_sidebar_items(ui, false);
 
             ui.separator();
@@ -984,6 +1012,14 @@ impl NonogramGui {
                 .disambiguator
                 .get_or_refresh(self.editor_gui.version, Disambiguator::new)
                 .disambig_widget(self.editor_gui.document.try_solution().unwrap(), ui);
+
+            ui.label("Description:");
+            ui.text_edit_multiline(
+                self.editor_gui
+                    .document
+                    .description
+                    .get_or_insert_with(String::new),
+            );
         });
     }
 
@@ -1179,27 +1215,6 @@ impl NonogramGui {
         });
         ui.separator();
 
-        if !self.solve_mode {
-            ui.horizontal(|ui| {
-                ui.label("Title:");
-                ui.text_edit_singleline(
-                    self.editor_gui
-                        .document
-                        .title
-                        .get_or_insert_with(String::new),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label("Author:");
-                ui.text_edit_singleline(
-                    self.editor_gui
-                        .document
-                        .author
-                        .get_or_insert_with(String::new),
-                );
-            });
-        }
-
         ui.horizontal_top(|ui| {
             if let Some(solve_gui) = &mut self.solve_gui {
                 solve_gui.sidebar(ui);
@@ -1210,16 +1225,6 @@ impl NonogramGui {
                     .canvas(ui, self.scale, RenderStyle::Experimental);
             }
         });
-
-        if !self.solve_mode {
-            ui.label("Description:");
-            ui.text_edit_multiline(
-                self.editor_gui
-                    .document
-                    .description
-                    .get_or_insert_with(String::new),
-            );
-        }
     }
 }
 
@@ -1244,7 +1249,7 @@ impl eframe::App for NonogramGui {
         };
         ctx.set_style(style);
 
-        let picture = self.editor_gui.document.try_solution().unwrap();
+        let picture = self.editor_gui.document.solution().unwrap();
         let _background_color = Color32::from_rgb(
             picture.palette[&BACKGROUND].rgb.0,
             picture.palette[&BACKGROUND].rgb.1,
