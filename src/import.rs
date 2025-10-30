@@ -82,13 +82,14 @@ pub fn image_to_solution(image: &DynamicImage) -> Solution {
                 };
                 let this_color = Color(next_color_idx);
 
-                next_color_idx += 1;
+                // Don't crash for too many colors, but the quality check should complain:
+                next_color_idx = next_color_idx.wrapping_add(1);
 
                 if r == 0 && g == 0 && b == 0 {
                     return ColorInfo::default_fg(this_color);
                 }
 
-                next_char = (next_char as u8 + 1) as char;
+                next_char = (next_char as u8).wrapping_add(1) as char;
 
                 ColorInfo {
                     ch: this_char,
