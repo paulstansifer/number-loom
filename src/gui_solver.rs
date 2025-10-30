@@ -1,10 +1,11 @@
 use crate::{
     grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
-    puzzle::{Color, DynPuzzle, PuzzleDynOps, Solution},
+    puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution, UNSOLVED},
 };
-use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
+use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
 
+use crate::puzzle::Document;
 pub struct SolveGui {
     pub canvas: CanvasGui,
     pub clues: DynPuzzle,
@@ -25,16 +26,36 @@ pub enum RenderStyle {
 }
 
 impl SolveGui {
-    pub fn new(
-        picture: Solution,
-        clues: DynPuzzle,
-        current_color: Color,
-        intended_solution: Solution,
-    ) -> Self {
-        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
+    pub fn new(mut document: Document) -> Self {
+        let mut working_doc = document.clone();
+        for line in &mut working_doc.solution_mut().grid {
+            for cell in line {
+                *cell = UNSOLVED;
+            }
+        }
+        working_doc.solution_mut().palette.insert(
+            UNSOLVED,
+            crate::puzzle::ColorInfo {
+                ch: '?',
+                name: "unknown".to_owned(),
+                rgb: (128, 128, 128),
+                color: UNSOLVED,
+                corner: None,
+            },
+        );
+        let mut current_color = BACKGROUND;
+        if working_doc.solution_mut().palette.contains_key(&Color(1)) {
+            current_color = Color(1)
+        }
+
+        let clues = document.puzzle().clone();
+        let solved_mask = vec![
+            vec![true; document.solution_mut().grid[0].len()];
+            document.solution_mut().grid.len()
+        ];
         SolveGui {
             canvas: CanvasGui {
-                picture,
+                document: working_doc,
                 version: 0,
                 current_color,
                 drag_start_color: current_color,
@@ -52,7 +73,7 @@ impl SolveGui {
                 },
             },
             clues,
-            intended_solution,
+            intended_solution: document.take_solution().unwrap(),
             analyze_lines: false,
             detect_errors: false,
             infer_background: false,
@@ -66,7 +87,8 @@ impl SolveGui {
     }
 
     fn detect_any_errors(&self) -> bool {
-        for (x, row) in self.canvas.picture.grid.iter().enumerate() {
+        let picture = self.canvas.document.try_solution().unwrap();
+        for (x, row) in picture.grid.iter().enumerate() {
             for (y, color) in row.iter().enumerate() {
                 if *color != self.intended_solution.grid[x][y] && *color != crate::puzzle::UNSOLVED
                 {
@@ -78,16 +100,17 @@ impl SolveGui {
     }
 
     fn is_correctly_solved(&self) -> bool {
-        self.canvas.picture.grid == self.intended_solution.grid
+        self.canvas.document.try_solution().unwrap().grid == self.intended_solution.grid
     }
 
     fn infer_background(&mut self) {
-        let mut grid = self.canvas.picture.to_partial();
+        let picture = self.canvas.document.solution_mut();
+        let mut grid = picture.to_partial();
 
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
             for ((y, x), cell) in grid.indexed_iter() {
-                let current_color = self.canvas.picture.grid[x][y];
+                let current_color = picture.grid[x][y];
                 if cell.is_known() && cell.known_or() != Some(current_color) {
                     changes.insert((x, y), cell.known_or().unwrap());
                 }
@@ -102,7 +125,15 @@ impl SolveGui {
 
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            ui.set_width(120.0);
+            ui.set_width(150.0);
+
+            if let Some(title) = &self.canvas.document.title {
+                ui.label(RichText::new(title).strong());
+            }
+            if let Some(author) = &self.canvas.document.author {
+                ui.label(format!("by {}", author));
+            }
+
             self.canvas.common_sidebar_items(ui, true);
 
             ui.separator();
@@ -129,7 +160,8 @@ impl SolveGui {
             ui.checkbox(&mut self.analyze_lines, "[auto]");
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
                 let clues = &self.clues;
-                let grid = self.canvas.picture.to_partial();
+                let picture = self.canvas.document.try_solution().unwrap();
+                let grid = picture.to_partial();
                 self.line_analysis
                     .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }
@@ -144,6 +176,10 @@ impl SolveGui {
             }
             if self.is_correctly_solved() {
                 ui.colored_label(egui::Color32::GREEN, "Correctly solved");
+
+                if let Some(desc) = &self.canvas.document.description {
+                    ui.label(desc);
+                }
             }
 
             ui.separator();
@@ -155,6 +191,36 @@ impl SolveGui {
                     self.last_inferred_version = self.canvas.version;
                 }
             }
+        });
+    }
+
+    pub fn body(&mut self, ui: &mut egui::Ui, scale: f32) {
+        ui.vertical(|ui| {
+            egui::Grid::new("solve_grid").show(ui, |ui| {
+                ui.label(""); // Top-left is empty
+                let is_stale = !self.line_analysis.fresh(self.canvas.version);
+                let line_analysis = self.line_analysis.val.as_ref();
+                draw_dyn_clues(
+                    ui,
+                    &self.clues,
+                    scale,
+                    Orientation::Vertical,
+                    line_analysis.map(|la| &la.1[..]),
+                    is_stale,
+                );
+                ui.end_row();
+
+                draw_dyn_clues(
+                    ui,
+                    &self.clues,
+                    scale,
+                    Orientation::Horizontal,
+                    line_analysis.map(|la| &la.0[..]),
+                    is_stale,
+                );
+                self.canvas.canvas(ui, scale, self.render_style);
+                ui.end_row();
+            });
         });
     }
 }

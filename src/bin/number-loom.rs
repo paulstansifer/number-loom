@@ -4,6 +4,7 @@ use clap::Parser;
 use colored::Colorize;
 use number_loom::import;
 use number_loom::import::quality_check;
+use number_loom::puzzle::Document;
 use number_loom::puzzle::NonogramFormat;
 use number_loom::puzzle::PuzzleDynOps;
 use number_loom::puzzle::Solution;
@@ -45,7 +46,10 @@ fn main() -> std::io::Result<()> {
     let input_path = match args.input_path {
         Some(ip) => ip,
         None => {
-            gui::edit_image(Solution::blank_bw(20, 20));
+            gui::edit_image(Document::from_solution(
+                Solution::blank_bw(20, 20),
+                "blank.xml".to_string(),
+            ));
             return Ok(());
         }
     };
@@ -56,10 +60,8 @@ fn main() -> std::io::Result<()> {
     }
 
     if args.gui {
-        // TODO: this sorta duplicates some code in gui
-        // TODO: check the solution is complete!
-        let solution = document.take_solution().expect("impossible puzzle");
-        gui::edit_image(solution);
+        // TODO: inside the GUI, check the solution is complete!
+        gui::edit_image(document);
         return Ok(());
     } else if args.disambiguate {
         let solution = document.take_solution().expect("impossible puzzle");
