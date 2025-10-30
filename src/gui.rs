@@ -893,11 +893,7 @@ impl NonogramGui {
 
     fn resizer(&mut self, ui: &mut egui::Ui) {
         let s = self.editor_gui.document.mut_solution();
-        ui.label(format!(
-            "Canvas size: {}x{}",
-            s.x_size(),
-            s.y_size(),
-        ));
+        ui.label(format!("Canvas size: {}x{}", s.x_size(), s.y_size(),));
 
         egui::Grid::new("resizer").show(ui, |ui| {
             ui.label("");
@@ -1025,10 +1021,8 @@ impl NonogramGui {
 
         if let Ok(document) = self.opened_file_receiver.try_recv() {
             self.file_name = document.file.clone();
-            self.editor_gui.perform(
-                Action::ReplaceDocument { document },
-                ActionMood::Normal,
-            );
+            self.editor_gui
+                .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
         }
     }
 
@@ -1167,31 +1161,8 @@ impl eframe::App for NonogramGui {
                     .selectable_value(&mut self.solve_mode, true, "Puzzle")
                     .clicked()
                 {
-                    let mut new_document = self.editor_gui.document.clone();
-                    let blank_solution = new_document.mut_solution();
-                    for row in blank_solution.grid.iter_mut() {
-                        for cell in row.iter_mut() {
-                            *cell = UNSOLVED;
-                        }
-                    }
-                    blank_solution.palette.insert(
-                        UNSOLVED,
-                        ColorInfo {
-                            ch: '?',
-                            name: "unknown".to_owned(),
-                            rgb: (128, 128, 128),
-                            color: UNSOLVED,
-                            corner: None,
-                        },
-                    );
-
                     self.solve_gui = Some(crate::gui_solver::SolveGui::new(
-                        Document::from_solution(
-                            self.editor_gui.document.mut_solution().clone(),
-                            self.editor_gui.document.file.clone(),
-                        ),
-                        new_document,
-                        self.editor_gui.current_color,
+                        self.editor_gui.document.clone(),
                     ));
                 }
             });
@@ -1212,32 +1183,31 @@ impl eframe::App for NonogramGui {
                         });
                         egui::Grid::new("solve_grid").show(ui, |ui| {
                             ui.label(""); // Top-left is empty
-                            let is_stale =
-                                !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
-                        let line_analysis = solve_gui.line_analysis.val.as_ref();
-                        draw_dyn_clues(
-                            ui,
-                            &solve_gui.clues,
-                            self.scale,
-                            Orientation::Vertical,
-                            line_analysis.map(|la| &la.1[..]),
-                            is_stale,
-                        );
-                        ui.end_row();
+                            let is_stale = !solve_gui.line_analysis.fresh(solve_gui.canvas.version);
+                            let line_analysis = solve_gui.line_analysis.val.as_ref();
+                            draw_dyn_clues(
+                                ui,
+                                &solve_gui.clues,
+                                self.scale,
+                                Orientation::Vertical,
+                                line_analysis.map(|la| &la.1[..]),
+                                is_stale,
+                            );
+                            ui.end_row();
 
-                        draw_dyn_clues(
-                            ui,
-                            &solve_gui.clues,
-                            self.scale,
-                            Orientation::Horizontal,
-                            line_analysis.map(|la| &la.0[..]),
-                            is_stale,
-                        );
-                        solve_gui
-                            .canvas
-                            .canvas(ui, self.scale, solve_gui.render_style);
-                        ui.end_row();
-                    });
+                            draw_dyn_clues(
+                                ui,
+                                &solve_gui.clues,
+                                self.scale,
+                                Orientation::Horizontal,
+                                line_analysis.map(|la| &la.0[..]),
+                                is_stale,
+                            );
+                            solve_gui
+                                .canvas
+                                .canvas(ui, self.scale, solve_gui.render_style);
+                            ui.end_row();
+                        });
                         if solve_gui.is_correctly_solved() {
                             if let Some(desc) = &solve_gui.canvas.document.description {
                                 ui.label(desc);

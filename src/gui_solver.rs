@@ -1,14 +1,14 @@
 use crate::{
     grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
-    puzzle::{Color, DynPuzzle, PuzzleDynOps, Solution, Document},
+    puzzle::{BACKGROUND, Color, Document, DynPuzzle, PuzzleDynOps, Solution, UNSOLVED},
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
 pub struct SolveGui {
     pub canvas: CanvasGui,
-    pub clues: DynPuzzle,
     pub intended_solution: Solution,
+    pub clues: DynPuzzle,
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
@@ -25,16 +25,34 @@ pub enum RenderStyle {
 }
 
 impl SolveGui {
-    pub fn new(
-        intended_solution: Document,
-        mut wip_document: Document,
-        current_color: Color,
-    ) -> Self {
+    pub fn new(mut doc: Document) -> Self {
+        let mut working_doc = doc.clone();
+        for line in &mut working_doc.mut_solution().grid {
+            for cell in line {
+                *cell = UNSOLVED;
+            }
+        }
+        working_doc.mut_solution().palette.insert(
+            UNSOLVED,
+            crate::puzzle::ColorInfo {
+                ch: '?',
+                name: "unknown".to_owned(),
+                rgb: (128, 128, 128),
+                color: UNSOLVED,
+                corner: None,
+            },
+        );
+        let mut current_color = BACKGROUND;
+        if working_doc.mut_solution().palette.contains_key(&Color(1)) {
+            current_color = Color(1)
+        }
+
+        let clues = doc.puzzle().clone();
         let solved_mask =
-            vec![vec![true; wip_document.mut_solution().grid[0].len()]; wip_document.mut_solution().grid.len()];
+            vec![vec![true; doc.mut_solution().grid[0].len()]; doc.mut_solution().grid.len()];
         SolveGui {
             canvas: CanvasGui {
-                document: wip_document,
+                document: working_doc,
                 version: 0,
                 current_color,
                 drag_start_color: current_color,
@@ -51,8 +69,8 @@ impl SolveGui {
                     version: 0,
                 },
             },
-            clues: intended_solution.try_puzzle().unwrap().clone(),
-            intended_solution: intended_solution.take_solution().unwrap(),
+            intended_solution: doc.take_solution().expect("can't happen"),
+            clues,
             analyze_lines: false,
             detect_errors: false,
             infer_background: false,
@@ -66,7 +84,15 @@ impl SolveGui {
     }
 
     fn detect_any_errors(&self) -> bool {
-        for (x, row) in self.canvas.document.try_solution().unwrap().grid.iter().enumerate() {
+        for (x, row) in self
+            .canvas
+            .document
+            .try_solution()
+            .unwrap()
+            .grid
+            .iter()
+            .enumerate()
+        {
             for (y, color) in row.iter().enumerate() {
                 if *color != self.intended_solution.grid[x][y] && *color != crate::puzzle::UNSOLVED
                 {
