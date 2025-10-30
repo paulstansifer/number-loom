@@ -14,7 +14,7 @@ pub enum Tool {
 use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
-    gui_solver::{Orientation, RenderStyle, SolveGui, draw_dyn_clues},
+    gui_solver::{RenderStyle, SolveGui},
     import,
     puzzle::{
         BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, PuzzleDynOps, Solution, UNSOLVED,
@@ -29,7 +29,10 @@ pub fn edit_image(document: Document) {
     eframe::run_native(
         "Number Loom",
         native_options,
-        Box::new(|cc| Ok(Box::new(NonogramGui::new(cc, document)))),
+        Box::new(|cc| {
+            egui_material_icons::initialize(&cc.egui_ctx);
+            Ok(Box::new(NonogramGui::new(document)))
+        }),
     )
     .unwrap()
 }
@@ -792,8 +795,7 @@ fn cell_shape(
 }
 
 impl NonogramGui {
-    fn new(cc: &eframe::CreationContext<'_>, document: Document) -> Self {
-        egui_material_icons::initialize(&cc.egui_ctx);
+    fn new(document: Document) -> Self {
         let picture = document.try_solution().unwrap();
         let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
 
