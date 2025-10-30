@@ -6,7 +6,7 @@ use egui::{CornerRadius, Vec2};
 use itertools::Itertools;
 use std::collections::HashMap;
 
-fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &mut Document) {
+fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &Document) {
     let color_counts = count_colors(doc);
     let total_pixels = color_counts.values().sum::<usize>();
 
@@ -35,7 +35,7 @@ fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &mut Document) {
 }
 
 /// Draws a gallery item for a document.
-pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &mut Document) -> egui::Response {
+pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Response {
     let title = doc
         .get_or_make_up_title()
         .unwrap_or_else(|_| "Untitled".to_string());

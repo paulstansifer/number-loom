@@ -10,8 +10,8 @@ use std::{
 };
 
 use crate::puzzle::{
-    self, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Nono, NonogramFormat,
-    Puzzle, Solution, Triano, BACKGROUND,
+    self, BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Nono,
+    NonogramFormat, Puzzle, Solution, Triano,
 };
 
 pub fn load_path(path: &PathBuf, format: Option<NonogramFormat>) -> Document {
@@ -141,7 +141,9 @@ pub fn char_grid_to_solution(char_grid: &str) -> Solution {
     let bg_ch = match bg_ch {
         Some(x) => x,
         None => {
-            eprintln!("number-loom: Warning: unable to guess which character is supposed to be the background; using the upper-left corner");
+            eprintln!(
+                "number-loom: Warning: unable to guess which character is supposed to be the background; using the upper-left corner"
+            );
             char_grid.trim_start().chars().next().unwrap()
         }
     };

@@ -3130,7 +3130,6 @@ dependencies = [
  "reqwest",
  "rfd",
  "roxmltree",
- "sha2",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
