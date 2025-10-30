@@ -5,6 +5,7 @@ use crate::{
 };
 use egui::{Color32, Pos2, Rect, Vec2, text::Fonts};
 
+use crate::puzzle::Document;
 pub struct SolveGui {
     pub canvas: CanvasGui,
     pub clues: DynPuzzle,
@@ -26,15 +27,16 @@ pub enum RenderStyle {
 
 impl SolveGui {
     pub fn new(
-        picture: Solution,
+        document: Document,
         clues: DynPuzzle,
         current_color: Color,
         intended_solution: Solution,
     ) -> Self {
+        let picture = document.try_solution().unwrap();
         let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
         SolveGui {
             canvas: CanvasGui {
-                picture,
+                document,
                 version: 0,
                 current_color,
                 drag_start_color: current_color,
@@ -66,7 +68,8 @@ impl SolveGui {
     }
 
     fn detect_any_errors(&self) -> bool {
-        for (x, row) in self.canvas.picture.grid.iter().enumerate() {
+        let picture = self.canvas.document.try_solution().unwrap();
+        for (x, row) in picture.grid.iter().enumerate() {
             for (y, color) in row.iter().enumerate() {
                 if *color != self.intended_solution.grid[x][y] && *color != crate::puzzle::UNSOLVED
                 {
@@ -78,16 +81,17 @@ impl SolveGui {
     }
 
     fn is_correctly_solved(&self) -> bool {
-        self.canvas.picture.grid == self.intended_solution.grid
+        self.canvas.document.try_solution().unwrap().grid == self.intended_solution.grid
     }
 
     fn infer_background(&mut self) {
-        let mut grid = self.canvas.picture.to_partial();
+        let picture = self.canvas.document.solution_mut().unwrap();
+        let mut grid = picture.to_partial();
 
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
             for ((y, x), cell) in grid.indexed_iter() {
-                let current_color = self.canvas.picture.grid[x][y];
+                let current_color = picture.grid[x][y];
                 if cell.is_known() && cell.known_or() != Some(current_color) {
                     changes.insert((x, y), cell.known_or().unwrap());
                 }
@@ -103,6 +107,14 @@ impl SolveGui {
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(120.0);
+
+            if let Some(title) = &self.canvas.document.title {
+                ui.label(title);
+            }
+            if let Some(author) = &self.canvas.document.author {
+                ui.label(author);
+            }
+
             self.canvas.common_sidebar_items(ui, true);
 
             ui.separator();
@@ -129,7 +141,8 @@ impl SolveGui {
             ui.checkbox(&mut self.analyze_lines, "[auto]");
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
                 let clues = &self.clues;
-                let grid = self.canvas.picture.to_partial();
+                let picture = self.canvas.document.try_solution().unwrap();
+                let grid = picture.to_partial();
                 self.line_analysis
                     .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }
@@ -144,6 +157,10 @@ impl SolveGui {
             }
             if self.is_correctly_solved() {
                 ui.colored_label(egui::Color32::GREEN, "Correctly solved");
+
+                if let Some(desc) = &self.canvas.document.description {
+                    ui.label(desc);
+                }
             }
 
             ui.separator();

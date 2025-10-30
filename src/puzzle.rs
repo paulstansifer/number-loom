@@ -480,7 +480,7 @@ pub fn infer_format(path: &str, format_arg: Option<NonogramFormat>) -> NonogramF
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Document {
     p: Option<DynPuzzle>,
     s: Option<Solution>,
@@ -560,6 +560,13 @@ impl Document {
             self.s = Some(self.p.as_ref().unwrap().plain_solve()?.solution)
         }
         Ok(self.s.as_ref().unwrap())
+    }
+
+    pub fn solution_mut(&mut self) -> anyhow::Result<&mut Solution> {
+        if self.s.is_none() {
+            self.s = Some(self.p.as_ref().unwrap().plain_solve()?.solution)
+        }
+        Ok(self.s.as_mut().unwrap())
     }
 
     pub fn take_solution(self) -> anyhow::Result<Solution> {
