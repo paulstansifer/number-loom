@@ -53,6 +53,7 @@ path = "src/gui_test.rs"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11.8"
 criterion = "0.7.0"
+preferences = "2.0.0"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -63,6 +64,7 @@ web-sys = "0.3.77"
 # `js-sys` and `wasm-bindgen` are just needed for yielding!?
 js-sys = "0.3.77"
 wasm-bindgen = "0.2.100"
+gloo-storage = "0.3.0"
 
 [profile.release]
 opt-level = 2 # fast and small wasm

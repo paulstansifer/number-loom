@@ -6,6 +6,7 @@ pub mod gui_solver;
 pub mod import;
 pub mod line_solve;
 pub mod puzzle;
+pub mod user_settings;
 
 #[cfg(test)]
 use crate::puzzle::PuzzleDynOps;
