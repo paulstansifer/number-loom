@@ -166,7 +166,7 @@ struct NonogramGui {
     editor_gui: CanvasGui,
     scale: f32,
     opened_file_receiver: mpsc::Receiver<Document>,
-    gallery_dialog: Option<Vec<Document>>,
+    library_dialog: Option<Vec<Document>>,
     new_dialog: Option<NewPuzzleDialog>,
     auto_solve: bool,
     lines_to_affect_string: String,
@@ -824,7 +824,7 @@ impl NonogramGui {
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
             new_dialog: None,
-            gallery_dialog: None,
+            library_dialog: None,
             auto_solve: false,
             lines_to_affect_string: "5".to_string(),
             solve_report: "".to_string(),
@@ -1113,27 +1113,27 @@ impl NonogramGui {
             }
 
             self.loader(ui);
-            if ui.button("Gallery").clicked() {
+            if ui.button("Library").clicked() {
                 let result = crate::import::load_zip_from_url(
                         "https://github.com/paulstansifer/number-loom/releases/download/latest/puzzles.zip",
                     );
-                self.gallery_dialog = result.ok();
+                self.library_dialog = result.ok();
             }
 
-            let mut close_gallery = None; // Contains a bool indicating whether to solve
-            if let Some(docs) = &self.gallery_dialog {
-                egui::Window::new("Puzzle Gallery").show(ctx, |ui| {
+            let mut close_library = None; // Contains a bool indicating whether to solve
+            if let Some(docs) = &self.library_dialog {
+                egui::Window::new("Puzzle Library").show(ctx, |ui| {
                     ui.vertical(|ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for doc in docs {
                                 if crate::gui_gallery::gallery_puzzle_preview(ui, doc).clicked() {
                                     new_document = Some(doc.clone());
-                                    close_gallery = Some(true);
+                                    close_library = Some(true);
                                 }
                             }
                         });
                         if ui.button("Cancel").clicked() {
-                            close_gallery = Some(false);
+                            close_library = Some(false);
                         }
                     });
                 });
@@ -1147,10 +1147,10 @@ impl NonogramGui {
                     ActionMood::Normal,
                 );
                 self.new_dialog = None;
-                self.gallery_dialog = None;
+                self.library_dialog = None;
             }
-            if let Some(enter_solve_mode) = close_gallery {
-                self.gallery_dialog = None;
+            if let Some(enter_solve_mode) = close_library {
+                self.library_dialog = None;
                 if enter_solve_mode {
                     self.enter_solve_mode();
                 }
