@@ -172,6 +172,7 @@ pub struct NonogramGui {
     editor_gui: CanvasGui,
     scale: f32,
     opened_file_receiver: mpsc::Receiver<Document>,
+    library_receiver: mpsc::Receiver<Vec<Document>>,
     library_dialog: Option<Vec<Document>>,
     new_dialog: Option<NewPuzzleDialog>,
     auto_solve: bool,
@@ -829,6 +830,7 @@ impl NonogramGui {
             },
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
+            library_receiver: mpsc::channel().1,
             new_dialog: None,
             library_dialog: None,
             auto_solve: false,
@@ -1145,18 +1147,29 @@ impl NonogramGui {
                             },
                             clue_style: dialog.clue_style,
                         };
-                        new_document =
-                            Some(Document::from_solution(new_solution, "blank.xml".to_owned()));
+                        new_document = Some(Document::from_solution(
+                            new_solution,
+                            "blank.xml".to_owned(),
+                        ));
                     }
                 });
             }
 
             self.loader(ui);
             if ui.button("Library").clicked() {
-                let result = crate::import::load_zip_from_url(
-                        "https://github.com/paulstansifer/number-loom/releases/download/latest/puzzles.zip",
-                    );
-                self.library_dialog = result.ok();
+                let (sender, receiver) = mpsc::channel();
+                self.library_receiver = receiver;
+
+                spawn_async(async move {
+                    let result = crate::import::puzzles_from_github().await;
+                    if let Ok(library) = result {
+                        sender.send(library).unwrap();
+                    }
+                });
+            }
+
+            if let Ok(library) = self.library_receiver.try_recv() {
+                self.library_dialog = Some(library);
             }
 
             let mut close_library = None; // Contains a bool indicating whether to solve
