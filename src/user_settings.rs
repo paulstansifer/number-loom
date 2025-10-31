@@ -10,6 +10,14 @@ use preferences::{AppInfo, Preferences};
 #[cfg(target_arch = "wasm32")]
 use gloo_storage::{LocalStorage, Storage};
 
+pub mod consts {
+    pub const SOLVER_ANALYZE_LINES: &str = "solver.analyze_lines";
+    pub const SOLVER_DETECT_ERRORS: &str = "solver.detect_errors";
+    pub const SOLVER_INFER_BACKGROUND: &str = "solver.infer_background";
+    pub const EDITOR_AUTHOR_NAME: &str = "editor.author_name";
+}
+
+
 #[cfg(not(target_arch = "wasm32"))]
 const APP_INFO: AppInfo = AppInfo {
     name: "number-loom",

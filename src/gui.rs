@@ -19,6 +19,7 @@ use crate::{
     puzzle::{
         BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, PuzzleDynOps, Solution, UNSOLVED,
     },
+    user_settings::{consts, UserSettings},
 };
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
@@ -798,7 +799,7 @@ fn cell_shape(
 }
 
 impl NonogramGui {
-    pub fn new(document: Document) -> Self {
+    pub fn new(mut document: Document) -> Self {
         // (Public for testing)
         let picture = document.try_solution().unwrap();
         let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
@@ -806,6 +807,10 @@ impl NonogramGui {
         let mut current_color = BACKGROUND;
         if picture.palette.contains_key(&Color(1)) {
             current_color = Color(1);
+        }
+
+        if document.author.is_none() {
+            document.author = UserSettings::get(consts::EDITOR_AUTHOR_NAME);
         }
 
         NonogramGui {
@@ -965,6 +970,7 @@ impl NonogramGui {
                     .add(egui::TextEdit::singleline(&mut author).hint_text("Author"))
                     .changed()
                 {
+                    let _ = UserSettings::set(consts::EDITOR_AUTHOR_NAME, &author);
                     self.editor_gui.document.author = Some(author.clone());
                 }
             });

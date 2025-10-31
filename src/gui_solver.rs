@@ -2,6 +2,7 @@ use crate::{
     grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
     puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution, UNSOLVED},
+    user_settings::{consts, UserSettings},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
 
@@ -53,6 +54,13 @@ impl SolveGui {
             vec![true; document.solution_mut().grid[0].len()];
             document.solution_mut().grid.len()
         ];
+
+        fn get_bool_setting(key: &str) -> bool {
+            UserSettings::get(key)
+                .and_then(|s| s.parse::<bool>().ok())
+                .unwrap_or(false)
+        }
+
         SolveGui {
             canvas: CanvasGui {
                 document: working_doc,
@@ -74,9 +82,9 @@ impl SolveGui {
             },
             clues,
             intended_solution: document.take_solution().unwrap(),
-            analyze_lines: false,
-            detect_errors: false,
-            infer_background: false,
+            analyze_lines: get_bool_setting(consts::SOLVER_ANALYZE_LINES),
+            detect_errors: get_bool_setting(consts::SOLVER_DETECT_ERRORS),
+            infer_background: get_bool_setting(consts::SOLVER_INFER_BACKGROUND),
             line_analysis: Staleable {
                 val: None,
                 version: u32::MAX,
@@ -157,7 +165,12 @@ impl SolveGui {
 
             ui.separator();
 
-            ui.checkbox(&mut self.analyze_lines, "[auto]");
+            if ui.checkbox(&mut self.analyze_lines, "[auto]").changed() {
+                let _ = UserSettings::set(
+                    consts::SOLVER_ANALYZE_LINES,
+                    &self.analyze_lines.to_string(),
+                );
+            }
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
                 let clues = &self.clues;
                 let picture = self.canvas.document.try_solution().unwrap();
@@ -168,7 +181,10 @@ impl SolveGui {
 
             ui.separator();
 
-            ui.checkbox(&mut self.detect_errors, "[auto]");
+            if ui.checkbox(&mut self.detect_errors, "[auto]").changed() {
+                let _ =
+                    UserSettings::set(consts::SOLVER_DETECT_ERRORS, &self.detect_errors.to_string());
+            }
             if ui.button("Detect errors").clicked() || self.detect_errors {
                 if self.detect_any_errors() {
                     ui.colored_label(egui::Color32::RED, "Error detected");
@@ -184,7 +200,12 @@ impl SolveGui {
 
             ui.separator();
 
-            ui.checkbox(&mut self.infer_background, "[auto]");
+            if ui.checkbox(&mut self.infer_background, "[auto]").changed() {
+                let _ = UserSettings::set(
+                    consts::SOLVER_INFER_BACKGROUND,
+                    &self.infer_background.to_string(),
+                );
+            }
             if ui.button("Infer background").clicked() || self.infer_background {
                 if self.last_inferred_version != self.canvas.version {
                     self.infer_background();
