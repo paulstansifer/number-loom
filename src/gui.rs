@@ -19,7 +19,7 @@ use crate::{
     puzzle::{
         BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, PuzzleDynOps, Solution, UNSOLVED,
     },
-    user_settings::{consts, UserSettings},
+    user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
@@ -827,8 +827,10 @@ impl NonogramGui {
             current_color = Color(1);
         }
 
-        if document.author.is_none() {
-            document.author = UserSettings::get(consts::EDITOR_AUTHOR_NAME);
+        if document.author.is_empty() {
+            if let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME) {
+                document.author = author;
+            }
         }
 
         NonogramGui {
@@ -969,17 +971,22 @@ impl NonogramGui {
         ui.vertical(|ui| {
             ui.set_width(140.0);
             ui.add(
-                egui::TextEdit::singleline(&mut self.editor_gui.document.title)
-                    .hint_text("Title"),
+                egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"),
             );
 
             ui.horizontal(|ui| {
                 ui.label("by ");
                 if ui
-                    .add(egui::TextEdit::singleline(&mut self.editor_gui.document.author).hint_text("Author"))
+                    .add(
+                        egui::TextEdit::singleline(&mut self.editor_gui.document.author)
+                            .hint_text("Author"),
+                    )
                     .changed()
                 {
-                    let _ = UserSettings::set(consts::EDITOR_AUTHOR_NAME, &self.editor_gui.document.author);
+                    let _ = UserSettings::set(
+                        consts::EDITOR_AUTHOR_NAME,
+                        &self.editor_gui.document.author,
+                    );
                 }
             });
 
@@ -1187,8 +1194,7 @@ impl NonogramGui {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             egui::Grid::new("library_grid").show(ui, |ui| {
                                 for (i, doc) in docs.iter().enumerate() {
-                                    if crate::gui_gallery::gallery_puzzle_preview(ui, doc)
-                                        .clicked()
+                                    if crate::gui_gallery::gallery_puzzle_preview(ui, doc).clicked()
                                     {
                                         new_document = Some(doc.clone());
                                         close_library = Some(true);
