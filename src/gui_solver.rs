@@ -127,11 +127,11 @@ impl SolveGui {
         ui.vertical(|ui| {
             ui.set_width(150.0);
 
-            if let Some(title) = &self.canvas.document.title {
-                ui.label(RichText::new(title).strong());
+            if !self.canvas.document.title.is_empty() {
+                ui.label(RichText::new(&self.canvas.document.title).strong());
             }
-            if let Some(author) = &self.canvas.document.author {
-                ui.label(format!("by {}", author));
+            if !self.canvas.document.author.is_empty() {
+                ui.label(format!("by {}", &self.canvas.document.author));
             }
 
             self.canvas.common_sidebar_items(ui, true);
@@ -177,8 +177,8 @@ impl SolveGui {
             if self.is_correctly_solved() {
                 ui.colored_label(egui::Color32::GREEN, "Correctly solved");
 
-                if let Some(desc) = &self.canvas.document.description {
-                    ui.label(desc);
+                if !self.canvas.document.description.is_empty() {
+                    ui.label(&self.canvas.document.description);
                 }
             }
 

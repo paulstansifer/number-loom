@@ -946,29 +946,17 @@ impl NonogramGui {
     fn edit_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(140.0);
-            let mut title = String::new();
-            if let Some(t) = &self.editor_gui.document.title {
-                title = t.clone();
-            }
-            if ui
-                .add(egui::TextEdit::singleline(&mut title).hint_text("Title"))
-                .changed()
-            {
-                self.editor_gui.document.title = Some(title.clone());
-            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.editor_gui.document.title)
+                    .hint_text("Title"),
+            );
 
-            let mut author = String::new();
-            if let Some(a) = &self.editor_gui.document.author {
-                author = a.clone();
-            }
             ui.horizontal(|ui| {
                 ui.label("by ");
-                if ui
-                    .add(egui::TextEdit::singleline(&mut author).hint_text("Author"))
-                    .changed()
-                {
-                    self.editor_gui.document.author = Some(author.clone());
-                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.editor_gui.document.author)
+                        .hint_text("Author"),
+                );
             });
 
             self.editor_gui.common_sidebar_items(ui, false);
@@ -1017,12 +1005,7 @@ impl NonogramGui {
                 .disambig_widget(self.editor_gui.document.try_solution().unwrap(), ui);
 
             ui.label("Description:");
-            ui.text_edit_multiline(
-                self.editor_gui
-                    .document
-                    .description
-                    .get_or_insert_with(String::new),
-            );
+            ui.text_edit_multiline(&mut self.editor_gui.document.description);
         });
     }
 

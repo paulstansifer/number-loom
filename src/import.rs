@@ -436,7 +436,11 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
         "".to_string(),
         title,
         description,
-        author.or(authorid),
+        if author.is_some() {
+            author
+        } else {
+            authorid
+        },
     )
 }
 

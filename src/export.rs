@@ -146,14 +146,14 @@ pub fn as_webpbn(document: &Document) -> String {
         <puzzle type="grid" defaultcolor="white">
         <source>number-loom</source>
         "#});
-    if let Some(title) = &document.title {
-        res.push_str(&format!("<title>{}</title>\n", title));
+    if !document.title.is_empty() {
+        res.push_str(&format!("<title>{}</title>\n", &document.title));
     }
-    if let Some(description) = &document.description {
-        res.push_str(&format!("<description>{}</description>\n", description));
+    if !document.description.is_empty() {
+        res.push_str(&format!("<description>{}</description>\n", &document.description));
     }
-    if let Some(author) = &document.author {
-        res.push_str(&format!("<author>{}</author>\n", author));
+    if !document.author.is_empty() {
+        res.push_str(&format!("<author>{}</author>\n", &document.author));
     }
     for color in puzzle.palette.values() {
         let (r, g, b) = color.rgb;
