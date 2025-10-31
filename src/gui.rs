@@ -1174,21 +1174,28 @@ impl NonogramGui {
 
             let mut close_library = None; // Contains a bool indicating whether to solve
             if let Some(docs) = &self.library_dialog {
-                egui::Window::new("Puzzle Library").show(ctx, |ui| {
-                    ui.vertical(|ui| {
+                egui::Window::new("Puzzle Library")
+                    .max_size(ctx.screen_rect().size() * 0.9)
+                    .show(ctx, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            for doc in docs {
-                                if crate::gui_gallery::gallery_puzzle_preview(ui, doc).clicked() {
-                                    new_document = Some(doc.clone());
-                                    close_library = Some(true);
+                            egui::Grid::new("library_grid").show(ui, |ui| {
+                                for (i, doc) in docs.iter().enumerate() {
+                                    if crate::gui_gallery::gallery_puzzle_preview(ui, doc)
+                                        .clicked()
+                                    {
+                                        new_document = Some(doc.clone());
+                                        close_library = Some(true);
+                                    }
+                                    if i % 2 == 1 {
+                                        ui.end_row();
+                                    }
                                 }
-                            }
+                            });
                         });
                         if ui.button("Cancel").clicked() {
                             close_library = Some(false);
                         }
                     });
-                });
             }
 
             if let Some(new_document) = new_document {
