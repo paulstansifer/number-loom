@@ -409,7 +409,12 @@ impl CanvasGui {
         }
     }
 
-    pub fn canvas(&mut self, ui: &mut egui::Ui, scale: f32, render_style: RenderStyle) {
+    pub fn canvas(
+        &mut self,
+        ui: &mut egui::Ui,
+        scale: f32,
+        render_style: RenderStyle,
+    ) -> Option<(usize, usize)> {
         let picture = self.document.solution_mut();
         let x_size = picture.grid.len();
         let y_size = picture.grid.first().unwrap().len();
@@ -426,6 +431,16 @@ impl CanvasGui {
             canvas_without_border,
         );
         let from_screen = to_screen.inverse();
+
+        let mut hovered_cell = None;
+        if let Some(pointer_pos) = response.hover_pos() {
+            let canvas_pos = from_screen * pointer_pos;
+            let x = canvas_pos.x as usize;
+            let y = canvas_pos.y as usize;
+            if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
+                hovered_cell = Some((x, y));
+            }
+        }
 
         if let Some(pointer_pos) = response.interact_pointer_pos() {
             let canvas_pos = from_screen * pointer_pos;
@@ -564,6 +579,8 @@ impl CanvasGui {
 
         painter.extend(shapes);
         response.mark_changed();
+
+        hovered_cell
     }
 
     fn palette_editor(&mut self, ui: &mut egui::Ui, read_only: bool) {
