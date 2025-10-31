@@ -82,13 +82,14 @@ pub fn image_to_solution(image: &DynamicImage) -> Solution {
                 };
                 let this_color = Color(next_color_idx);
 
-                next_color_idx += 1;
+                // Don't crash for too many colors, but the quality check should complain:
+                next_color_idx = next_color_idx.wrapping_add(1);
 
                 if r == 0 && g == 0 && b == 0 {
                     return ColorInfo::default_fg(this_color);
                 }
 
-                next_char = (next_char as u8 + 1) as char;
+                next_char = (next_char as u8).wrapping_add(1) as char;
 
                 ColorInfo {
                     ch: this_char,
@@ -973,9 +974,43 @@ pub fn bw_palette() -> HashMap<Color, ColorInfo> {
     palette
 }
 
-pub fn load_zip_from_url(url: &str) -> anyhow::Result<Vec<Document>> {
-    let response = reqwest::blocking::get(url)?;
-    let zip_bytes = response.bytes()?;
+// It's impossible to get released assests from GitHub for CORS reasons (!?), so
+// we grab the raw files:
+pub async fn puzzles_from_github() -> anyhow::Result<Vec<Document>> {
+    let client = reqwest::Client::new();
+
+    let puzzles_url =
+        "https://api.github.com/repos/paulstansifer/number-loom/contents/puzzles?ref=main";
+
+    let contents = client
+        .get(puzzles_url)
+        .header("User-Agent", "number-loom")
+        .send()
+        .await?
+        .bytes()
+        .await?;
+
+    let files: Vec<serde_json::Value> = serde_json::from_slice(&contents)?;
+
+    let mut res: Vec<Document> = vec![];
+
+    for file in files {
+        if file["type"] == "file" {
+            let name = file["name"].as_str().unwrap();
+            let download_url = file["download_url"].as_str().unwrap();
+
+            let content = client.get(download_url).send().await?.bytes().await?;
+
+            res.push(load(name, content.to_vec(), None));
+        }
+    }
+
+    Ok(res)
+}
+
+pub async fn load_zip_from_url(url: &str) -> anyhow::Result<Vec<Document>> {
+    let response = reqwest::get(url).await?;
+    let zip_bytes = response.bytes().await?;
     let zip_cursor = Cursor::new(zip_bytes);
 
     let mut archive = zip::ZipArchive::new(zip_cursor)?;

@@ -1,5 +1,12 @@
 ## Changelog
 
+## 0.4.0 - 2025-10-30
+### Added
+ - Solve mode (including various useful helper analyses)
+ - A small library of example nonograms, viewable in a spoiler-free manner.
+ - Orthographic line tool
+ - Support for puzzle metadata (only imported or exported for the `webpbn` format so far)
+
 ## 0.3.0 - 2025-08-22
 ### Added
  - Line-solving is now exhaustive!

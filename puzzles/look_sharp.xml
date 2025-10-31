@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<puzzleset>
+<puzzle type="grid" defaultcolor="white">
+<title>Look sharp</title>
+<description>Shirt and tie</description>
+<author>Paul Stansifer</author>
+<copyright>CC-BY 4.0</copyright>
+<source>number-loom</source>
+<color name="a00CDFF" char="a">00CDFF</color>
+<color name="b1600FF" char="b">1600FF</color>
+<color name="white" char=" ">FFFFFF</color>
+<clues type="columns"><line><count color="a00CDFF">7</count></line>
+<line><count color="a00CDFF">4</count><count color="a00CDFF">1</count><count color="b1600FF">1</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">5</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">2</count><count color="a00CDFF">4</count></line>
+<line><count color="a00CDFF">2</count><count color="a00CDFF">5</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">3</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">13</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">2</count><count color="a00CDFF">5</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">2</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">2</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">2</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">5</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="b1600FF">1</count><count color="b1600FF">5</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">2</count><count color="b1600FF">15</count><count color="a00CDFF">1</count></line>
+</clues>
+<clues type="rows"><line><count color="a00CDFF">4</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">2</count></line>
+<line><count color="a00CDFF">7</count><count color="a00CDFF">1</count></line>
+<line><count color="a00CDFF">2</count><count color="a00CDFF">2</count><count color="a00CDFF">1</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">2</count><count color="a00CDFF">2</count><count color="b1600FF">2</count></line>
+<line><count color="a00CDFF">1</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">5</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">2</count><count color="a00CDFF">2</count><count color="a00CDFF">5</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">2</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">3</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">2</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">3</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="b1600FF">2</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="b1600FF">2</count></line>
+<line><count color="a00CDFF">5</count><count color="a00CDFF">1</count><count color="b1600FF">2</count></line>
+<line><count color="a00CDFF">1</count><count color="b1600FF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="b1600FF">2</count></line>
+<line><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="a00CDFF">1</count><count color="b1600FF">2</count></line>
+<line><count color="a00CDFF">4</count><count color="a00CDFF">1</count><count color="b1600FF">1</count></line>
+<line><count color="a00CDFF">5</count></line>
+<line><count color="a00CDFF">5</count></line>
+</clues>
+</puzzle></puzzleset>
