@@ -139,60 +139,40 @@ impl SolveGui {
             self.canvas.common_sidebar_items(ui, true);
 
             ui.separator();
-            let grid_height = 70.0;
-            let mut grid_drawn = false;
+            let scale = 20.0;
+            let plus_size = scale * 3.0;
 
             if let Some((x, y)) = self.hovered_cell {
                 let picture = self.canvas.document.try_solution().unwrap();
                 let (up, down, left, right) = picture.count_contiguous(x, y);
 
                 let color = picture.grid[x][y];
-                let (r, g, b) = picture.palette[&color].rgb;
+                let rgb = picture.palette[&color].rgb;
 
-                let frame = egui::Frame::default().fill(Color32::from_rgb(r, g, b));
-                frame.show(ui, |ui| {
-                    ui.set_min_height(grid_height);
-                    let (resp, painter) =
-                        ui.allocate_painter(ui.available_size(), egui::Sense::hover());
+                let (resp, painter) =
+                    ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
 
-                    let rect = resp.rect;
-                    let text_color = if r as u16 + g as u16 + b as u16 > 384 {
-                        Color32::BLACK
-                    } else {
-                        Color32::WHITE
-                    };
-                    let scale = 20.0;
+                let rect = resp.rect;
+                let size = Vec2::new(20.0, 20.0);
 
-                    let third_w = rect.width() / 3.0;
-                    let third_h = rect.height() / 3.0;
+                let up_rect = Rect::from_min_size(rect.min + Vec2::new(scale, 0.0), size);
+                let down_rect = Rect::from_min_size(rect.min + Vec2::new(scale, 2.0 * scale), size);
+                let mid_rect = Rect::from_min_size(rect.min + Vec2::new(20.0, 20.0), size);
+                let left_rect = Rect::from_min_size(rect.min + Vec2::new(0.0, scale), size);
+                let right_rect =
+                    Rect::from_min_size(rect.min + Vec2::new(2.0 * scale, scale), size);
 
-                    let up_rect = Rect::from_min_max(
-                        rect.min + Vec2::new(third_w, 0.0),
-                        rect.min + Vec2::new(2.0 * third_w, third_h),
-                    );
-                    let down_rect = Rect::from_min_max(
-                        rect.min + Vec2::new(third_w, 2.0 * third_h),
-                        rect.min + Vec2::new(2.0 * third_w, 3.0 * third_h),
-                    );
-                    let left_rect = Rect::from_min_max(
-                        rect.min + Vec2::new(0.0, third_h),
-                        rect.min + Vec2::new(third_w, 2.0 * third_h),
-                    );
-                    let right_rect = Rect::from_min_max(
-                        rect.min + Vec2::new(2.0 * third_w, third_h),
-                        rect.min + Vec2::new(3.0 * third_w, 2.0 * third_h),
-                    );
-
-                    draw_number_in_box(ui, &painter, up_rect, up as u16, scale, text_color);
-                    draw_number_in_box(ui, &painter, down_rect, down as u16, scale, text_color);
-                    draw_number_in_box(ui, &painter, left_rect, left as u16, scale, text_color);
-                    draw_number_in_box(ui, &painter, right_rect, right as u16, scale, text_color);
-                });
-                grid_drawn = true;
-            }
-
-            if !grid_drawn {
-                ui.add_space(grid_height);
+                draw_string_in_box(ui, &painter, up_rect, &up.to_string(), scale, rgb);
+                draw_string_in_box(ui, &painter, down_rect, &down.to_string(), scale, rgb);
+                draw_string_in_box(ui, &painter, left_rect, &left.to_string(), scale, rgb);
+                draw_string_in_box(ui, &painter, right_rect, &right.to_string(), scale, rgb);
+                if color == UNSOLVED {
+                    draw_string_in_box(ui, &painter, mid_rect, "?", scale, rgb);
+                } else {
+                    draw_string_in_box(ui, &painter, mid_rect, " ", scale, rgb);
+                }
+            } else {
+                ui.add_space(plus_size);
             }
 
             ui.separator();
@@ -292,20 +272,26 @@ pub enum Orientation {
 
 use crate::line_solve::SolveMode;
 
-fn draw_number_in_box(
+fn draw_string_in_box(
     ui: &egui::Ui,
     painter: &egui::Painter,
     rect: Rect,
-    number: u16,
+    clue_txt: &str,
     scale: f32,
-    text_color: Color32,
+    (r, g, b): (u8, u8, u8),
 ) {
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(r, g, b));
     let base_font = egui::FontId::monospace(scale * 0.7);
     let text_width = |fonts: &Fonts, t: &str| {
         fonts
             .layout_no_wrap(t.to_string(), base_font.clone(), Color32::BLACK)
             .rect
             .width()
+    };
+    let text_color = if r as u16 + g as u16 + b as u16 > 384 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
     };
 
     let (width_2, width_3) = ui.fonts(|f| {
@@ -321,7 +307,6 @@ fn draw_number_in_box(
         egui::FontId::monospace(scale * 0.7 / width_3),
     ];
 
-    let clue_txt = number.to_string();
     let clue_font = fonts_by_digit[clue_txt.len().min(fonts_by_digit.len() - 1)].clone();
 
     painter.text(
@@ -461,8 +446,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
 
                     let rect =
                         Rect::from_min_size(translated_corner, Vec2::new(box_side, box_side));
-                    painter.rect_filled(rect, 0.0, bg_color);
-                    draw_number_in_box(ui, &painter, rect, len, scale, egui::Color32::WHITE);
+                    draw_string_in_box(ui, &painter, rect, &len.to_string(), scale, color_info.rgb);
                     current_pos -= box_side;
                 } else {
                     let mut triangle = crate::gui::triangle_shape(
