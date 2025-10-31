@@ -436,6 +436,48 @@ impl Solution {
     pub fn y_size(&self) -> usize {
         self.grid.first().unwrap().len()
     }
+
+    pub fn count_contiguous(&self, x: usize, y: usize) -> (usize, usize, usize, usize) {
+        let target_color = self.grid[x][y];
+
+        let mut up = 0;
+        for yi in (0..y).rev() {
+            if self.grid[x][yi] == target_color {
+                up += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut down = 0;
+        for yi in (y + 1)..self.y_size() {
+            if self.grid[x][yi] == target_color {
+                down += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut left = 0;
+        for xi in (0..x).rev() {
+            if self.grid[xi][y] == target_color {
+                left += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut right = 0;
+        for xi in (x + 1)..self.x_size() {
+            if self.grid[xi][y] == target_color {
+                right += 1;
+            } else {
+                break;
+            }
+        }
+
+        (up, down, left, right)
+    }
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum, Default, PartialEq, Eq)]
@@ -486,9 +528,9 @@ pub struct Document {
     s: Option<Solution>,
     /// Path if native, just a filename, if on the Web
     pub file: String,
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub author: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub author: String,
 }
 
 impl Document {
@@ -505,9 +547,9 @@ impl Document {
             p: puzzle,
             s: solution,
             file,
-            title,
-            description,
-            author,
+            title: title.unwrap_or_default(),
+            description: description.unwrap_or_default(),
+            author: author.unwrap_or_default(),
         }
     }
 
@@ -517,8 +559,8 @@ impl Document {
     }
 
     pub fn get_or_make_up_title(&self) -> anyhow::Result<String> {
-        if self.title.is_some() {
-            return Ok(self.title.as_ref().unwrap().clone());
+        if !self.title.is_empty() {
+            return Ok(self.title.clone());
         }
 
         let mut hasher = std::hash::DefaultHasher::new();
@@ -581,9 +623,9 @@ impl Document {
             p: Some(puzzle),
             s: None,
             file,
-            title: None,
-            description: None,
-            author: None,
+            title: "".to_string(),
+            description: "".to_string(),
+            author: "".to_string(),
         }
     }
 
@@ -592,9 +634,9 @@ impl Document {
             p: None,
             s: Some(solution),
             file,
-            title: None,
-            description: None,
-            author: None,
+            title: "".to_string(),
+            description: "".to_string(),
+            author: "".to_string(),
         }
     }
 }

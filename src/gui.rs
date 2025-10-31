@@ -410,7 +410,12 @@ impl CanvasGui {
         }
     }
 
-    pub fn canvas(&mut self, ui: &mut egui::Ui, scale: f32, render_style: RenderStyle) {
+    pub fn canvas(
+        &mut self,
+        ui: &mut egui::Ui,
+        scale: f32,
+        render_style: RenderStyle,
+    ) -> Option<(usize, usize)> {
         let picture = self.document.solution_mut();
         let x_size = picture.grid.len();
         let y_size = picture.grid.first().unwrap().len();
@@ -427,6 +432,16 @@ impl CanvasGui {
             canvas_without_border,
         );
         let from_screen = to_screen.inverse();
+
+        let mut hovered_cell = None;
+        if let Some(pointer_pos) = response.hover_pos() {
+            let canvas_pos = from_screen * pointer_pos;
+            let x = canvas_pos.x as usize;
+            let y = canvas_pos.y as usize;
+            if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
+                hovered_cell = Some((x, y));
+            }
+        }
 
         if let Some(pointer_pos) = response.interact_pointer_pos() {
             let canvas_pos = from_screen * pointer_pos;
@@ -569,6 +584,8 @@ impl CanvasGui {
 
         painter.extend(shapes);
         response.mark_changed();
+
+        hovered_cell
     }
 
     fn palette_editor(&mut self, ui: &mut egui::Ui, read_only: bool) {
@@ -815,8 +832,10 @@ impl NonogramGui {
             current_color = Color(1);
         }
 
-        if document.author.is_none() {
-            document.author = UserSettings::get(consts::EDITOR_AUTHOR_NAME);
+        if document.author.is_empty() {
+            if let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME) {
+                document.author = author;
+            }
         }
 
         NonogramGui {
@@ -956,29 +975,23 @@ impl NonogramGui {
     fn edit_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(140.0);
-            let mut title = String::new();
-            if let Some(t) = &self.editor_gui.document.title {
-                title = t.clone();
-            }
-            if ui
-                .add(egui::TextEdit::singleline(&mut title).hint_text("Title"))
-                .changed()
-            {
-                self.editor_gui.document.title = Some(title.clone());
-            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"),
+            );
 
-            let mut author = String::new();
-            if let Some(a) = &self.editor_gui.document.author {
-                author = a.clone();
-            }
             ui.horizontal(|ui| {
                 ui.label("by ");
                 if ui
-                    .add(egui::TextEdit::singleline(&mut author).hint_text("Author"))
+                    .add(
+                        egui::TextEdit::singleline(&mut self.editor_gui.document.author)
+                            .hint_text("Author"),
+                    )
                     .changed()
                 {
-                    let _ = UserSettings::set(consts::EDITOR_AUTHOR_NAME, &author);
-                    self.editor_gui.document.author = Some(author.clone());
+                    let _ = UserSettings::set(
+                        consts::EDITOR_AUTHOR_NAME,
+                        &self.editor_gui.document.author,
+                    );
                 }
             });
 
@@ -1028,12 +1041,7 @@ impl NonogramGui {
                 .disambig_widget(self.editor_gui.document.try_solution().unwrap(), ui);
 
             ui.label("Description:");
-            ui.text_edit_multiline(
-                self.editor_gui
-                    .document
-                    .description
-                    .get_or_insert_with(String::new),
-            );
+            ui.text_edit_multiline(&mut self.editor_gui.document.description);
         });
     }
 
