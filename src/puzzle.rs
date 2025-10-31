@@ -436,6 +436,48 @@ impl Solution {
     pub fn y_size(&self) -> usize {
         self.grid.first().unwrap().len()
     }
+
+    pub fn count_contiguous(&self, x: usize, y: usize) -> (usize, usize, usize, usize) {
+        let target_color = self.grid[x][y];
+
+        let mut up = 0;
+        for yi in (0..y).rev() {
+            if self.grid[x][yi] == target_color {
+                up += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut down = 0;
+        for yi in (y + 1)..self.y_size() {
+            if self.grid[x][yi] == target_color {
+                down += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut left = 0;
+        for xi in (0..x).rev() {
+            if self.grid[xi][y] == target_color {
+                left += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut right = 0;
+        for xi in (x + 1)..self.x_size() {
+            if self.grid[xi][y] == target_color {
+                right += 1;
+            } else {
+                break;
+            }
+        }
+
+        (up, down, left, right)
+    }
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum, Default, PartialEq, Eq)]

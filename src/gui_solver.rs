@@ -16,6 +16,7 @@ pub struct SolveGui {
     pub line_analysis: Staleable<Option<(Vec<LineStatus>, Vec<LineStatus>)>>,
     pub render_style: RenderStyle,
     last_inferred_version: u32,
+    pub hovered_cell: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +84,7 @@ impl SolveGui {
             },
             render_style: RenderStyle::Experimental,
             last_inferred_version: u32::MAX,
+            hovered_cell: None,
         }
     }
 
@@ -135,6 +137,46 @@ impl SolveGui {
             }
 
             self.canvas.common_sidebar_items(ui, true);
+
+            if let Some((x, y)) = self.hovered_cell {
+                ui.separator();
+
+                let picture = self.canvas.document.try_solution().unwrap();
+                let (up, down, left, right) = picture.count_contiguous(x, y);
+                let total_horiz = left + 1 + right;
+                let total_vert = up + 1 + down;
+
+                let color = picture.grid[x][y];
+                let (r, g, b) = picture.palette[&color].rgb;
+                let text_color = if r as u16 + g as u16 + b as u16 > 384 {
+                    Color32::BLACK
+                } else {
+                    Color32::WHITE
+                };
+
+                let frame = egui::Frame::default().fill(Color32::from_rgb(r, g, b));
+                frame.show(ui, |ui| {
+                    egui::Grid::new("contiguous_display").show(ui, |ui| {
+                        ui.label("");
+                        ui.colored_label(text_color, up.to_string());
+                        ui.label("");
+                        ui.end_row();
+
+                        ui.colored_label(text_color, left.to_string());
+                        ui.colored_label(text_color, "+").on_hover_text(format!(
+                            "up: {}, down: {}, left: {}, right: {}",
+                            up, down, left, right
+                        ));
+                        ui.colored_label(text_color, right.to_string());
+                        ui.end_row();
+
+                        ui.label("");
+                        ui.colored_label(text_color, down.to_string());
+                        ui.label("");
+                        ui.end_row();
+                    });
+                });
+            }
 
             ui.separator();
 
@@ -218,7 +260,7 @@ impl SolveGui {
                     line_analysis.map(|la| &la.0[..]),
                     is_stale,
                 );
-                self.canvas.canvas(ui, scale, self.render_style);
+                self.hovered_cell = self.canvas.canvas(ui, scale, self.render_style);
                 ui.end_row();
             });
         });
