@@ -18,8 +18,11 @@ It's still pretty janky, but it's also the most powerful such tool I know of. In
   * HTML, for export only, as a printable puzzle (extension `.html`)
 * Has support for "Trianograms", a rare variation with triangular cells that may appear as caps to clues.
 * An exhaustive line-logic solver that provides some difficulty information.
-* A tool that searches for one-cell edits that make puzzles closer to solveable.
-
+* "Disambiguator": a tool that searches for one-cell edits that make puzzles closer to solveable.
+* A mode for test-solving, with a variety of toggleable assistance features:
+  * Immediate error reporting
+  * Limited background square inference
+  * Indicators on lines for whether clues can make progress
 
 ## Installation and usage
 
@@ -39,30 +42,42 @@ To convert a puzzle from the command line, do `number-loom examples/png/hair_dry
 
 The `number-loom` solver is a line-logic solver only.
 
-It has two modes:
-  * "skim", which shoves all clues in a line as far as possible to one side and then the other, and checks to see if any of the clues (or gaps) overlap themselves between the two positions
-  * "scrub", which uses a "flood fill" in each direction to determine all possible locations of each clue.
+Internally, it has two modes:
+  * "skim", which shoves all clues in a line as far as possible to one side and then the other, and checks to see if any of the clues (or gaps) overlap themselves between the two positions.
+  * "scrub", which determines all possible locations of each clue, and then observes what cells are fixed. This gets all information it is possible to get from a particular line.
 
 It stores progress by noting each possibly-remaining color in each cell. Even though a human solver typically only notes down known cells, in my experience this corresponds pretty well to the sort of ad-hoc logic that solvers perform on color nonograms when they glance at the both lines that contain a cell.
 
-Looking at the number of scrubs and skims can tell you something about the difficulty of a puzzle. Unless you're aiming for an easy puzzle, the solver should have to do some scrubs. If the number of scrubs is higher than the width plus the length, or the number of skims is more than five times that, it's starting to get tedious relative to the size of the puzzle. This is a *very* rough guide, though; the solver definitely doesn't measure difficulty completely accurately.
+Looking at the number of scrubs and skims can tell you something about the difficulty of a puzzle. Unless you're aiming for an easy puzzle, the solver should have to do some scrubs. If the number of scrubs is higher than the width plus the length, or the number of skims is more than five times that, it's starting to get tedious relative to the size of the puzzle. This is a *very* rough guide: you should test-solve your puzzle to get an accurate view of the experience.
 
 ## GUI
 
-The GUI is very basic, but you can
+### Edit mode
 
-* Save and load
-* Zoom in and out
+When editing a nonogram, you can:
+
+* Paint by dragging / draw orthographic lines / flood fill
 * Adjust the size of the canvas from any side
 * Add, remove, or recolor palette entries
 * Solve the puzzle (it paints gray dots over unsolved cells), optionally automatically after each edit
 * Disambiguate
+* Switch to "Puzzle" mode to test-solve
 
-### Disambiguation
+#### Disambiguation
 
 This may take a little bit of time, but it's typically reasonably fast for puzzles under 40x40. Cells will be painted with an alternate color, with an opacity proportional to the number of unsolved cells that are resolved if that single cell is changed to that color. (It only ever displays one color, but there might be others that work just as well!)
 
-It works by simply re-solving the puzzle with every possible one-square change. But it caches intermediate deductions to speed the process up. Typically, the more ambiguous the puzzle, the faster it is, so doing a guess-and-check with "auto-solve" turned on is a better way to hammer out the last few ambiguities.
+It works by simply re-solving the puzzle with every possible one-square change. But it caches intermediate deductions to speed the process up. Typically, the more ambiguous the puzzle, the faster it is, so doing a guess-and-check with "auto-solve" turned on is sometimes a better way to hammer out small remaining ambiguitys.
+
+## Puzzle mode
+
+In puzzle mode, primary click paints the currently-selected color, right-click paints blank squares, and middle-click paints "unsolved". There's also a counter widget that helps you measure the contiguous region that you're in. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
+
+* Detection of errors
+* Inference of "obvious" background squares
+* Indicators on lines that can be progressed
+
+Note: indicators only appear if a cell on a line can be fully solved. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solveable puzzle to at some point have no line-progress indicators!
 
 ## Trianograms
 
@@ -73,6 +88,8 @@ A Trianogram has black, white, and four additional "colors": triangles that divi
 The Olšák solver, I believe, supports multi-color trianograms, but `number-loom` does not yet.
 
 Only the `olsak` and `char-grid` formats can store trianograms.
+
+The "webpbn" format supports "triangular colors", but it does not support "clue cap" notion from trianograms; it's a purely cosmetic variation. 
 
 ## Usage with other solvers
 
