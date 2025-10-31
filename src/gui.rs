@@ -19,8 +19,9 @@ use crate::{
     puzzle::{
         BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, PuzzleDynOps, Solution, UNSOLVED,
     },
-    user_settings::{consts, UserSettings},
+    user_settings::{UserSettings, consts},
 };
+use eframe::glow::BACK;
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
 
@@ -435,7 +436,11 @@ impl CanvasGui {
             if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
                 let pointer = &ui.input(|i| i.pointer.clone());
                 let paint_color = if pointer.middle_down() {
-                    UNSOLVED
+                    if self.document.solution_mut().palette.contains_key(&UNSOLVED) {
+                        UNSOLVED
+                    } else {
+                        BACKGROUND
+                    }
                 } else if pointer.secondary_down() {
                     BACKGROUND
                 } else if picture.grid[x][y] != self.current_color {
@@ -1186,8 +1191,7 @@ impl NonogramGui {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             egui::Grid::new("library_grid").show(ui, |ui| {
                                 for (i, doc) in docs.iter().enumerate() {
-                                    if crate::gui_gallery::gallery_puzzle_preview(ui, doc)
-                                        .clicked()
+                                    if crate::gui_gallery::gallery_puzzle_preview(ui, doc).clicked()
                                     {
                                         new_document = Some(doc.clone());
                                         close_library = Some(true);
