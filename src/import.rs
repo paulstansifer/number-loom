@@ -328,6 +328,8 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
     let mut description = None;
     let mut author = None;
     let mut authorid = None;
+    let mut id = None;
+    let mut license = None;
 
     let default_color = puzzle_node
         .attribute("defaultcolor")
@@ -356,6 +358,10 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
             author = puzzle_part.text().map(|s| s.trim().to_string());
         } else if tag_name == "authorid" {
             authorid = puzzle_part.text().map(|s| s.trim().to_string());
+        } else if tag_name == "id" {
+            id = puzzle_part.text().map(|s| s.trim().to_string());
+        } else if tag_name == "license" {
+            license = puzzle_part.text().map(|s| s.trim().to_string());
         } else if tag_name == "color" {
             let color_name = puzzle_part.attribute("name").unwrap();
             let color = if color_name == default_color {
@@ -441,6 +447,8 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
         } else {
             authorid
         },
+        id,
+        license,
     )
 }
 

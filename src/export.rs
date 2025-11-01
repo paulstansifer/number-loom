@@ -155,6 +155,12 @@ pub fn as_webpbn(document: &Document) -> String {
     if !document.author.is_empty() {
         res.push_str(&format!("<author>{}</author>\n", &document.author));
     }
+    if !document.id.is_empty() {
+        res.push_str(&format!("<id>{}</id>\n", &document.id));
+    }
+    if !document.license.is_empty() {
+        res.push_str(&format!("<license>{}</license>\n", &document.license));
+    }
     for color in puzzle.palette.values() {
         let (r, g, b) = color.rgb;
         res.push_str(&format!(

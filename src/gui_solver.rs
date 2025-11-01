@@ -80,6 +80,10 @@ impl SolveGui {
                     val: Disambiguator::new(),
                     version: 0,
                 },
+                id: Staleable {
+                    val: "".to_string(),
+                    version: 0,
+                },
             },
             clues,
             intended_solution: document.take_solution().unwrap(),

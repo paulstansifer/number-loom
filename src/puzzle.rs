@@ -531,6 +531,8 @@ pub struct Document {
     pub title: String,
     pub description: String,
     pub author: String,
+    pub id: String,
+    pub license: String,
 }
 
 impl Document {
@@ -541,6 +543,8 @@ impl Document {
         title: Option<String>,
         description: Option<String>,
         author: Option<String>,
+        id: Option<String>,
+        license: Option<String>,
     ) -> Document {
         assert!(puzzle.is_some() || solution.is_some());
         Document {
@@ -550,6 +554,8 @@ impl Document {
             title: title.unwrap_or_default(),
             description: description.unwrap_or_default(),
             author: author.unwrap_or_default(),
+            id: id.unwrap_or_default(),
+            license: license.unwrap_or_default(),
         }
     }
 
@@ -626,6 +632,8 @@ impl Document {
             title: "".to_string(),
             description: "".to_string(),
             author: "".to_string(),
+            id: "".to_string(),
+            license: "".to_string(),
         }
     }
 
@@ -637,6 +645,8 @@ impl Document {
             title: "".to_string(),
             description: "".to_string(),
             author: "".to_string(),
+            id: "".to_string(),
+            license: "".to_string(),
         }
     }
 }
