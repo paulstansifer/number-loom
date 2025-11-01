@@ -2,7 +2,7 @@ use crate::{
     grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
     puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution, UNSOLVED},
-    user_settings::{consts, UserSettings},
+    user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
 
@@ -170,10 +170,18 @@ impl SolveGui {
                 let right_rect =
                     Rect::from_min_size(rect.min + Vec2::new(2.0 * scale, scale), size);
 
-                draw_string_in_box(ui, &painter, up_rect, &up.to_string(), scale, rgb);
-                draw_string_in_box(ui, &painter, down_rect, &down.to_string(), scale, rgb);
-                draw_string_in_box(ui, &painter, left_rect, &left.to_string(), scale, rgb);
-                draw_string_in_box(ui, &painter, right_rect, &right.to_string(), scale, rgb);
+                if up > 0 {
+                    draw_string_in_box(ui, &painter, up_rect, &up.to_string(), scale, rgb);
+                }
+                if down > 0 {
+                    draw_string_in_box(ui, &painter, down_rect, &down.to_string(), scale, rgb);
+                }
+                if left > 0 {
+                    draw_string_in_box(ui, &painter, left_rect, &left.to_string(), scale, rgb);
+                }
+                if right > 0 {
+                    draw_string_in_box(ui, &painter, right_rect, &right.to_string(), scale, rgb);
+                }
                 if color == UNSOLVED {
                     draw_string_in_box(ui, &painter, mid_rect, "?", scale, rgb);
                 } else {
@@ -221,8 +229,10 @@ impl SolveGui {
             ui.separator();
 
             if ui.checkbox(&mut self.detect_errors, "[auto]").changed() {
-                let _ =
-                    UserSettings::set(consts::SOLVER_DETECT_ERRORS, &self.detect_errors.to_string());
+                let _ = UserSettings::set(
+                    consts::SOLVER_DETECT_ERRORS,
+                    &self.detect_errors.to_string(),
+                );
             }
             if ui.button("Detect errors").clicked() || self.detect_errors {
                 if self.detect_any_errors() {

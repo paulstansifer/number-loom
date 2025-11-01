@@ -21,7 +21,6 @@ use crate::{
     },
     user_settings::{UserSettings, consts},
 };
-use eframe::glow::BACK;
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
 use egui_material_icons::icons;
 
