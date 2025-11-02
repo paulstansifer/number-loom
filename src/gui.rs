@@ -181,6 +181,9 @@ pub struct NonogramGui {
     solve_report: String,
     solve_mode: bool,
     solve_gui: Option<SolveGui>,
+    show_share_window: bool,
+    share_string: String,
+    pasted_string: String,
 }
 
 #[derive(Clone, Debug)]
@@ -866,6 +869,9 @@ impl NonogramGui {
             solve_report: "".to_string(),
             solve_mode: false,
             solve_gui: None,
+            show_share_window: false,
+            share_string: "".to_string(),
+            pasted_string: "".to_string(),
         }
     }
 
@@ -1237,6 +1243,12 @@ impl NonogramGui {
             );
             self.saver(ui);
 
+            if ui.button("Share").clicked() {
+                self.share_string =
+                    crate::formats::woven::to_share_string(&mut self.editor_gui.document).unwrap();
+                self.show_share_window = true;
+            }
+
             ui.separator();
             if ui
                 .selectable_value(&mut self.solve_mode, false, "Edit")
@@ -1263,6 +1275,41 @@ impl NonogramGui {
                     .canvas(ui, self.scale, RenderStyle::Experimental);
             }
         });
+
+        let mut new_doc = None;
+        if self.show_share_window {
+            egui::Window::new("Share Puzzle")
+                .open(&mut self.show_share_window)
+                .show(ctx, |ui| {
+                    ui.label("Share String:");
+                    ui.text_edit_multiline(&mut self.share_string.clone());
+                    if ui.button("Copy to clipboard").clicked() {
+                        ctx.copy_text(self.share_string.clone());
+                    }
+
+                    ui.separator();
+
+                    ui.label("Paste a share string to load:");
+                    ui.text_edit_multiline(&mut self.pasted_string);
+                    if ui.button("Load").clicked() {
+                        match crate::formats::woven::from_share_string(&self.pasted_string) {
+                            Ok(doc) => {
+                                new_doc = Some(doc);
+                            }
+                            Err(e) => {
+                                self.solve_report = format!("Error: {:?}", e);
+                            }
+                        }
+                    }
+                });
+        }
+        if let Some(doc) = new_doc {
+            self.editor_gui.perform(
+                Action::ReplaceDocument { document: doc },
+                ActionMood::Normal,
+            );
+            self.show_share_window = false;
+        }
     }
 }
 
