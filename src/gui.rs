@@ -167,6 +167,7 @@ pub struct CanvasGui {
     pub line_tool_state: Option<(usize, usize)>,
     pub solved_mask: Staleable<(String, Vec<Vec<bool>>)>,
     pub disambiguator: Staleable<Disambiguator>,
+    pub id: Staleable<String>,
 }
 
 pub struct NonogramGui {
@@ -855,6 +856,10 @@ impl NonogramGui {
                     val: Disambiguator::new(),
                     version: 0,
                 },
+                id: Staleable {
+                    val: "".to_string(),
+                    version: 0,
+                },
             },
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
@@ -974,6 +979,15 @@ impl NonogramGui {
     fn edit_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.set_width(140.0);
+            let backup_title = self.editor_gui.document.get_or_make_up_title().unwrap();
+            let id = self
+                .editor_gui
+                .id
+                .get_or_refresh(self.editor_gui.version, || backup_title.clone());
+            if self.editor_gui.document.id != *id {
+                self.editor_gui.document.id = id.clone();
+            }
+
             ui.add(
                 egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"),
             );
@@ -1041,6 +1055,35 @@ impl NonogramGui {
 
             ui.label("Description:");
             ui.text_edit_multiline(&mut self.editor_gui.document.description);
+
+            let cc_by_license_str = "CC BY 4.0";
+            let mut is_cc_by = self.editor_gui.document.license == cc_by_license_str;
+
+            ui.separator();
+            ui.label("License:");
+
+            ui.horizontal(|ui| {
+                if ui.radio_value(&mut is_cc_by, true, "").changed() {
+                    self.editor_gui.document.license = cc_by_license_str.to_string();
+                };
+                ui.add(
+                    egui::Hyperlink::from_label_and_url(
+                        cc_by_license_str,
+                        "https://creativecommons.org/licenses/by/4.0/",
+                    )
+                    .open_in_new_tab(true),
+                );
+            });
+
+            ui.horizontal(|ui| {
+                if ui.radio_value(&mut is_cc_by, false, "").changed() {
+                    self.editor_gui.document.license.clear();
+                };
+                ui.add_enabled(
+                    !is_cc_by,
+                    egui::TextEdit::singleline(&mut self.editor_gui.document.license),
+                );
+            });
         });
     }
 
