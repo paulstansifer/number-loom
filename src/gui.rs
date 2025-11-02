@@ -991,7 +991,6 @@ impl NonogramGui {
             ui.add(
                 egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"),
             );
-            ui.label(format!("(ID: {})", &self.editor_gui.document.id));
 
             ui.horizontal(|ui| {
                 ui.label("by ");
@@ -1057,36 +1056,34 @@ impl NonogramGui {
             ui.label("Description:");
             ui.text_edit_multiline(&mut self.editor_gui.document.description);
 
-            let cc_by_license_str = "CC-BY-4.0";
+            let cc_by_license_str = "CC BY 4.0";
             let mut is_cc_by = self.editor_gui.document.license == cc_by_license_str;
-            let original_is_cc_by = is_cc_by;
 
             ui.separator();
             ui.label("License:");
 
             ui.horizontal(|ui| {
-                ui.radio_value(&mut is_cc_by, true, "CC-BY");
-                ui.hyperlink("https://creativecommons.org/licenses/by/4.0/");
+                if ui.radio_value(&mut is_cc_by, true, "").changed() {
+                    self.editor_gui.document.license = cc_by_license_str.to_string();
+                };
+                ui.add(
+                    egui::Hyperlink::from_label_and_url(
+                        cc_by_license_str,
+                        "https://creativecommons.org/licenses/by/4.0/",
+                    )
+                    .open_in_new_tab(true),
+                );
             });
 
             ui.horizontal(|ui| {
-                ui.radio_value(&mut is_cc_by, false, "Custom:");
+                if ui.radio_value(&mut is_cc_by, false, "").changed() {
+                    self.editor_gui.document.license.clear();
+                };
                 ui.add_enabled(
                     !is_cc_by,
                     egui::TextEdit::singleline(&mut self.editor_gui.document.license),
                 );
             });
-
-            if is_cc_by != original_is_cc_by {
-                // The selection changed
-                if is_cc_by {
-                    // Switched to CC-BY
-                    self.editor_gui.document.license = cc_by_license_str.to_string();
-                } else {
-                    // Switched to Custom
-                    self.editor_gui.document.license = "".to_string();
-                }
-            }
         });
     }
 
