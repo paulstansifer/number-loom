@@ -4,7 +4,7 @@
 <title>Roche Limit</title>
 <description>Ringed planet</description>
 <author>Paul Stansifer</author>
-<copyright>CC-BY 4.0</copyright><source>number-loom</source>
+<copyright>CC BY 4.0</copyright><source>number-loom</source>
 <color name="white" char=" ">FFFFFF</color>
 <color name="black" char="#">000000</color>
 <clues type="columns"><line><count color="black">2</count></line>

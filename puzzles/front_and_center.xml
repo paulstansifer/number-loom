@@ -4,7 +4,7 @@
 <title>Front and center</title>
 <description>An apron</description>
 <author>Paul Stansifer</author>
-<copyright>CC-BY 4.0</copyright>
+<copyright>CC BY 4.0</copyright>
 <source>number-loom</source>
 <color name="black" char="#">000000</color>
 <color name="white" char=" ">FFFFFF</color>
