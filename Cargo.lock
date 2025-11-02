@@ -1729,9 +1729,9 @@ checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
 name = "flate2"
-version = "1.1.2"
+version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a3d7db9596fecd151c5f638c0ee5d5bd487b6e0ea232e5dc96d5250f6f94b1d"
+checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
 dependencies = [
  "crc32fast",
  "libz-rs-sys",
@@ -3176,6 +3176,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "axohtml",
+ "base64",
  "clap",
  "colored",
  "colorize",
@@ -3186,6 +3187,7 @@ dependencies = [
  "egui_kittest",
  "egui_material_icons",
  "env_logger",
+ "flate2",
  "getrandom 0.2.16",
  "getrandom 0.3.3",
  "gloo-storage",
@@ -3203,6 +3205,8 @@ dependencies = [
  "reqwest",
  "rfd",
  "roxmltree",
+ "serde",
+ "serde-brief",
  "serde_json",
  "tokio",
  "wasm-bindgen",
@@ -4407,6 +4411,15 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde-brief"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34f265ff0aadcff5d8bf0c9e43f6a289b5885b9ea1e9bba3e99e224c476edb14"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

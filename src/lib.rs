@@ -1,3 +1,4 @@
+pub mod formats;
 pub mod export;
 pub mod grid_solve;
 pub mod gui;

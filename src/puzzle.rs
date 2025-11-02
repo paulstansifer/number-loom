@@ -7,6 +7,7 @@ use crate::{
     grid_solve::{self, LineStatus, SolveOptions},
     import::{solution_to_puzzle, solution_to_triano_puzzle},
 };
+use serde::{Deserialize, Serialize};
 pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash + Send {
     fn style() -> ClueStyle;
 
@@ -35,7 +36,7 @@ impl Debug for Nono {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct Nono {
     pub color: Color,
     pub count: u16,
@@ -79,7 +80,7 @@ impl Clue for Nono {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct Triano {
     pub front_cap: Option<Color>,
     pub body_len: u16,
@@ -173,14 +174,14 @@ impl Debug for Triano {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Color(pub u8);
 
 pub static BACKGROUND: Color = Color(0);
 pub static UNSOLVED: Color = Color(255);
 
 // A triangle-shaped half of a square. `true` means solid in the given direction.
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash, Serialize, Deserialize)]
 pub struct Corner {
     pub upper: bool,
     pub left: bool,
@@ -188,7 +189,7 @@ pub struct Corner {
 
 // Note that `rgb` is not necessarily unique!
 // But `ch` and `name` ought to be, along with `rgb` + `corner`.
-#[derive(PartialEq, Eq, Clone, Debug, Hash)]
+#[derive(PartialEq, Eq, Clone, Debug, Hash, Serialize, Deserialize)]
 pub struct ColorInfo {
     pub ch: char,
     pub name: String,
@@ -218,7 +219,7 @@ impl ColorInfo {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Solution {
     pub clue_style: ClueStyle,
     pub palette: HashMap<Color, ColorInfo>, // should include the background!
@@ -531,7 +532,10 @@ pub struct Document {
     pub title: String,
     pub description: String,
     pub author: String,
+    pub id: String,
+    pub license: String,
 }
+
 
 impl Document {
     pub fn new(
@@ -541,6 +545,8 @@ impl Document {
         title: Option<String>,
         description: Option<String>,
         author: Option<String>,
+        id: Option<String>,
+        license: Option<String>,
     ) -> Document {
         assert!(puzzle.is_some() || solution.is_some());
         Document {
@@ -550,6 +556,8 @@ impl Document {
             title: title.unwrap_or_default(),
             description: description.unwrap_or_default(),
             author: author.unwrap_or_default(),
+            id: id.unwrap_or_default(),
+            license: license.unwrap_or_default(),
         }
     }
 
@@ -626,6 +634,8 @@ impl Document {
             title: "".to_string(),
             description: "".to_string(),
             author: "".to_string(),
+            id: "".to_string(),
+            license: "".to_string(),
         }
     }
 
@@ -637,6 +647,8 @@ impl Document {
             title: "".to_string(),
             description: "".to_string(),
             author: "".to_string(),
+            id: "".to_string(),
+            license: "".to_string(),
         }
     }
 }
