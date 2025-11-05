@@ -360,7 +360,7 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
             authorid = puzzle_part.text().map(|s| s.trim().to_string());
         } else if tag_name == "id" {
             id = puzzle_part.text().map(|s| s.trim().to_string());
-        } else if tag_name == "license" {
+        } else if tag_name == "copyright" {
             license = puzzle_part.text().map(|s| s.trim().to_string());
         } else if tag_name == "color" {
             let color_name = puzzle_part.attribute("name").unwrap();
