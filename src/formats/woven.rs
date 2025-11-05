@@ -1,8 +1,5 @@
 use crate::puzzle::{ColorInfo, Document, DynPuzzle, Nono, Triano};
-use base64::{engine::general_purpose, Engine as _};
-use flate2::read::DeflateDecoder;
-use flate2::write::DeflateEncoder;
-use flate2::Compression;
+use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
 use std::io::prelude::*;
 
@@ -55,16 +52,18 @@ impl From<&mut Document> for SerializableDocument {
 
 pub fn to_share_string(doc: &mut Document) -> anyhow::Result<String> {
     let s_doc: SerializableDocument = doc.into();
-    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-    let bytes = serde_brief::to_vec(&s_doc)?;
-    encoder.write_all(&bytes)?;
-    let compressed = encoder.finish()?;
-    let encoded = general_purpose::STANDARD_NO_PAD.encode(compressed);
+    let buf = std::io::BufWriter::new(Vec::new());
+    let mut encoder = brotli::CompressorWriter::new(buf, 4096, 11, 22);
+    let bytes = serde_json::to_vec(&s_doc)?;
 
-    let mut result = "WOVEN\n".to_string();
-    for (i, c) in encoded.chars().enumerate() {
+    encoder.write_all(&bytes)?;
+    let compressed = encoder.into_inner().into_inner().unwrap();
+    let encoded = general_purpose::STANDARD.encode(compressed);
+
+    let mut result = String::new();
+    for (i, c) in "WOVEN-".chars().chain(encoded.chars()).enumerate() {
         result.push(c);
-        if (i + 1) % 120 == 0 {
+        if (i + 1) % 100 == 0 {
             result.push('\n');
         }
     }
@@ -72,13 +71,17 @@ pub fn to_share_string(doc: &mut Document) -> anyhow::Result<String> {
 }
 
 pub fn from_share_string(s: &str) -> anyhow::Result<Document> {
-    let s = s.strip_prefix("WOVEN").ok_or_else(|| anyhow::anyhow!("Missing 'WOVEN' prefix"))?;
+    let s = s
+        .strip_prefix("WOVEN-")
+        .ok_or_else(|| anyhow::anyhow!("Missing 'WOVEN' prefix"))?;
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    let compressed = general_purpose::STANDARD_NO_PAD.decode(s.as_bytes())?;
-    let mut decoder = DeflateDecoder::new(&compressed[..]);
+    let compressed = general_purpose::STANDARD.decode(s.as_bytes())?;
+
+    let mut decoder = brotli::Decompressor::new(&compressed[..], 4096);
     let mut bytes = Vec::new();
     decoder.read_to_end(&mut bytes)?;
-    let s_doc: SerializableDocument = serde_brief::from_slice(&bytes)?;
+
+    let s_doc: SerializableDocument = serde_json::from_slice(&bytes)?;
     Ok(s_doc.into())
 }
 

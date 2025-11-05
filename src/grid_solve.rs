@@ -10,7 +10,7 @@ use crate::{
         Cell, ModeMap, ScrubReport, SolveMode, exhaust_line, scrub_heuristic, skim_heuristic,
         skim_line,
     },
-    puzzle::{BACKGROUND, Clue, Color, PartialSolution, Puzzle, Solution, UNSOLVED},
+    puzzle::{BACKGROUND, Clue, Color, ColorInfo, PartialSolution, Puzzle, Solution, UNSOLVED},
 };
 
 pub struct SolveOptions {
@@ -172,6 +172,19 @@ fn grid_to_solved_mask<C: Clue>(grid: &PartialSolution) -> Vec<Vec<bool>> {
 }
 
 fn grid_to_solution<C: Clue>(grid: &PartialSolution, puzzle: &Puzzle<C>) -> Solution {
+    let mut palette = puzzle.palette.clone();
+    if grid.iter().any(|cell| !cell.is_known()) {
+        palette.insert(
+            UNSOLVED,
+            ColorInfo {
+                ch: '?',
+                name: "unsolved".to_owned(),
+                rgb: (128, 128, 128),
+                color: UNSOLVED,
+                corner: None,
+            },
+        );
+    }
     let grid = grid
         .columns()
         .into_iter()
@@ -184,7 +197,7 @@ fn grid_to_solution<C: Clue>(grid: &PartialSolution, puzzle: &Puzzle<C>) -> Solu
     Solution {
         clue_style: C::style(),
         grid,
-        palette: puzzle.palette.clone(),
+        palette,
     }
 }
 

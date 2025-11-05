@@ -536,7 +536,6 @@ pub struct Document {
     pub license: String,
 }
 
-
 impl Document {
     pub fn new(
         puzzle: Option<DynPuzzle>,
@@ -594,6 +593,31 @@ impl Document {
         self.p.as_ref()
     }
 
+    // TODO: this is just for debugging
+    pub fn any_unsolved(&self) -> bool {
+        if let Some(solution) = &self.s {
+            for line in &solution.grid {
+                for &color in line {
+                    if color == UNSOLVED {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    pub fn dimensions(&self) -> (usize, usize) {
+        if let Some(solution) = &self.s {
+            (solution.x_size(), solution.y_size())
+        } else {
+            self.p.as_ref().unwrap().specialize(
+                |n| (n.cols.len(), n.rows.len()),
+                |t| (t.cols.len(), t.rows.len()),
+            )
+        }
+    }
+
     pub fn puzzle(&mut self) -> &DynPuzzle {
         if self.p.is_none() {
             self.p = Some(self.s.as_ref().unwrap().to_puzzle());
@@ -616,6 +640,7 @@ impl Document {
         if self.s.is_none() {
             self.s = Some(self.p.as_ref().unwrap().plain_solve().unwrap().solution)
         }
+        self.p = None; // Edits will invalidate the puzzle!
         self.s.as_mut().unwrap()
     }
 
