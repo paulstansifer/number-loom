@@ -21,7 +21,7 @@ use crate::{
     },
     user_settings::{UserSettings, consts},
 };
-use egui::{Color32, Pos2, Rect, RichText, Shape, Style, Vec2, Visuals};
+use egui::{Color32, Pos2, Rect, RichText, Shape, Style, TextStyle, Vec2, Visuals};
 use egui_material_icons::icons;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -182,6 +182,9 @@ pub struct NonogramGui {
     solve_report: String,
     solve_mode: bool,
     solve_gui: Option<SolveGui>,
+    show_share_window: bool,
+    share_string: String,
+    pasted_string: String,
 }
 
 #[derive(Clone, Debug)]
@@ -602,6 +605,8 @@ impl CanvasGui {
             .iter_mut()
             .sorted_by_key(|(color, _)| *color)
         {
+            // TODO: actually paint a palette entry for unsolved,
+            // in case the user doesn't have a middle button.
             if *color == UNSOLVED && read_only {
                 continue;
             }
@@ -871,6 +876,9 @@ impl NonogramGui {
             solve_report: "".to_string(),
             solve_mode: false,
             solve_gui: None,
+            show_share_window: false,
+            share_string: "".to_string(),
+            pasted_string: "".to_string(),
         }
     }
 
@@ -1168,8 +1176,8 @@ impl NonogramGui {
             {
                 self.scale = (self.scale - 2.0).max(1.0);
             }
-            let picture = self.editor_gui.document.try_solution().unwrap();
-            if ui.button("New blank").clicked() {
+            let picture = self.editor_gui.document.solution_mut();
+            if ui.button("New").clicked() {
                 self.new_dialog = Some(NewPuzzleDialog {
                     clue_style: picture.clue_style,
                     x_size: picture.x_size(),
@@ -1212,11 +1220,11 @@ impl NonogramGui {
                             new_solution,
                             "blank.xml".to_owned(),
                         ));
+                        self.solve_mode = false;
                     }
                 });
             }
 
-            self.loader(ui);
             if ui.button("Library").clicked() {
                 let (sender, receiver) = mpsc::channel();
                 self.library_receiver = receiver;
@@ -1233,7 +1241,8 @@ impl NonogramGui {
                 self.library_dialog = Some(library);
             }
 
-            let mut close_library = None; // Contains a bool indicating whether to solve
+            let mut next_enter_solve_mode = false;
+            let mut close_library = false;
             if let Some(docs) = &self.library_dialog {
                 egui::Window::new("Puzzle Library")
                     .max_size(ctx.screen_rect().size() * 0.9)
@@ -1244,7 +1253,8 @@ impl NonogramGui {
                                     if crate::gui_gallery::gallery_puzzle_preview(ui, doc).clicked()
                                     {
                                         new_document = Some(doc.clone());
-                                        close_library = Some(true);
+                                        next_enter_solve_mode = true;
+                                        close_library = true;
                                     }
                                     if i % 2 == 1 {
                                         ui.end_row();
@@ -1253,7 +1263,61 @@ impl NonogramGui {
                             });
                         });
                         if ui.button("Cancel").clicked() {
-                            close_library = Some(false);
+                            close_library = true;
+                        }
+                    });
+            }
+            if close_library {
+                self.library_dialog = None;
+            }
+            self.loader(ui);
+
+            ui.add(
+                egui::TextEdit::singleline(&mut self.editor_gui.document.file).desired_width(150.0),
+            );
+            self.saver(ui);
+
+            if ui.button("Share").clicked() {
+                self.share_string =
+                    crate::formats::woven::to_share_string(&mut self.editor_gui.document).unwrap();
+                self.show_share_window = true;
+            }
+
+            if self.show_share_window {
+                egui::Window::new("Share Puzzle")
+                    .open(&mut self.show_share_window)
+                    .default_width(780.0)
+                    .show(ctx, |ui| {
+                        ui.label("Share String:");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.share_string.clone())
+                                .font(TextStyle::Monospace)
+                                .desired_width(730.0),
+                        );
+                        if ui.button("Copy to clipboard").clicked() {
+                            ctx.copy_text(self.share_string.clone());
+                        }
+
+                        ui.separator();
+
+                        ui.label("Paste a share string to load:");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.pasted_string)
+                                .font(TextStyle::Monospace)
+                                .desired_width(730.0),
+                        );
+
+                        if ui.button("Load").clicked() {
+                            match crate::formats::woven::from_share_string(&self.pasted_string) {
+                                Ok(doc) => {
+                                    new_document = Some(doc);
+                                    next_enter_solve_mode = true;
+                                }
+                                Err(e) => {
+                                    // TODO: we probably need to make statuses coherent somehow
+                                    self.solve_report = format!("Error: {:?}", e);
+                                }
+                            }
                         }
                     });
             }
@@ -1267,18 +1331,8 @@ impl NonogramGui {
                 );
                 self.new_dialog = None;
                 self.library_dialog = None;
+                self.show_share_window = false;
             }
-            if let Some(enter_solve_mode) = close_library {
-                self.library_dialog = None;
-                if enter_solve_mode {
-                    self.enter_solve_mode();
-                }
-            }
-
-            ui.add(
-                egui::TextEdit::singleline(&mut self.editor_gui.document.file).desired_width(150.0),
-            );
-            self.saver(ui);
 
             ui.separator();
             if ui
@@ -1290,6 +1344,7 @@ impl NonogramGui {
             if ui
                 .selectable_value(&mut self.solve_mode, true, "Puzzle")
                 .clicked()
+                || next_enter_solve_mode
             {
                 self.enter_solve_mode();
             }
@@ -1329,13 +1384,6 @@ impl eframe::App for NonogramGui {
             ..Style::default()
         };
         ctx.set_style(style);
-
-        let picture = self.editor_gui.document.solution().unwrap();
-        let _background_color = Color32::from_rgb(
-            picture.palette[&BACKGROUND].rgb.0,
-            picture.palette[&BACKGROUND].rgb.1,
-            picture.palette[&BACKGROUND].rgb.2,
-        );
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.main_ui(ctx, ui);

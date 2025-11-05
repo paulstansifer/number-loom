@@ -7,6 +7,7 @@ use crate::{
     grid_solve::{self, LineStatus, SolveOptions},
     import::{solution_to_puzzle, solution_to_triano_puzzle},
 };
+use serde::{Deserialize, Serialize};
 pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash + Send {
     fn style() -> ClueStyle;
 
@@ -35,7 +36,7 @@ impl Debug for Nono {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct Nono {
     pub color: Color,
     pub count: u16,
@@ -79,7 +80,7 @@ impl Clue for Nono {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Serialize, Deserialize)]
 pub struct Triano {
     pub front_cap: Option<Color>,
     pub body_len: u16,
@@ -173,14 +174,14 @@ impl Debug for Triano {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Color(pub u8);
 
 pub static BACKGROUND: Color = Color(0);
 pub static UNSOLVED: Color = Color(255);
 
 // A triangle-shaped half of a square. `true` means solid in the given direction.
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash, Serialize, Deserialize)]
 pub struct Corner {
     pub upper: bool,
     pub left: bool,
@@ -188,7 +189,7 @@ pub struct Corner {
 
 // Note that `rgb` is not necessarily unique!
 // But `ch` and `name` ought to be, along with `rgb` + `corner`.
-#[derive(PartialEq, Eq, Clone, Debug, Hash)]
+#[derive(PartialEq, Eq, Clone, Debug, Hash, Serialize, Deserialize)]
 pub struct ColorInfo {
     pub ch: char,
     pub name: String,
@@ -218,7 +219,7 @@ impl ColorInfo {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Solution {
     pub clue_style: ClueStyle,
     pub palette: HashMap<Color, ColorInfo>, // should include the background!
@@ -592,6 +593,31 @@ impl Document {
         self.p.as_ref()
     }
 
+    // TODO: this is just for debugging
+    pub fn any_unsolved(&self) -> bool {
+        if let Some(solution) = &self.s {
+            for line in &solution.grid {
+                for &color in line {
+                    if color == UNSOLVED {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    pub fn dimensions(&self) -> (usize, usize) {
+        if let Some(solution) = &self.s {
+            (solution.x_size(), solution.y_size())
+        } else {
+            self.p.as_ref().unwrap().specialize(
+                |n| (n.cols.len(), n.rows.len()),
+                |t| (t.cols.len(), t.rows.len()),
+            )
+        }
+    }
+
     pub fn puzzle(&mut self) -> &DynPuzzle {
         if self.p.is_none() {
             self.p = Some(self.s.as_ref().unwrap().to_puzzle());
@@ -614,6 +640,7 @@ impl Document {
         if self.s.is_none() {
             self.s = Some(self.p.as_ref().unwrap().plain_solve().unwrap().solution)
         }
+        self.p = None; // Edits will invalidate the puzzle!
         self.s.as_mut().unwrap()
     }
 

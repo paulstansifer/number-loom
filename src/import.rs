@@ -442,7 +442,7 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
         "".to_string(),
         title,
         description,
-        if author.is_some() { author } else { authorid },
+        author.or(authorid),
         id,
         license,
     )
