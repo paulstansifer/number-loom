@@ -498,7 +498,7 @@ pub enum NonogramFormat {
     Html,
 }
 
-#[derive(Clone, Copy, Debug, clap::ValueEnum, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, clap::ValueEnum, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClueStyle {
     #[default]
     Nono,
