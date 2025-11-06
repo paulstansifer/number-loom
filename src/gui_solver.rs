@@ -1,6 +1,7 @@
 use crate::{
     grid_solve::LineStatus,
-    gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
+    gui::Disambiguator,
+    gui_canvas::{Action, ActionMood, CanvasGui, Staleable, Tool, triangle_shape},
     puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution, UNSOLVED},
     user_settings::{UserSettings, consts},
 };
@@ -484,7 +485,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
                     draw_string_in_box(ui, &painter, rect, &len.to_string(), scale, color_info.rgb);
                     current_pos -= box_side;
                 } else {
-                    let mut triangle = crate::gui::triangle_shape(
+                    let mut triangle = triangle_shape(
                         color_info.corner.expect("must be a corner"),
                         bg_color,
                         Vec2::new(box_side, box_side),
