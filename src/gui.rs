@@ -171,6 +171,7 @@ pub struct CanvasGui {
 }
 
 pub struct NonogramGui {
+    // The `pub`s are solely for tests/gui.rs
     pub editor_gui: CanvasGui,
     scale: f32,
     opened_file_receiver: mpsc::Receiver<Document>,
