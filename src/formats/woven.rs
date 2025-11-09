@@ -1,4 +1,4 @@
-use crate::puzzle::{ColorInfo, Document, DynPuzzle, Nono, Triano};
+use crate::puzzle::{ClueStyle, Color, ColorInfo, Document, DynPuzzle, Nono, Solution, Triano};
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
 use std::io::prelude::*;
@@ -11,9 +11,17 @@ pub struct SerializableDocument {
     pub author: String,
     pub id: Option<String>,
     pub license: Option<String>,
-    pub puzzle: Option<SerializablePuzzle>,
+    pub solution: SerializableSolution,
 }
 
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+pub struct SerializableSolution {
+    pub clue_style: ClueStyle,
+    pub palette: Vec<ColorInfo>,
+    pub grid: Vec<Vec<Color>>,
+}
+
+// Not currently used; doesn't work for ambiguous works-in-progress
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub enum SerializablePuzzle {
     Nono {
@@ -45,7 +53,10 @@ impl From<&mut Document> for SerializableDocument {
             } else {
                 Some(doc.license.clone())
             },
-            puzzle: Some(doc.puzzle().into()),
+            solution: doc
+                .solution()
+                .expect("Need a solution to save a document!")
+                .into(),
         }
     }
 }
@@ -265,10 +276,9 @@ mod tests {
 
 impl From<SerializableDocument> for Document {
     fn from(s_doc: SerializableDocument) -> Self {
-        let puzzle = s_doc.puzzle.as_ref().map(|p| p.into());
         Document::new(
-            puzzle,
             None,
+            Some((&s_doc.solution).into()),
             s_doc.file,
             Some(s_doc.title),
             Some(s_doc.description),
@@ -317,6 +327,30 @@ impl From<&DynPuzzle> for SerializablePuzzle {
                 rows: p.rows.clone(),
                 cols: p.cols.clone(),
             },
+        }
+    }
+}
+
+impl From<&Solution> for SerializableSolution {
+    fn from(solution: &Solution) -> Self {
+        SerializableSolution {
+            clue_style: solution.clue_style,
+            palette: solution.palette.values().cloned().collect(),
+            grid: solution.grid.clone(),
+        }
+    }
+}
+
+impl From<&SerializableSolution> for Solution {
+    fn from(s_solution: &SerializableSolution) -> Self {
+        Solution {
+            clue_style: s_solution.clue_style,
+            palette: s_solution
+                .palette
+                .iter()
+                .map(|ci| (ci.color, ci.clone()))
+                .collect(),
+            grid: s_solution.grid.clone(),
         }
     }
 }

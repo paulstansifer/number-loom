@@ -49,9 +49,6 @@ egui_kittest = "0.31.1"
 name = "solver-fuzzer"
 path = "src/solver_fuzzer.rs"
 
-[[test]]
-name = "gui-test"
-path = "src/gui_test.rs"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

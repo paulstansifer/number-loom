@@ -171,7 +171,8 @@ pub struct CanvasGui {
 }
 
 pub struct NonogramGui {
-    editor_gui: CanvasGui,
+    // The `pub`s are solely for tests/gui.rs
+    pub editor_gui: CanvasGui,
     scale: f32,
     opened_file_receiver: mpsc::Receiver<Document>,
     library_receiver: mpsc::Receiver<Vec<Document>>,
@@ -180,8 +181,8 @@ pub struct NonogramGui {
     auto_solve: bool,
     lines_to_affect_string: String,
     solve_report: String,
-    solve_mode: bool,
-    solve_gui: Option<SolveGui>,
+    pub solve_mode: bool,
+    pub solve_gui: Option<SolveGui>,
     show_share_window: bool,
     share_string: String,
     pasted_string: String,
