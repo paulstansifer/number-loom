@@ -640,35 +640,23 @@ impl Document {
         }
 
         let puzzle = self.puzzle();
-        let partial = puzzle.specialize(
-            |p| {
-                PartialSolution::from_elem(
-                    (p.rows(), p.cols()),
-                    crate::line_solve::Cell::new(p),
-                )
-            },
-            |p| {
-                PartialSolution::from_elem(
-                    (p.rows(), p.cols()),
-                    crate::line_solve::Cell::new(p),
-                )
-            },
-        );
-        let (row_statuses, col_statuses) = puzzle.analyze_lines(&partial);
-
-        for (i, status) in row_statuses.iter().enumerate() {
-            if status.is_err() {
-                problems.push(format!("row {}: contradiction", i));
+        match puzzle.plain_solve() {
+            Ok(report) => {
+                let mut unsolved_count = 0;
+                for col in &report.solution.grid {
+                    for cell in col {
+                        if *cell == UNSOLVED {
+                            unsolved_count += 1;
+                        }
+                    }
+                }
+                if unsolved_count > 0 {
+                    problems.push(format!("Puzzle has {} unsolved cells", unsolved_count));
+                }
             }
-        }
-        for (i, status) in col_statuses.iter().enumerate() {
-            if status.is_err() {
-                problems.push(format!("col {}: contradiction", i));
+            Err(_) => {
+                problems.push("Puzzle is unsolvable".to_string());
             }
-        }
-
-        if puzzle.plain_solve().is_err() {
-            problems.push("Puzzle is unsolvable".to_string());
         }
 
         problems
