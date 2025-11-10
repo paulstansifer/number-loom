@@ -1062,13 +1062,14 @@ impl NonogramGui {
                 .get_or_refresh(self.editor_gui.version, Disambiguator::new)
                 .disambig_widget(self.editor_gui.document.try_solution().unwrap(), ui);
 
+            ui.separator();
+
             ui.label("Description:");
             ui.text_edit_multiline(&mut self.editor_gui.document.description);
 
             let cc_by_license_str = "CC BY 4.0";
             let mut is_cc_by = self.editor_gui.document.license == cc_by_license_str;
 
-            ui.separator();
             ui.label("License:");
 
             ui.horizontal(|ui| {
@@ -1299,9 +1300,30 @@ impl NonogramGui {
                             ctx.copy_text(self.share_string.clone());
                         }
 
+                        if self.editor_gui.document.license == "CC BY 4.0" {
+                            if self.editor_gui.document.author.trim().is_empty() {
+                                ui.label(
+                                    "(The author field in your puzzle is empty; please use \
+                                    'anonymous' if that's what you want.)",
+                                );
+                            }
+                            ui.add(
+                                egui::Hyperlink::from_label_and_url(
+                                    "Contribute this puzzle to Number Loom",
+                                    "https://forms.gle/WXxWVsEMqy3NHXmK9",
+                                )
+                                .open_in_new_tab(true),
+                            );
+                        } else {
+                            ui.label(
+                                "If you'd like to contribute your puzzle to Number Loom's \
+                                library, please set the license to 'CC BY 4.0'",
+                            );
+                        }
+
                         ui.separator();
 
-                        ui.label("Paste a share string to load:");
+                        ui.label("Paste a 'WOVEN' string to load:");
                         ui.add(
                             egui::TextEdit::multiline(&mut self.pasted_string)
                                 .font(TextStyle::Monospace)
