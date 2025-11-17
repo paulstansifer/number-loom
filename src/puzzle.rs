@@ -453,27 +453,22 @@ impl Solution {
 
         if bg_squares_found < (width + height) {
             problems.push(format!(
-                "warning: {} is a very small number of background squares",
+                "{} is a very small number of background squares",
                 bg_squares_found
             ));
         }
 
         if (width * height - bg_squares_found) < (width + height) {
             problems.push(format!(
-                "warning: {} is a very small number of foreground squares",
+                "{} is a very small number of foreground squares",
                 width * height - bg_squares_found
             ));
         }
 
         let num_colors = self.palette.len();
-        if num_colors > 30 {
+        if num_colors > 10 {
             problems.push(format!(
-                "{} colors detected. Nonograms with more than 30 colors are not supported.",
-                num_colors
-            ));
-        } else if num_colors > 10 {
-            problems.push(format!(
-                "{} colors detected. That's probably too many.",
+                "{} colors detected; that's probably too many.",
                 num_colors
             ))
         }
@@ -495,8 +490,8 @@ impl Solution {
                     < 30
                 {
                     problems.push(format!(
-                        "warning: very similar colors found: {:?} and {:?}",
-                        color.rgb, color2.rgb
+                        "very similar colors found: {:?} (\"{}\") and {:?} (\"{}\")",
+                        color.rgb, color.name, color2.rgb, color2.name
                     ));
                 }
             }
@@ -632,7 +627,7 @@ impl Document {
     pub fn quality_check(&mut self) -> Vec<String> {
         let mut problems = vec![];
         if self.author.is_empty() {
-            problems.push("warning: missing author".to_string());
+            problems.push("missing author".to_string());
         }
 
         if let Ok(solution) = self.solution() {
@@ -651,11 +646,11 @@ impl Document {
                     }
                 }
                 if unsolved_count > 0 {
-                    problems.push(format!("Puzzle has {} unsolved cells", unsolved_count));
+                    problems.push(format!("puzzle is not solveable with line-logic"));
                 }
             }
             Err(_) => {
-                problems.push("Puzzle is unsolvable".to_string());
+                problems.push("puzzle is self-contradictory".to_string());
             }
         }
 

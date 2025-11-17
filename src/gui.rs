@@ -1260,7 +1260,11 @@ impl NonogramGui {
                     .default_width(780.0)
                     .show(ctx, |ui| {
                         if !self.quality_warnings.is_empty() {
-                            ui.label("Quality warnings:");
+                            if self.quality_warnings.len() == 1 {
+                                ui.label("Warning:");
+                            } else {
+                                ui.label("Warnings:");
+                            }
                             for warning in &self.quality_warnings {
                                 ui.label(warning);
                             }
@@ -1314,9 +1318,7 @@ impl NonogramGui {
                                 let handle = rfd::AsyncFileDialog::new()
                                     .add_filter(
                                         "all recognized formats",
-                                        &[
-                                            "png", "gif", "bmp", "xml", "pbn", "txt", "g", "html",
-                                        ],
+                                        &["png", "gif", "bmp", "xml", "pbn", "txt", "g", "html"],
                                     )
                                     .add_filter("image", &["png", "gif", "bmp"])
                                     .add_filter("PBN", &["xml", "pbn"])
