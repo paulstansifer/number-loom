@@ -55,7 +55,7 @@ fn main() -> std::io::Result<()> {
 
     let mut document = import::load_path(&input_path, args.input_format);
     for problem in document.quality_check() {
-        eprintln!("{}", problem);
+        eprintln!("Warning: {}", problem);
     }
 
     if args.gui {
