@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use clap::Parser;
 use colored::Colorize;
 use number_loom::import;
-use number_loom::import::quality_check;
 use number_loom::puzzle::Document;
 use number_loom::puzzle::NonogramFormat;
 use number_loom::puzzle::PuzzleDynOps;
@@ -55,8 +54,8 @@ fn main() -> std::io::Result<()> {
     };
 
     let mut document = import::load_path(&input_path, args.input_format);
-    if let Some(ref solution) = document.try_solution() {
-        quality_check(solution);
+    for problem in document.quality_check() {
+        eprintln!("Warning: {}", problem);
     }
 
     if args.gui {
