@@ -637,15 +637,7 @@ impl Document {
         let puzzle = self.puzzle();
         match puzzle.plain_solve() {
             Ok(report) => {
-                let mut unsolved_count = 0;
-                for col in &report.solution.grid {
-                    for cell in col {
-                        if *cell == UNSOLVED {
-                            unsolved_count += 1;
-                        }
-                    }
-                }
-                if unsolved_count > 0 {
+                if report.cells_left > 0 {
                     problems.push(format!("puzzle is not solveable with line-logic"));
                 }
             }
