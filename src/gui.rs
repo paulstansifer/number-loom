@@ -26,7 +26,20 @@ use egui_material_icons::icons;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn edit_image(document: Document) {
-    let native_options = eframe::NativeOptions::default();
+    use eframe::icon_data::from_png_bytes;
+    use egui::ViewportBuilder;
+
+    let icon_bytes: &'static [u8] = include_bytes!("../icon.png");
+
+    let native_options = eframe::NativeOptions {
+        viewport: ViewportBuilder::default()
+            .with_inner_size(Vec2::new(800.0, 800.0))
+            .with_app_id("Number Loom")
+            .with_icon(from_png_bytes(icon_bytes).unwrap()),
+        persist_window: true,
+        ..eframe::NativeOptions::default()
+    };
+
     eframe::run_native(
         "Number Loom",
         native_options,
