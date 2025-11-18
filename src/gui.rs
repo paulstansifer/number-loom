@@ -183,9 +183,10 @@ pub struct NonogramGui {
     solve_report: String,
     pub solve_mode: bool,
     pub solve_gui: Option<SolveGui>,
-    show_share_window: bool,
+    show_save_share_window: bool,
     share_string: String,
     pasted_string: String,
+    quality_warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -877,9 +878,10 @@ impl NonogramGui {
             solve_report: "".to_string(),
             solve_mode: false,
             solve_gui: None,
-            show_share_window: false,
+            show_save_share_window: false,
             share_string: "".to_string(),
             pasted_string: "".to_string(),
+            quality_warnings: vec![],
         }
     }
 
@@ -1130,34 +1132,6 @@ impl NonogramGui {
         }
     }
 
-    fn saver(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Save").clicked() {
-            let mut document_copy = self.editor_gui.document.clone();
-
-            spawn_async(async move {
-                let handle = rfd::AsyncFileDialog::new()
-                    .add_filter(
-                        "all recognized formats",
-                        &["png", "gif", "bmp", "xml", "pbn", "txt", "g", "html"],
-                    )
-                    .add_filter("image", &["png", "gif", "bmp"])
-                    .add_filter("PBN", &["xml", "pbn"])
-                    .add_filter("chargrid", &["txt"])
-                    .add_filter("Olsak", &["g"])
-                    .add_filter("HTML (for printing)", &["html"])
-                    .set_file_name(document_copy.file.clone())
-                    .save_file()
-                    .await;
-
-                if let Some(handle) = handle {
-                    let bytes =
-                        to_bytes(&mut document_copy, Some(handle.file_name()), None).unwrap();
-                    handle.write(&bytes).await.unwrap();
-                }
-            });
-        }
-    }
-
     fn enter_solve_mode(&mut self) {
         self.solve_mode = true;
 
@@ -1274,22 +1248,29 @@ impl NonogramGui {
             }
             self.loader(ui);
 
-            ui.add(
-                egui::TextEdit::singleline(&mut self.editor_gui.document.file).desired_width(150.0),
-            );
-            self.saver(ui);
-
-            if ui.button("Share").clicked() {
+            if ui.button("Save/share").clicked() {
                 self.share_string =
                     crate::formats::woven::to_share_string(&mut self.editor_gui.document).unwrap();
-                self.show_share_window = true;
+                self.quality_warnings = self.editor_gui.document.quality_check();
+                self.show_save_share_window = true;
             }
 
-            if self.show_share_window {
-                egui::Window::new("Share Puzzle")
-                    .open(&mut self.show_share_window)
+            if self.show_save_share_window {
+                egui::Window::new("Save/share")
+                    .open(&mut self.show_save_share_window)
                     .default_width(780.0)
                     .show(ctx, |ui| {
+                        if !self.quality_warnings.is_empty() {
+                            if self.quality_warnings.len() == 1 {
+                                ui.label("Warning:");
+                            } else {
+                                ui.label("Warnings:");
+                            }
+                            for warning in &self.quality_warnings {
+                                ui.label(warning);
+                            }
+                            ui.separator();
+                        }
                         ui.label("Share String:");
                         ui.add(
                             egui::TextEdit::multiline(&mut self.share_string.clone())
@@ -1342,6 +1323,45 @@ impl NonogramGui {
                                 }
                             }
                         }
+
+                        ui.separator();
+
+                        ui.horizontal(|ui| {
+                            ui.label("Filename:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.editor_gui.document.file)
+                                    .desired_width(150.0),
+                            );
+                        });
+                        if ui.button("Save").clicked() {
+                            let mut document_copy = self.editor_gui.document.clone();
+
+                            spawn_async(async move {
+                                let handle = rfd::AsyncFileDialog::new()
+                                    .add_filter(
+                                        "all recognized formats",
+                                        &["png", "gif", "bmp", "xml", "pbn", "txt", "g", "html"],
+                                    )
+                                    .add_filter("image", &["png", "gif", "bmp"])
+                                    .add_filter("PBN", &["xml", "pbn"])
+                                    .add_filter("chargrid", &["txt"])
+                                    .add_filter("Olsak", &["g"])
+                                    .add_filter("HTML (for printing)", &["html"])
+                                    .set_file_name(document_copy.file.clone())
+                                    .save_file()
+                                    .await;
+
+                                if let Some(handle) = handle {
+                                    let bytes = to_bytes(
+                                        &mut document_copy,
+                                        Some(handle.file_name()),
+                                        None,
+                                    )
+                                    .unwrap();
+                                    handle.write(&bytes).await.unwrap();
+                                }
+                            });
+                        }
                     });
             }
 
@@ -1354,7 +1374,7 @@ impl NonogramGui {
                 );
                 self.new_dialog = None;
                 self.library_dialog = None;
-                self.show_share_window = false;
+                self.show_save_share_window = false;
             }
 
             ui.separator();

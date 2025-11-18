@@ -270,6 +270,8 @@ pub enum DynPuzzle {
 
 pub trait PuzzleDynOps {
     fn palette(&self) -> &HashMap<Color, ColorInfo>;
+    fn rows(&self) -> usize;
+    fn cols(&self) -> usize;
     fn solve(
         &self,
         options: &crate::grid_solve::SolveOptions,
@@ -289,6 +291,14 @@ pub trait PuzzleDynOps {
 impl<C: Clue> PuzzleDynOps for Puzzle<C> {
     fn palette(&self) -> &HashMap<Color, ColorInfo> {
         &self.palette
+    }
+
+    fn rows(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn cols(&self) -> usize {
+        self.cols.len()
     }
 
     fn partial_solve(
@@ -323,6 +333,20 @@ impl PuzzleDynOps for DynPuzzle {
         match self {
             DynPuzzle::Nono(p) => &p.palette(),
             DynPuzzle::Triano(p) => &p.palette(),
+        }
+    }
+
+    fn rows(&self) -> usize {
+        match self {
+            DynPuzzle::Nono(p) => p.rows(),
+            DynPuzzle::Triano(p) => p.rows(),
+        }
+    }
+
+    fn cols(&self) -> usize {
+        match self {
+            DynPuzzle::Nono(p) => p.cols(),
+            DynPuzzle::Triano(p) => p.cols(),
         }
     }
 
@@ -412,6 +436,69 @@ impl DynSolveCache {
 }
 
 impl Solution {
+    pub fn quality_check(&self) -> Vec<String> {
+        let mut problems = vec![];
+        let width = self.grid.len();
+        let height = self.grid.first().unwrap().len();
+
+        let bg_squares_found: usize = self
+            .grid
+            .iter()
+            .map(|col| {
+                col.iter()
+                    .map(|c| if *c == BACKGROUND { 1 } else { 0 })
+                    .sum::<usize>()
+            })
+            .sum();
+
+        if bg_squares_found < (width + height) {
+            problems.push(format!(
+                "{} is a very small number of background squares",
+                bg_squares_found
+            ));
+        }
+
+        if (width * height - bg_squares_found) < (width + height) {
+            problems.push(format!(
+                "{} is a very small number of foreground squares",
+                width * height - bg_squares_found
+            ));
+        }
+
+        let num_colors = self.palette.len();
+        if num_colors > 10 {
+            problems.push(format!(
+                "{} colors detected; that's probably too many.",
+                num_colors
+            ))
+        }
+
+        // Find similar colors
+        for (color_key, color) in &self.palette {
+            for (color_key2, color2) in &self.palette {
+                if color_key >= color_key2 {
+                    continue;
+                }
+                if color.corner != color2.corner && color.rgb == color2.rgb {
+                    continue; // Corners may be the same color.
+                }
+                let (r, g, b) = color.rgb;
+                let (r2, g2, b2) = color2.rgb;
+                if (r2 as i16 - r as i16).abs()
+                    + (g2 as i16 - g as i16).abs()
+                    + (b2 as i16 - b as i16).abs()
+                    < 30
+                {
+                    problems.push(format!(
+                        "very similar colors found: {:?} (\"{}\") and {:?} (\"{}\")",
+                        color.rgb, color.name, color2.rgb, color2.name
+                    ));
+                }
+            }
+        }
+        problems
+    }
+
     pub fn blank_bw(x_size: usize, y_size: usize) -> Solution {
         Solution {
             clue_style: ClueStyle::Nono,
@@ -537,6 +624,31 @@ pub struct Document {
 }
 
 impl Document {
+    pub fn quality_check(&mut self) -> Vec<String> {
+        let mut problems = vec![];
+        if self.author.is_empty() {
+            problems.push("missing author".to_string());
+        }
+
+        if let Ok(solution) = self.solution() {
+            problems.extend(solution.quality_check());
+        }
+
+        let puzzle = self.puzzle();
+        match puzzle.plain_solve() {
+            Ok(report) => {
+                if report.cells_left > 0 {
+                    problems.push(format!("puzzle is not solveable with line-logic"));
+                }
+            }
+            Err(_) => {
+                problems.push("puzzle is self-contradictory".to_string());
+            }
+        }
+
+        problems
+    }
+
     pub fn new(
         puzzle: Option<DynPuzzle>,
         solution: Option<Solution>,
