@@ -14,6 +14,7 @@ pub fn to_bytes(
     file_name: Option<String>,
     format: Option<NonogramFormat>,
 ) -> anyhow::Result<Vec<u8>> {
+    use crate::formats::webpbn::as_webpbn;
     let format = format.unwrap_or_else(|| {
         puzzle::infer_format(
             file_name
@@ -130,81 +131,6 @@ table td:last-child {
     );
 
     html.to_string()
-}
-
-pub fn as_webpbn(document: &Document) -> String {
-    use indoc::indoc;
-
-    let mut document_with_puzzle = document.clone();
-    let puzzle = document_with_puzzle.puzzle().assume_nono();
-
-    let mut res = String::new();
-    // If you add <!DOCTYPE pbn SYSTEM "https://webpbn.com/pbn-0.3.dtd">, `pbnsolve` emits a warning.
-    res.push_str(indoc! {r#"
-        <?xml version="1.0"?>
-        <puzzleset>
-        <puzzle type="grid" defaultcolor="white">
-        <source>number-loom</source>
-        "#});
-    if !document.title.is_empty() {
-        res.push_str(&format!("<title>{}</title>\n", &document.title));
-    }
-    if !document.description.is_empty() {
-        res.push_str(&format!(
-            "<description>{}</description>\n",
-            &document.description
-        ));
-    }
-    if !document.author.is_empty() {
-        res.push_str(&format!("<author>{}</author>\n", &document.author));
-    }
-    if !document.id.is_empty() {
-        res.push_str(&format!("<id>{}</id>\n", &document.id));
-    }
-    if !document.license.is_empty() {
-        res.push_str(&format!("<copyright>{}</copyright>\n", &document.license));
-    }
-    for color in puzzle.palette.values() {
-        let (r, g, b) = color.rgb;
-        res.push_str(&format!(
-            r#"<color name="{}" char="{}">{:02X}{:02X}{:02X}</color>"#,
-            color.name, color.ch, r, g, b
-        ));
-        res.push('\n');
-    }
-
-    res.push_str(r#"<clues type="columns">"#);
-    for column in &puzzle.cols {
-        res.push_str("<line>");
-        for clue in column {
-            res.push_str(&format!(
-                r#"<count color="{}">{}</count>"#,
-                puzzle.palette[&clue.color].name, clue.count
-            ));
-        }
-        res.push_str("</line>\n");
-    }
-    res.push_str(r#"</clues>"#);
-    res.push('\n');
-
-    res.push_str(r#"<clues type="rows">"#);
-    for row in &puzzle.rows {
-        res.push_str("<line>");
-        for clue in row {
-            res.push_str(&format!(
-                r#"<count color="{}">{}</count>"#,
-                puzzle.palette[&clue.color].name, clue.count
-            ));
-        }
-        res.push_str("</line>\n");
-    }
-    res.push_str(r#"</clues>"#);
-    res.push('\n');
-
-    res.push_str(r#"</puzzle></puzzleset>"#);
-    res.push('\n');
-
-    res
 }
 
 pub fn olsak_ch(c: char, orig_to_sanitized: &mut HashMap<char, char>) -> char {
