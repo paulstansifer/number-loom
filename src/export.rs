@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use axohtml::{html, text};
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 
-use crate::puzzle::{self, Clue, Document, NonogramFormat, Puzzle, Solution};
+use crate::{
+    formats::woven::to_woven,
+    puzzle::{self, Clue, Document, NonogramFormat, Puzzle, Solution},
+};
 
 pub fn to_bytes(
     document: &mut Document,
@@ -30,6 +33,7 @@ pub fn to_bytes(
             NonogramFormat::Webpbn => as_webpbn(document),
             NonogramFormat::Html => document.puzzle().specialize(as_html, as_html),
             NonogramFormat::Image => panic!(),
+            NonogramFormat::Woven => to_woven(document)?,
             NonogramFormat::CharGrid => as_char_grid(document.solution()?),
         }
         .into_bytes()

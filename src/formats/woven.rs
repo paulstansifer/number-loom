@@ -61,7 +61,7 @@ impl From<&mut Document> for SerializableDocument {
     }
 }
 
-pub fn to_share_string(doc: &mut Document) -> anyhow::Result<String> {
+pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
     let s_doc: SerializableDocument = doc.into();
     let buf = std::io::BufWriter::new(Vec::new());
     let mut encoder = brotli::CompressorWriter::new(buf, 4096, 11, 22);
@@ -81,7 +81,7 @@ pub fn to_share_string(doc: &mut Document) -> anyhow::Result<String> {
     Ok(result)
 }
 
-pub fn from_share_string(s: &str) -> anyhow::Result<Document> {
+pub fn from_woven(s: &str) -> anyhow::Result<Document> {
     let s = s
         .strip_prefix("WOVEN-")
         .ok_or_else(|| anyhow::anyhow!("Missing 'WOVEN' prefix"))?;
@@ -261,8 +261,8 @@ mod tests {
             Some("Test License".to_string()),
         );
 
-        let share_string = to_share_string(&mut doc).unwrap();
-        let mut new_doc = from_share_string(&share_string).unwrap();
+        let share_string = to_woven(&mut doc).unwrap();
+        let mut new_doc = from_woven(&share_string).unwrap();
 
         assert_eq!(doc.file, new_doc.file);
         assert_eq!(doc.title, new_doc.title);

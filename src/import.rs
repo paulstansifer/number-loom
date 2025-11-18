@@ -9,9 +9,12 @@ use std::{
     path::PathBuf,
 };
 
-use crate::puzzle::{
-    self, BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Nono,
-    NonogramFormat, Puzzle, Solution, Triano,
+use crate::{
+    formats::woven::from_woven,
+    puzzle::{
+        self, BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Nono,
+        NonogramFormat, Puzzle, Solution, Triano,
+    },
 };
 
 pub fn load_path(path: &PathBuf, format: Option<NonogramFormat>) -> Document {
@@ -49,6 +52,10 @@ pub fn load(filename: &str, bytes: Vec<u8>, format: Option<NonogramFormat>) -> D
             let grid_string = String::from_utf8(bytes).unwrap();
             let solution = char_grid_to_solution(&grid_string);
             Document::from_solution(solution, filename.to_string())
+        }
+        NonogramFormat::Woven => {
+            let woven_string = String::from_utf8(bytes).unwrap();
+            from_woven(&woven_string).unwrap()
         }
         NonogramFormat::Olsak => {
             let olsak_string = String::from_utf8(bytes).unwrap();

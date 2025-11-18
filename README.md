@@ -15,6 +15,7 @@ It's still pretty janky, but it's also the most powerful such tool I know of. In
   * The format used by the Olsak solver (extension: `.g`)
   * Images (typical extension: `.png`)
   * `char-grid`, a plaintext grid of characters, which it attempts to infer a reasonable character-to-color mapping (extension: `.txt`)
+  * `.woven`, a format designed for Number Loom, mostly to facilitate transmitting puzzles as short(ish) text strings.
   * HTML, for export only, as a printable puzzle (extension `.html`)
 * Has support for "Trianograms", a rare variation with triangular cells that may appear as caps to clues.
 * An exhaustive line-logic solver that provides some difficulty information.

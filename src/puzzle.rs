@@ -581,6 +581,8 @@ pub enum NonogramFormat {
     /// Informal text format: a grid of characters. Attempts some sensible matching of characters
     /// to colors, but results will vary. This is the only format that supports Triano puzzles.
     CharGrid,
+    /// Number Loom's format, mostly aimed at making copy-and-paste easier.
+    Woven,
     /// (Export-only.) An HTML representation of a puzzle.
     Html,
 }
@@ -606,6 +608,7 @@ pub fn infer_format(path: &str, format_arg: Option<NonogramFormat>) -> NonogramF
         Some("g") => NonogramFormat::Olsak,
         Some("html") => NonogramFormat::Html,
         Some("txt") => NonogramFormat::CharGrid,
+        Some("woven") => NonogramFormat::Woven,
         _ => NonogramFormat::CharGrid,
     }
 }

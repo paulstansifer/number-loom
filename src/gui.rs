@@ -1127,6 +1127,7 @@ impl NonogramGui {
                     .add_filter("PBN", &["xml", "pbn"])
                     .add_filter("chargrid", &["txt"])
                     .add_filter("Olsak", &["g"])
+                    .add_filter("woven", &["woven"])
                     .pick_file()
                     .await;
 
@@ -1263,7 +1264,7 @@ impl NonogramGui {
 
             if ui.button("Save/share").clicked() {
                 self.share_string =
-                    crate::formats::woven::to_share_string(&mut self.editor_gui.document).unwrap();
+                    crate::formats::woven::to_woven(&mut self.editor_gui.document).unwrap();
                 self.quality_warnings = self.editor_gui.document.quality_check();
                 self.show_save_share_window = true;
             }
@@ -1325,7 +1326,7 @@ impl NonogramGui {
                         );
 
                         if ui.button("Load").clicked() {
-                            match crate::formats::woven::from_share_string(&self.pasted_string) {
+                            match crate::formats::woven::from_woven(&self.pasted_string) {
                                 Ok(doc) => {
                                     new_document = Some(doc);
                                     next_enter_solve_mode = true;
@@ -1359,6 +1360,7 @@ impl NonogramGui {
                                     .add_filter("PBN", &["xml", "pbn"])
                                     .add_filter("chargrid", &["txt"])
                                     .add_filter("Olsak", &["g"])
+                                    .add_filter("woven", &["woven"])
                                     .add_filter("HTML (for printing)", &["html"])
                                     .set_file_name(document_copy.file.clone())
                                     .save_file()
