@@ -4,7 +4,7 @@
 
 ![Screenshot of a GUI editor](screenshot.png)
 
-*Spot an uninvasive change that makes the logo solveable!*
+*Spot a change that makes the puzzle totally solveable and still look good!*
 
 It's still pretty janky, but it's also the most powerful such tool I know of. In particular, it can offer suggestions for how to make an unsolveable puzzle more solveable!  You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
 
@@ -48,7 +48,7 @@ Internally, it has two modes:
 
 It stores progress by noting each possibly-remaining color in each cell. Even though a human solver typically only notes down known cells, in my experience this corresponds pretty well to the sort of ad-hoc logic that solvers perform on color nonograms when they glance at the both lines that contain a cell.
 
-Looking at the number of scrubs and skims can tell you something about the difficulty of a puzzle. Unless you're aiming for an easy puzzle, the solver should have to do some scrubs. If the number of scrubs is higher than the width plus the length, or the number of skims is more than five times that, it's starting to get tedious relative to the size of the puzzle. This is a *very* rough guide: you should test-solve your puzzle to get an accurate view of the experience.
+Looking at the number of scrubs and skims can tell you something about the difficulty of a puzzle. Unless you're aiming for an easy puzzle, the solver should have to do some scrubs. If the number of scrubs is higher than the width plus the length, or the number of skims is more than five times that, it's probably tedious relative to the size of the puzzle. This is a *very* rough guide: you should test-solve your puzzle to get an accurate view of the experience (click the "Puzzle" button!).
 
 ## GUI
 
@@ -58,30 +58,32 @@ When editing a nonogram, you can:
 
 * Paint by dragging / draw orthographic lines / flood fill
 * Adjust the size of the canvas from any side
+* Undo or redo with buttons or the "Z" and "Y" keys
 * Add, remove, or recolor palette entries
 * Solve the puzzle (it paints gray dots over unsolved cells), optionally automatically after each edit
 * Disambiguate
 * Switch to "Puzzle" mode to test-solve
+* Edit metadata: title, description, author and license. The title is intended to be displayed before the puzzle is solved, and the description is intended for display afterward.
 
 #### Disambiguation
 
-This may take a little bit of time, but it's typically reasonably fast for puzzles under 40x40. Cells will be painted with an alternate color, with an opacity proportional to the number of unsolved cells that are resolved if that single cell is changed to that color. (It only ever displays one color, but there might be others that work just as well!)
+This may take a little bit of time, but it's typically reasonably fast for puzzles under 40x40. Cells will get a small square with an alternate color, with an opacity proportional to the number of unsolved cells that are resolved if that single cell is changed to that color. (It only ever displays one color, but there might be others that work just as well!)
 
-It works by simply re-solving the puzzle with every possible one-square change. But it caches intermediate deductions to speed the process up. Typically, the more ambiguous the puzzle, the faster it is, so doing a guess-and-check with "auto-solve" turned on is sometimes a better way to hammer out small remaining ambiguitys.
+It works by simply re-solving the puzzle with every possible one-square change. But it caches intermediate deductions to speed the process up. Typically, the more ambiguous the puzzle, the faster it is, so doing a guess-and-check with "auto-solve" turned on is sometimes a better way to hammer out small remaining ambiguities.
 
-## Puzzle mode
+### Puzzle mode
 
-In puzzle mode, primary click paints the currently-selected color, right-click paints blank squares, and middle-click paints "unsolved". There's also a counter widget that helps you measure the contiguous region that you're in. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
+In puzzle mode, primary click paints the currently-selected color, right-click paints blank squares, and middle-click paints "unsolved" (undo/redo also work). There's also a counter widget that helps you measure the contiguous region that you're in. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
 
 * Detection of errors
 * Inference of "obvious" background squares
 * Indicators on lines that can be progressed
 
-Note: indicators only appear if a cell on a line can be fully solved. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solveable puzzle to at some point have no line-progress indicators!
+Note: indicators only appear if some cell on a line can be fully solved. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solveable puzzle to at some point have no line-progress indicators!
 
 ## Trianograms
 
-Trianograms are a rare variant. "Mindful Puzzle Books" publishes a book by that name. The Olšák solver also supports this variant, crediting the concept to "the journal Maľované krížovky, Silentium s.r.o, Bratislava", but I haven't been able to find out more. There are puzzles with triangles at [griddlers.net](http://griddlers.net/), but I'm not sure if they use the same rules.
+Trianograms are a rare variant. "Mindful Puzzle Books" publishes a book by that name. The Olšák solver also supports this variant, crediting the concept to "the journal Maľované krížovky, Silentium s.r.o, Bratislava", but I haven't been able to find out more. There are puzzles with triangles at [griddlers.net](http://griddlers.net/), but I think they are merely traditional nonograms with triangular colors.
 
 A Trianogram has black, white, and four additional "colors": triangles that divide the cell into half-black and half-white. The triangles always serve as "caps" to a clue; for example "◢2◤" denotes that the four cells "◢■■◤" will appear. They will be consecutive, despite the fact that the caps are different "colors". Two consecutive clues will only be guaranteed to be separated by a space if neither of them is capped on the facing sides (if there are multiple identical consecutive triangles, they will each get their own clue).
 

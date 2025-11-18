@@ -1,5 +1,11 @@
 ## Changelog
 
+## 0.4.1 - 
+### Added
+ - Metadata editing
+ - WOVEN format for copy-and-pasting puzzles
+ - Cell counter assitance in solve mode
+
 ## 0.4.0 - 2025-10-30
 ### Added
  - Solve mode (including various useful helper analyses)
