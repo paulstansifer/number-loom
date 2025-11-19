@@ -69,10 +69,13 @@ pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
 
     encoder.write_all(&bytes)?;
     let compressed = encoder.into_inner().into_inner().unwrap();
-    let encoded = general_purpose::STANDARD.encode(compressed);
+    let encoded = format!(
+        "WOVEN-{}-",
+        general_purpose::STANDARD_NO_PAD.encode(compressed)
+    );
 
     let mut result = String::new();
-    for (i, c) in "WOVEN-".chars().chain(encoded.chars()).enumerate() {
+    for (i, c) in encoded.chars().enumerate() {
         result.push(c);
         if (i + 1) % 100 == 0 {
             result.push('\n');
@@ -84,9 +87,11 @@ pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
 pub fn from_woven(s: &str) -> anyhow::Result<Document> {
     let s = s
         .strip_prefix("WOVEN-")
-        .ok_or_else(|| anyhow::anyhow!("Missing 'WOVEN' prefix"))?;
+        .ok_or_else(|| anyhow::anyhow!("Missing 'WOVEN-' prefix"))?
+        .strip_suffix("-")
+        .ok_or_else(|| anyhow::anyhow!("Must end in a '-'"))?;
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    let compressed = general_purpose::STANDARD.decode(s.as_bytes())?;
+    let compressed = general_purpose::STANDARD_NO_PAD.decode(s.as_bytes())?;
 
     let mut decoder = brotli::Decompressor::new(&compressed[..], 4096);
     let mut bytes = Vec::new();
