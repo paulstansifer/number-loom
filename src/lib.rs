@@ -1,5 +1,5 @@
-pub mod formats;
 pub mod export;
+pub mod formats;
 pub mod grid_solve;
 pub mod gui;
 pub mod gui_gallery;
@@ -92,5 +92,5 @@ fn solve_examples() {
         assert!(report.contains(line));
     }
 
-    assert_eq!(report.lines().collect::<Vec<_>>().len(), 34);
+    assert_eq!(report.lines().collect::<Vec<_>>().len(), 35);
 }
