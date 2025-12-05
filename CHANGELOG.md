@@ -1,6 +1,10 @@
 ## Changelog
 
-## 0.4.1 - 
+## 0.4.2 -
+### Fixed
+ - A bug in scrubbing meant that we occasionally didn't make all the deductions we could.
+
+## 0.4.1 - 2025-11-20
 ### Added
  - Metadata editing
  - WOVEN format for copy-and-pasting puzzles
