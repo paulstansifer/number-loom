@@ -79,17 +79,17 @@ fn solve_examples() {
         "tea.png                                  skims:    100  scrubs:      0  cells left: 0",
         "tedious_dust_10x10.png                   skims:     89  scrubs:     22  cells left: 0",
         "tedious_dust_25x25.png                   skims:    519  scrubs:     82  cells left: 0",
-        "tedious_dust_30x30.png                   skims:    971  scrubs:    196  cells left: 0",
-        "tedious_dust_40x40.png                   skims:   1549  scrubs:    326  cells left: 0",
+        "tedious_dust_30x30.png                   skims:    974  scrubs:    192  cells left: 0",
+        "tedious_dust_40x40.png                   skims:   1549  scrubs:    328  cells left: 0",
         "telephone_recevier.png                   skims:     34  scrubs:      0  cells left: 0",
-        "tissue_box.png                           skims:    165  scrubs:     41  cells left: 0",
+        "tissue_box.png                           skims:    185  scrubs:     39  cells left: 0",
         "tornado.png                              skims:     96  scrubs:     15  cells left: 0",
         "usb_type_a.png                           skims:    296  scrubs:     53  cells left: 0",
-        "usb_type_a_no_emblem.png                 skims:    330  scrubs:     67  cells left: 0",
+        "usb_type_a_no_emblem.png                 skims:    331  scrubs:     67  cells left: 0",
     ];
 
     for line in expected_report {
-        assert!(report.contains(line));
+        assert!(report.contains(line), "expected '{}'", line);
     }
 
     assert_eq!(report.lines().collect::<Vec<_>>().len(), 35);

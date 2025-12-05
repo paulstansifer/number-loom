@@ -663,6 +663,7 @@ pub fn skim_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
     (total_clue_length + longest_clue) as i32 - longest_foregroundable_span + edge_bonus
 }
 
+// This is the old "scrub"; we don't use it anymore
 pub fn scrub_line<C: Clue + Clone + Copy>(
     cs: &[C],
     lane: &mut ArrayViewMut1<Cell>,
@@ -757,6 +758,7 @@ pub fn scrub_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
     density + std::cmp::max(0, unknown_background_cells * (excess_chunks + 2) / 2)
 }
 
+// This is the new thing we call "scrub" (TODO: make names consistent!)
 pub fn exhaust_line<C: Clue + Clone + Copy>(
     cs: &[C],
     lane: &mut ArrayViewMut1<Cell>,
@@ -828,7 +830,6 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
         // Temporary, to be intersected with `reachable`
         let mut both_reachable = vec![false; total_slack + 1];
 
-        let mut max_reachable_suffix = 0;
         for gap_sfx in 0..=total_slack {
             if clue_idx == cs.len() - 1 {
                 if gap_sfx != total_slack {
@@ -854,19 +855,20 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
 
                 if gap_placeable && clue_placeable && consec_placeable {
                     both_reachable[new_gap as usize] = true;
-                    max_reachable_suffix = gap_sfx;
+
+                    for g_idx in new_gap..gap_sfx {
+                        superposition[clue_len_so_far + g_idx].actually_could_be(BACKGROUND);
+                    }
                 }
             }
         }
         for new_gap in 0..=total_slack {
             if both_reachable[new_gap] {
+                // TODO: why not do this in the previous loop?
                 // Reachable in both directions! Record it:
                 for clue_cell_idx in 0..clue.len() {
                     superposition[clue_len_so_far - clue.len() + new_gap + clue_cell_idx]
                         .actually_could_be(clue.color_at(clue_cell_idx));
-                }
-                for g_idx in new_gap..max_reachable_suffix {
-                    superposition[clue_len_so_far + g_idx].actually_could_be(BACKGROUND);
                 }
             } else {
                 reachable[clue_idx][new_gap] = false;
@@ -1254,5 +1256,41 @@ mod tests {
 
         assert_eq!(rep.affected_cells, vec![4]);
         assert_eq!(solved, l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜"));
+    }
+
+    #[test]
+    fn observed_error() {
+        let clues = n("⬛4 ⬛4");
+        let init_str = "🔳 🔳 🔳 🔳 ⬜ ⬛ 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 ";
+
+        let result = test_exhaust(clues, init_str);
+
+        assert!(
+            result[6].is_known_to_be(Color(1)),
+            "should be black, got {:?}",
+            result[6]
+        );
+
+        let clues = n("⬛2 ⬛2 ⬛4 ⬛4 ⬛1");
+        let init_str = "🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 ⬜ ⬛ 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳";
+
+        let result = test_exhaust(clues, init_str);
+
+        assert!(
+            result[11].is_known_to_be(Color(1)),
+            "should be black, got {:?}",
+            result[11]
+        );
+
+        let clues = n("⬛1 ⬛4 ⬛4 ⬛2 ⬛2");
+        let init_str = "🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 ⬛ ⬜ 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳 🔳";
+
+        let result = test_exhaust(clues, init_str);
+
+        assert!(
+            result[13].is_known_to_be(Color(1)),
+            "should be black, got {:?}",
+            result[13]
+        );
     }
 }
