@@ -1340,11 +1340,19 @@ impl NonogramGui {
 
                         ui.separator();
 
+                        ui.label("Supported file types:");
+                        ui.label("  .png (or other image formats): solution image");
+                        ui.label("  .xml/.pbn: the format used by the \"pbnsolve\" solver");
+                        ui.label("  .txt: grid of characters");
+                        ui.label("  .g: the format used by the Olšák solver");
+                        ui.label("  .woven: Number Loom's custom format");
+                        ui.label("  .html: printable puzzle");
+
                         ui.horizontal(|ui| {
                             ui.label("Filename:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.editor_gui.document.file)
-                                    .desired_width(150.0),
+                                    .desired_width(450.0),
                             );
                         });
                         if ui.button("Save").clicked() {
@@ -1359,7 +1367,7 @@ impl NonogramGui {
                                     .add_filter("image", &["png", "gif", "bmp"])
                                     .add_filter("PBN", &["xml", "pbn"])
                                     .add_filter("chargrid", &["txt"])
-                                    .add_filter("Olsak", &["g"])
+                                    .add_filter("Olšák", &["g"])
                                     .add_filter("woven", &["woven"])
                                     .add_filter("HTML (for printing)", &["html"])
                                     .set_file_name(document_copy.file.clone())
