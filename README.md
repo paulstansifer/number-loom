@@ -12,7 +12,7 @@ It's still pretty janky, but it's also the most powerful such tool I know of. In
 
 * Supports the following file formats:
   * `webpbn`'s XML-based format (extension: `.xml` or `.pbn`)
-  * The format used by the Olsak solver (extension: `.g`)
+  * The format used by the Olšák solver (extension: `.g`)
   * Images (typical extension: `.png`)
   * `char-grid`, a plaintext grid of characters, which it attempts to infer a reasonable character-to-color mapping (extension: `.txt`)
   * `.woven`, a format designed for Number Loom, mostly to facilitate transmitting puzzles as short(ish) text strings.
