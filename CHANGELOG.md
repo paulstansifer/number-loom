@@ -1,6 +1,6 @@
 ## Changelog
 
-## 0.4.2 -
+## 0.4.2 - 2025-12-18
 ### Fixed
  - A bug in scrubbing meant that we occasionally didn't make all the deductions we could.
 
