@@ -60,11 +60,15 @@ preferences = "2.0.0"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom_0_2 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+# Needed to spawn async tasks
 wasm-bindgen-futures = "0.4.50"
+
+# These three are needed to just make yield work!
 web-sys = "0.3.77"
-# `js-sys` and `wasm-bindgen` are just needed for yielding!?
 js-sys = "0.3.77"
 wasm-bindgen = "0.2.100"
+
 gloo-storage = "0.3.0"
 
 [profile.release]
