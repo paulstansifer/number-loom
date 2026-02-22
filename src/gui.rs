@@ -11,6 +11,12 @@ pub enum Tool {
     OrthographicLine,
 }
 
+pub enum LibraryStatus {
+    Loading,
+    Loaded(Vec<Document>),
+    Failed(String),
+}
+
 use crate::{
     export::to_bytes,
     grid_solve::{self, disambig_candidates},
@@ -104,7 +110,7 @@ where
 {
     // This sort of weird construct allows us to avoid multithreaded tokio,
     // which isn't available on wasm32 (cargo doesn't like having the same crate have different
-    // features on different platforms, and we might want to use some tokio features on wasm32)
+    // `features on different platforms, and we might want to use some tokio features on wasm32)
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -188,8 +194,8 @@ pub struct NonogramGui {
     pub editor_gui: CanvasGui,
     scale: f32,
     opened_file_receiver: mpsc::Receiver<Document>,
-    library_receiver: mpsc::Receiver<Vec<Document>>,
-    library_dialog: Option<Vec<Document>>,
+    library_receiver: mpsc::Receiver<anyhow::Result<Vec<Document>>>,
+    library_dialog: Option<LibraryStatus>,
     new_dialog: Option<NewPuzzleDialog>,
     auto_solve: bool,
     lines_to_affect_string: String,
@@ -1218,40 +1224,61 @@ impl NonogramGui {
             if ui.button("Library").clicked() {
                 let (sender, receiver) = mpsc::channel();
                 self.library_receiver = receiver;
+                self.library_dialog = Some(LibraryStatus::Loading);
 
                 spawn_async(async move {
                     let result = crate::import::puzzles_from_github().await;
-                    if let Ok(library) = result {
-                        sender.send(library).unwrap();
-                    }
+                    let _ = sender.send(result);
                 });
             }
 
-            if let Ok(library) = self.library_receiver.try_recv() {
-                self.library_dialog = Some(library);
+            if let Ok(result) = self.library_receiver.try_recv() {
+                match result {
+                    Ok(library) => self.library_dialog = Some(LibraryStatus::Loaded(library)),
+                    Err(e) => self.library_dialog = Some(LibraryStatus::Failed(e.to_string())),
+                }
             }
 
             let mut next_enter_solve_mode = false;
             let mut close_library = false;
-            if let Some(docs) = &self.library_dialog {
+            if let Some(status) = &self.library_dialog {
                 egui::Window::new("Puzzle Library")
                     .max_size(ctx.screen_rect().size() * 0.9)
                     .show(ctx, |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            egui::Grid::new("library_grid").show(ui, |ui| {
-                                for (i, doc) in docs.iter().enumerate() {
-                                    if crate::gui_gallery::gallery_puzzle_preview(ui, doc).clicked()
-                                    {
-                                        new_document = Some(doc.clone());
-                                        next_enter_solve_mode = true;
-                                        close_library = true;
-                                    }
-                                    if i % 2 == 1 {
-                                        ui.end_row();
-                                    }
-                                }
-                            });
-                        });
+                        match status {
+                            LibraryStatus::Loading => {
+                                ui.vertical_centered(|ui| {
+                                    ui.add(egui::Spinner::new());
+                                    ui.label("Loading library...");
+                                });
+                            }
+                            LibraryStatus::Loaded(docs) => {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    egui::Grid::new("library_grid").show(ui, |ui| {
+                                        for (i, doc) in docs.iter().enumerate() {
+                                            if crate::gui_gallery::gallery_puzzle_preview(ui, doc)
+                                                .clicked()
+                                            {
+                                                new_document = Some(doc.clone());
+                                                next_enter_solve_mode = true;
+                                                close_library = true;
+                                            }
+                                            if i % 2 == 1 {
+                                                ui.end_row();
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            LibraryStatus::Failed(e) => {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Failed to load library: {}", e))
+                                            .color(Color32::RED),
+                                    );
+                                });
+                            }
+                        }
                         if ui.button("Cancel").clicked() {
                             close_library = true;
                         }
