@@ -240,11 +240,11 @@ impl SolveGui {
             }
             if ui.button("Detect errors").clicked() || self.detect_errors {
                 if self.detect_any_errors() {
-                    ui.colored_label(egui::Color32::RED, "Error detected");
+                    ui.colored_label(egui::Color32::DARK_RED, "Error detected");
                 }
             }
             if self.is_correctly_solved() {
-                ui.colored_label(egui::Color32::GREEN, "Correctly solved");
+                ui.colored_label(egui::Color32::DARK_GREEN, "Correctly solved");
 
                 if !self.canvas.document.description.is_empty() {
                     ui.label(&self.canvas.document.description);
