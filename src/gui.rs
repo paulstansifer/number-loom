@@ -647,10 +647,7 @@ impl CanvasGui {
                     .monospace()
                     .size(24.0)
                     .color(egui::Color32::from_rgb(r, g, b));
-                if ui
-                    .add_enabled(*color != picked_color, egui::Button::new(color_text))
-                    .clicked()
-                {
+                if ui.add(egui::Button::new(color_text)).clicked() {
                     picked_color = *color;
                 };
 
