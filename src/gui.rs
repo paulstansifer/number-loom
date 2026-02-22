@@ -110,7 +110,7 @@ where
 {
     // This sort of weird construct allows us to avoid multithreaded tokio,
     // which isn't available on wasm32 (cargo doesn't like having the same crate have different
-    // `features on different platforms, and we might want to use some tokio features on wasm32)
+    // features on different platforms, and we might want to use some tokio features on wasm32)
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
