@@ -1276,6 +1276,7 @@ impl NonogramGui {
                                 });
                             }
                         }
+                        ui.separator();
                         if ui.button("Cancel").clicked() {
                             close_library = true;
                         }

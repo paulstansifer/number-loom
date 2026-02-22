@@ -20,6 +20,7 @@ fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &Document) {
             // Tiebreak to avoid flickering:
             .sorted_by_key(|((r, g, b), _)| (*r as u32) * 256 * 256 + (*g as u32) * 256 + *b as u32)
             .sorted_by_key(|(_, count)| *count)
+            .sorted_by_key(|((r, g, b), _)| (*r == 255 && *g == 255 && *b == 255) as u32)
             .rev()
         {
             let color = egui::Color32::from_rgb(*r, *g, *b);
