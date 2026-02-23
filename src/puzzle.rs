@@ -708,18 +708,21 @@ impl Document {
         self.p.as_ref()
     }
 
-    // TODO: this is just for debugging
-    pub fn any_unsolved(&self) -> bool {
-        if let Some(solution) = &self.s {
-            for line in &solution.grid {
-                for &color in line {
-                    if color == UNSOLVED {
-                        return true;
-                    }
+    // Returns true if a solution is present or can uniquely be solved from the puzzle,
+    // and thus is editable.
+    // (So an ambiguous puzzle saved in a format that saved the solution will return true)
+    pub fn has_complete_solution(&mut self) -> anyhow::Result<bool> {
+        let solution = self.solution()?;
+
+        for line in &solution.grid {
+            for &color in line {
+                if color == UNSOLVED {
+                    return Ok(false);
                 }
             }
         }
-        return false;
+
+        Ok(true)
     }
 
     pub fn dimensions(&self) -> (usize, usize) {

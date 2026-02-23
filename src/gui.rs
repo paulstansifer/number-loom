@@ -309,8 +309,16 @@ impl CanvasGui {
                 }
             }
             Action::ReplaceDocument { document } => {
-                self.document = document;
-                self.version += 1;
+                let mut document = document;
+                if let Ok(true) = document.has_complete_solution() {
+                    self.document = document;
+                    self.version += 1;
+                } else {
+                    // TODO: we should have a centralized message system, and not go through rfd!
+                    rfd::MessageDialog::new()
+                        .set_description("That puzzle has no solution")
+                        .show();
+                }
             }
         }
 

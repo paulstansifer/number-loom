@@ -1,5 +1,9 @@
 ## Changelog
 
+## 0.4.3 - future
+### Fixed
+ - Loading an unsolveable puzzle would cause a crash.
+
 ## 0.4.2 - 2025-12-18
 ### Fixed
  - A bug in scrubbing meant that we occasionally didn't make all the deductions we could.
