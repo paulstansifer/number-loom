@@ -405,7 +405,7 @@ square-only and untouched; a triddler never reaches them.
 * [x] Re-run `cargo bench` after the Phase 2 refactor to confirm no square-puzzle regression —
       done and the numbers are recorded above ("Line solving is already geometry-agnostic")
 * [x] Add triangular examples under `examples/` (`examples/triddler/blob.g`, pre-existing) and at
-      least one puzzle under `puzzles/` (`puzzles/hexagonal_garden.xml`)
+      least one puzzle under `puzzles/` (`puzzles/cut_and_polished.xml`)
 * [x] `lib.rs:17` — added `solve_triddler_examples` alongside `solve_examples`, walking
       `examples/triddler/` and asserting every `.g` file there solves completely by line logic.
       A separate test rather than folding into `solve_examples`, since that one pins an exact
@@ -415,8 +415,9 @@ square-only and untouched; a triddler never reaches them.
 
 ## Phase 7 — Docs
 
-* [ ] `DEVELOPING.md`: describe the coordinate scheme and the lane abstraction (this is the part
-      that will be non-obvious to a reader)
+* [x] `DEVELOPING.md`: describes the shape split (`LaneMap` vs `Geometry<K>`) at a high level and
+      points at `geometry.rs`'s doc comments (which already carry the coordinate scheme and lane
+      detail) and this file (design rationale/history), rather than duplicating either
 * [ ] `README.md`: mention triddler support
 * [ ] `CHANGELOG.md`
 * [ ] Note the Woven format break in the changelog
