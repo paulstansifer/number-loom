@@ -1406,6 +1406,12 @@ impl<K: GridKind> Geometry<K> {
         self.lanes.clue_set_counts()
     }
 
+    /// Unit vectors toward each neighbouring lane direction: 4 for a square, 6 for a triangle,
+    /// listed as `(backward, forward)` pairs per family to match `runs`.
+    pub fn arm_directions(&self) -> &'static [Vec2] {
+        K::arm_directions()
+    }
+
     /// Boundary lines between lanes, for drawing the grid.
     pub fn guides(&self) -> &[Guide] {
         &self.guides

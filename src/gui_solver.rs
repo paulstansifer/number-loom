@@ -17,7 +17,7 @@ pub struct SolveGui {
     pub line_analysis: Staleable<Option<(Vec<LineStatus>, Vec<LineStatus>)>>,
     pub render_style: RenderStyle,
     last_inferred_version: u32,
-    pub hovered_cell: Option<(usize, usize)>,
+    pub hovered_cell: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl SolveGui {
                 drag_start_color: current_color,
                 undo_stack: vec![],
                 redo_stack: vec![],
-                current_tool: Tool::OrthographicLine,
+                current_tool: Tool::LineAlongLane,
                 line_tool_state: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
@@ -120,10 +120,7 @@ impl SolveGui {
     }
 
     fn infer_background(&mut self) {
-        let Some(picture) = self.canvas.document.square_solution_mut() else {
-            return; // Solving a triddler in the GUI isn't wired up yet.
-        };
-        let mut grid = picture.to_partial();
+        let mut grid = self.canvas.document.solution_mut().to_partial();
 
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
@@ -131,13 +128,7 @@ impl SolveGui {
             for (index, cell) in grid.iter().enumerate() {
                 let current_color = picture.cells()[index];
                 if cell.is_known() && cell.known_or() != Some(current_color) {
-                    let (x, y) = match picture {
-                        crate::puzzle::DynSolution::Square(s) => {
-                            (index % s.x_size(), index / s.x_size())
-                        }
-                        crate::puzzle::DynSolution::Tri(_) => continue,
-                    };
-                    changes.insert((x, y), cell.known_or().unwrap());
+                    changes.insert(index as u32, cell.known_or().unwrap());
                 }
             }
 
@@ -165,41 +156,46 @@ impl SolveGui {
             let scale = 20.0;
             let plus_size = scale * 3.0;
 
-            if let Some((x, y)) = self.hovered_cell {
+            if let Some(cell) = self.hovered_cell {
                 let picture = self.canvas.document.try_solution().unwrap();
-                let Some(square) = picture.as_square() else {
-                    return; // The hexagonal version of this widget is still to come.
-                };
-                let (up, down, left, right) = square.count_contiguous(x, y);
+                let color = picture.cells()[cell as usize];
+                let rgb = picture.palette()[&color].rgb;
 
-                let color = square[(x, y)];
-                let rgb = square.palette[&color].rgb;
+                // One run per clue family: two arms each for a square grid, three for a triddler.
+                // `arm_directions` places them, so this becomes a hexagonal rosette by itself.
+                let runs = picture.runs_at_cell(cell);
+                let dirs = picture.arm_directions();
 
                 let (resp, painter) =
                     ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
 
                 let rect = resp.rect;
                 let size = Vec2::new(20.0, 20.0);
+                let center = rect.min + Vec2::new(scale, scale);
 
-                let up_rect = Rect::from_min_size(rect.min + Vec2::new(scale, 0.0), size);
-                let down_rect = Rect::from_min_size(rect.min + Vec2::new(scale, 2.0 * scale), size);
-                let mid_rect = Rect::from_min_size(rect.min + Vec2::new(20.0, 20.0), size);
-                let left_rect = Rect::from_min_size(rect.min + Vec2::new(0.0, scale), size);
-                let right_rect =
-                    Rect::from_min_size(rect.min + Vec2::new(2.0 * scale, scale), size);
+                // `arm_directions` lists each family's two directions adjacently, matching the
+                // `(backward, forward)` pairs `runs_at_cell` returns.
+                for (family, (back, forward)) in runs.iter().enumerate() {
+                    for (i, count) in [back, forward].into_iter().enumerate() {
+                        let Some(dir) = dirs.get(family * 2 + i) else {
+                            continue;
+                        };
+                        if *count == 0 {
+                            continue;
+                        }
+                        let at = center + Vec2::new(dir.x * scale, dir.y * scale);
+                        draw_string_in_box(
+                            ui,
+                            &painter,
+                            Rect::from_min_size(at, size),
+                            &count.to_string(),
+                            scale,
+                            rgb,
+                        );
+                    }
+                }
 
-                if up > 0 {
-                    draw_string_in_box(ui, &painter, up_rect, &up.to_string(), scale, rgb);
-                }
-                if down > 0 {
-                    draw_string_in_box(ui, &painter, down_rect, &down.to_string(), scale, rgb);
-                }
-                if left > 0 {
-                    draw_string_in_box(ui, &painter, left_rect, &left.to_string(), scale, rgb);
-                }
-                if right > 0 {
-                    draw_string_in_box(ui, &painter, right_rect, &right.to_string(), scale, rgb);
-                }
+                let mid_rect = Rect::from_min_size(center, size);
                 if color == UNSOLVED {
                     draw_string_in_box(ui, &painter, mid_rect, "?", scale, rgb);
                 } else {

@@ -173,4 +173,67 @@ mod tests {
             .to_vec();
         assert_eq!(redone_grid, modified_grid);
     }
+
+    /// A triddler must open in the editor and be paintable, just like a square puzzle. This is
+    /// the end-to-end check that the canvas sizing, the hit test and the render loop all agree
+    /// about a shape with three clue directions and triangular cells.
+    #[test]
+    fn test_editing_a_triddler() {
+        let doc = import::load_path(&"examples/triddler/blob.g".into(), None).unwrap();
+        let original = doc.try_solution().is_some();
+        assert!(!original, "an olsak file gives a puzzle, not a picture");
+
+        let nonogram_gui = NonogramGui::new(doc);
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui| {
+                CentralPanel::default().show(ctx, |ui| {
+                    nonogram_gui.main_ui(ctx, ui);
+                });
+            },
+            nonogram_gui,
+        );
+        harness.run();
+
+        let before = harness
+            .state()
+            .editor_gui
+            .document
+            .try_solution()
+            .unwrap()
+            .cells()
+            .to_vec();
+        assert_eq!(before.len(), 96, "a hexagon of side 4 has 6 * 4^2 cells");
+
+        // Somewhere inside this puzzle's (smaller) canvas.
+        let center = Pos2::new(220.0, 120.0);
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: center,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: center,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        harness.run();
+
+        let after = harness
+            .state()
+            .editor_gui
+            .document
+            .try_solution()
+            .unwrap()
+            .cells()
+            .to_vec();
+        assert_ne!(before, after, "clicking the canvas should paint a triangle");
+        assert_eq!(before.len(), after.len(), "painting must not resize");
+        assert_eq!(
+            before.iter().zip(&after).filter(|(a, b)| a != b).count(),
+            1,
+            "exactly one triangle should change"
+        );
+    }
 }

@@ -150,10 +150,23 @@ test, grid-line guides, clue-gutter anchors), `edge_neighbors` and per-family ru
 Outlines are now stored raw and normalized only for equality, so resizing no longer renumbers
 existing cells.
 
-**Still to do:** the GUI is unchanged and remains square-only. It reaches its data through
-`Document::square_solution_mut()`, which reports "the editor can't edit triddlers yet" through the
-status bar instead of panicking. Wiring the iterators and hit test into the canvas, six-way clue
-gutters, and the six-handle resizer are all still ahead.
+## Editing triddlers (done)
+
+The canvas now works for any shape: it sizes itself from `extent()`, draws through the row/cell
+iterators, hit-tests with `cell_at()`, and draws grid lines from `guides()`. Undo, the tools and
+the overlays are keyed by **dense cell index**, so they need no dispatch at all — coordinates
+appear only at the hit-test boundary. Flood fill uses the geometry's own adjacency (3 neighbours
+for a triangle, 4 for a square) and the line tool follows whichever lane joins the drag's
+endpoints, so it covers three directions on a triddler instead of two.
+
+`examples/triddler/blob.g` plus `tests/gui.rs::test_editing_a_triddler` cover this end to end:
+open a triddler in the editor, click the canvas, and exactly one triangle changes colour.
+
+**Still to do in the GUI:** clue gutters are still two axis-aligned rectangles, so solve mode
+shows a triddler's picture but none of its clues — `Geometry::gutters()` has the per-lane anchors
+and outward directions a six-way version needs, and `SolveGui::body`'s 2x2 layout grid is what has
+to change. The resizer is also still rows-and-columns only (`Geometry::resized` and `K::SIDES` are
+ready for the six-handle version), and the new-puzzle dialog can't offer a hexagon yet.
 
 ## Phase 1 — Data model
 

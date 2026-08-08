@@ -1,11 +1,4 @@
-use std::{
-    cell::RefCell,
-    cmp::{max, min},
-    collections::HashMap,
-    rc::Rc,
-    sync::mpsc,
-    time::Duration,
-};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::mpsc, time::Duration};
 
 use web_time::Instant;
 
@@ -13,7 +6,7 @@ use web_time::Instant;
 pub enum Tool {
     Pencil,
     FloodFill,
-    OrthographicLine,
+    LineAlongLane,
 }
 
 pub enum LibraryStatus {
@@ -262,7 +255,7 @@ pub struct CanvasGui {
     pub undo_stack: Vec<Action>,
     pub redo_stack: Vec<Action>,
     pub current_tool: Tool,
-    pub line_tool_state: Option<(usize, usize)>,
+    pub line_tool_state: Option<u32>,
     /// Indexed by dense cell index, like `Solution::cells`.
     pub solved_mask: Staleable<(String, Vec<bool>)>,
     pub disambiguator: Staleable<Disambiguator>,
@@ -293,8 +286,11 @@ pub struct NonogramGui {
 
 #[derive(Clone, Debug)]
 pub enum Action {
+    /// Keyed by dense cell index rather than by coordinate: every consumer wants a cell, and
+    /// indices make undo, the tools, and merging work for any shape with no dispatch at all.
+    /// Coordinates appear only at the hit-test boundary, as `DynCoord`.
     ChangeColor {
-        changes: HashMap<(usize, usize), Color>,
+        changes: HashMap<u32, Color>,
     },
     ReplaceDocument {
         document: Document,
@@ -313,17 +309,15 @@ pub enum ActionMood {
 impl CanvasGui {
     fn reversed(&self, action: &Action) -> Action {
         match action {
-            Action::ChangeColor { changes } => Action::ChangeColor {
-                changes: changes
-                    .keys()
-                    .map(|(x, y)| {
-                        (
-                            (*x, *y),
-                            self.document.try_solution().unwrap().as_square().unwrap()[(*x, *y)],
-                        )
-                    })
-                    .collect::<HashMap<_, _>>(),
-            },
+            Action::ChangeColor { changes } => {
+                let cells = self.document.try_solution().unwrap().cells();
+                Action::ChangeColor {
+                    changes: changes
+                        .keys()
+                        .map(|cell| (*cell, cells[*cell as usize]))
+                        .collect(),
+                }
+            }
             Action::ReplaceDocument { document: _ } => Action::ReplaceDocument {
                 document: self.document.clone(),
             },
@@ -343,38 +337,35 @@ impl CanvasGui {
                         changes: new_changes,
                     },
                 ) => {
-                    let Some(picture) = self.document.square_solution_mut() else {
-                        self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
-                        return Default::default();
-                    };
+                    let cells = self.document.solution_mut().cells_mut();
                     if mood == ReplaceAction {
-                        for ((x, y), _) in new_changes {
-                            changes.entry((*x, *y)).or_insert(picture[(*x, *y)]);
+                        for cell in new_changes.keys() {
+                            changes.entry(*cell).or_insert(cells[*cell as usize]);
                         }
-                        changes.retain(|(x, y), old_col| {
-                            if !new_changes.contains_key(&(*x, *y)) {
-                                picture[(*x, *y)] = *old_col;
+                        changes.retain(|cell, old_col| {
+                            if !new_changes.contains_key(cell) {
+                                cells[*cell as usize] = *old_col;
                                 self.version += 1;
                                 false
                             } else {
                                 true
                             }
                         });
-                        for ((x, y), col) in new_changes {
-                            if picture[(*x, *y)] != *col {
-                                picture[(*x, *y)] = *col;
+                        for (cell, col) in new_changes {
+                            if cells[*cell as usize] != *col {
+                                cells[*cell as usize] = *col;
                                 self.version += 1;
                             }
                         }
                         return;
                     } else {
-                        for ((x, y), col) in new_changes {
-                            if !changes.contains_key(&(*x, *y)) {
-                                changes.insert((*x, *y), picture[(*x, *y)]);
+                        for (cell, col) in new_changes {
+                            if !changes.contains_key(cell) {
+                                changes.insert(*cell, cells[*cell as usize]);
                                 // Crucially, this only fires on a new cell!
                                 // Otherwise, we'd be flipping cells back and forth as long as we
                                 // were in them!
-                                picture[(*x, *y)] = *col;
+                                cells[*cell as usize] = *col;
                                 self.version += 1;
                             }
                         }
@@ -392,13 +383,10 @@ impl CanvasGui {
         let version_before = self.version;
         match action {
             Action::ChangeColor { changes } => {
-                let Some(picture) = self.document.square_solution_mut() else {
-                    self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
-                    return Default::default();
-                };
-                for ((x, y), new_color) in changes {
-                    if picture[(x, y)] != new_color {
-                        picture[(x, y)] = new_color;
+                let cells = self.document.solution_mut().cells_mut();
+                for (cell, new_color) in changes {
+                    if cells[cell as usize] != new_color {
+                        cells[cell as usize] = new_color;
                         self.version += 1;
                     }
                 }
@@ -484,10 +472,10 @@ impl CanvasGui {
             .on_hover_text("Pencil");
             ui.selectable_value(
                 &mut self.current_tool,
-                Tool::OrthographicLine,
+                Tool::LineAlongLane,
                 egui::RichText::new(icons::ICON_LINE_START).size(24.0),
             )
-            .on_hover_text("Orthographic line");
+            .on_hover_text("Line along a row, column or diagonal");
             ui.selectable_value(
                 &mut self.current_tool,
                 Tool::FloodFill,
@@ -497,41 +485,28 @@ impl CanvasGui {
         });
     }
 
-    fn flood_fill(&mut self, x: usize, y: usize) {
-        let Some(picture) = self.document.square_solution_mut() else {
-            self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
-            return Default::default();
-        };
-        let target_color = picture[(x, y)];
+    fn flood_fill(&mut self, start: u32) {
+        let picture = self.document.solution_mut();
+        let target_color = picture.cells()[start as usize];
         if target_color == self.current_color {
             return; // Nothing to do
         }
 
         let mut changes = HashMap::new();
         let mut q = std::collections::VecDeque::new();
-
-        q.push_back((x, y));
         let mut visited = std::collections::HashSet::new();
-        visited.insert((x, y));
 
-        let x_size = picture.x_size();
-        let y_size = picture.y_size();
+        q.push_back(start);
+        visited.insert(start);
 
-        while let Some((px, py)) = q.pop_front() {
-            changes.insert((px, py), self.current_color);
+        while let Some(cell) = q.pop_front() {
+            changes.insert(cell, self.current_color);
 
-            let neighbors = [
-                (px.wrapping_sub(1), py),
-                (px + 1, py),
-                (px, py.wrapping_sub(1)),
-                (px, py + 1),
-            ];
-
-            for (nx, ny) in neighbors {
-                if nx < x_size && ny < y_size && picture[(nx, ny)] == target_color {
-                    if visited.insert((nx, ny)) {
-                        q.push_back((nx, ny));
-                    }
+            // Adjacency comes from the geometry, so a triangle's three edge neighbours work
+            // exactly as a square's four do.
+            for neighbor in picture.neighbor_cells(cell) {
+                if picture.cells()[neighbor as usize] == target_color && visited.insert(neighbor) {
+                    q.push_back(neighbor);
                 }
             }
         }
@@ -541,63 +516,57 @@ impl CanvasGui {
         }
     }
 
+    /// Draw the picture and handle pointer input. Returns the hovered cell, if any.
+    ///
+    /// Shape-specific work happens in exactly two places: the hit test, and the render loop.
+    /// Everything else — the tools, undo, the overlays — works in dense cell indices and is the
+    /// same for every shape.
     pub fn canvas(
         &mut self,
         ui: &mut egui::Ui,
         scale: f32,
         render_style: RenderStyle,
-    ) -> Option<(usize, usize)> {
-        let Some(picture) = self.document.square_solution_mut() else {
-            self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
-            return Default::default();
-        };
-        let x_size = picture.x_size();
-        let y_size = picture.y_size();
+    ) -> Option<u32> {
+        let extent = self.document.solution_mut().extent();
 
         let (mut response, painter) = ui.allocate_painter(
-            Vec2::new(scale * x_size as f32, scale * y_size as f32) + Vec2::new(2.0, 2.0), // for the border
+            Vec2::new(scale * extent.x, scale * extent.y) + Vec2::new(2.0, 2.0), // for the border
             egui::Sense::click_and_drag(),
         );
 
         let canvas_without_border = response.rect.shrink(1.0);
 
+        // One abstract unit is one cell edge, so this is a plain uniform scale.
         let to_screen = egui::emath::RectTransform::from_to(
-            Rect::from_min_size(Pos2::ZERO, Vec2::new(x_size as f32, y_size as f32)),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(extent.x, extent.y)),
             canvas_without_border,
         );
         let from_screen = to_screen.inverse();
 
-        let mut hovered_cell = None;
-        if let Some(pointer_pos) = response.hover_pos() {
-            let canvas_pos = from_screen * pointer_pos;
-            let x = canvas_pos.x as usize;
-            let y = canvas_pos.y as usize;
-            if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
-                hovered_cell = Some((x, y));
-            }
-        }
+        let cell_under = |picture: &crate::puzzle::DynSolution, pos: Pos2| -> Option<u32> {
+            let p = from_screen * pos;
+            picture
+                .cell_at(crate::layout::Point::new(p.x, p.y))
+                .and_then(|coord| picture.cell_of(coord))
+        };
+
+        let hovered_cell = response
+            .hover_pos()
+            .and_then(|pos| cell_under(self.document.solution_mut(), pos));
 
         if let Some(pointer_pos) = response.interact_pointer_pos() {
-            let canvas_pos = from_screen * pointer_pos;
-            let x = canvas_pos.x as usize;
-            let y = canvas_pos.y as usize;
-
-            if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
+            let picture = self.document.solution_mut();
+            if let Some(cell) = cell_under(picture, pointer_pos) {
                 let pointer = &ui.input(|i| i.pointer.clone());
                 let paint_color = if pointer.middle_down() {
-                    if self
-                        .document
-                        .solution_mut()
-                        .palette()
-                        .contains_key(&UNSOLVED)
-                    {
+                    if picture.palette().contains_key(&UNSOLVED) {
                         UNSOLVED
                     } else {
                         BACKGROUND
                     }
                 } else if pointer.secondary_down() {
                     BACKGROUND
-                } else if picture[(x, y)] != self.current_color {
+                } else if picture.cells()[cell as usize] != self.current_color {
                     self.current_color
                 } else {
                     BACKGROUND
@@ -612,53 +581,37 @@ impl CanvasGui {
                             ActionMood::Merge
                         };
 
-                        let mut changes = HashMap::new();
-                        changes.insert((x, y), self.drag_start_color);
-                        self.perform(Action::ChangeColor { changes }, mood);
+                        self.perform(
+                            Action::ChangeColor {
+                                changes: [(cell, self.drag_start_color)].into(),
+                            },
+                            mood,
+                        );
                     }
                     Tool::FloodFill => {
                         if pointer.any_click() {
                             let original_color = self.current_color;
                             self.current_color = paint_color;
-                            self.flood_fill(x, y);
+                            self.flood_fill(cell);
                             self.current_color = original_color;
                         }
                     }
-                    Tool::OrthographicLine => {
+                    Tool::LineAlongLane => {
                         if pointer.any_pressed() {
                             self.drag_start_color = paint_color;
-
-                            self.line_tool_state = Some((x, y));
+                            self.line_tool_state = Some(cell);
 
                             self.perform(
                                 Action::ChangeColor {
-                                    changes: [((x, y), self.drag_start_color)].into(),
+                                    changes: [(cell, self.drag_start_color)].into(),
                                 },
                                 ActionMood::Normal,
                             );
                         } else if pointer.any_down() {
-                            if let Some((start_x, start_y)) = self.line_tool_state {
-                                let mut new_points = HashMap::new();
-
-                                let horiz = x.abs_diff(start_x) > y.abs_diff(start_y);
-
-                                if horiz {
-                                    let xlo = min(start_x, x);
-                                    let xhi = max(start_x, x);
-                                    for xi in xlo..=xhi {
-                                        new_points.insert((xi, start_y), self.drag_start_color);
-                                    }
-                                } else {
-                                    let ylo = min(start_y, y);
-                                    let yhi = max(start_y, y);
-                                    for yi in ylo..=yhi {
-                                        new_points.insert((start_x, yi), self.drag_start_color);
-                                    }
-                                }
+                            if let Some(start) = self.line_tool_state {
+                                let changes = self.line_between(start, cell);
                                 self.perform(
-                                    Action::ChangeColor {
-                                        changes: new_points,
-                                    },
+                                    Action::ChangeColor { changes },
                                     ActionMood::ReplaceAction,
                                 );
                             }
@@ -673,50 +626,50 @@ impl CanvasGui {
         let mut shapes = vec![];
         let disambiguator = self.disambiguator.get_if_fresh(self.version);
         let disambig_report = disambiguator.as_ref().and_then(|d| d.report.as_ref());
+        let solved_mask = self.solved_mask.get_if_fresh(self.version);
+        let overlays_suppress_unsolved = disambig_report.is_some()
+            || disambiguator.map_or(false, |d| d.progress > 0.0 && d.progress < 1.0);
 
-        let picture = self.document.try_solution().unwrap().as_square().unwrap();
-        for y in 0..y_size {
-            for x in 0..x_size {
-                let index = picture.geometry.cell((x, y)).unwrap() as usize;
-                let color_info = &picture.palette[&picture.cells[index]];
-                let solved = self
-                    .solved_mask
-                    .get_if_fresh(self.version)
-                    .map_or(true, |sm| sm.1[index])
-                    || disambig_report.is_some()
-                    || disambiguator.map_or(false, |d| d.progress > 0.0 && d.progress < 1.0);
-                let mut dr = (&picture.palette[&BACKGROUND], 1.0);
+        let picture = self.document.try_solution().unwrap();
+        let palette = picture.palette();
 
-                if let Some(disambig_report) = disambig_report.as_ref() {
-                    let (c, score) = disambig_report[index];
-                    dr = (&picture.palette[&c], score);
-                }
-                for shape in cell_shape(color_info, solved, dr, x, y, &to_screen, render_style) {
-                    shapes.push(shape);
+        // The one place the shape matters when drawing. After this match the loop is fully
+        // monomorphized: the inner iterator just walks a slice and advances an `f32`.
+        crate::with_solution!(picture, |sol| {
+            for row in sol.geometry.rows() {
+                for drawn in row.cells() {
+                    let index = drawn.cell as usize;
+                    let color_info = &palette[&sol.cells[index]];
+                    let solved =
+                        solved_mask.map_or(true, |sm| sm.1[index]) || overlays_suppress_unsolved;
+                    let mut dr = (&palette[&BACKGROUND], 1.0);
+                    if let Some(report) = disambig_report.as_ref() {
+                        let (c, score) = report[index];
+                        dr = (&palette[&c], score);
+                    }
+                    shapes.extend(cell_shape(
+                        color_info,
+                        solved,
+                        dr,
+                        drawn.shape,
+                        drawn.origin,
+                        &to_screen,
+                        render_style,
+                    ));
                 }
             }
-        }
+        });
 
-        // Grid lines:
-        for y in 0..=y_size {
+        // Grid lines, precomputed by the geometry: one boundary per lane, with every fifth one
+        // heavier — which for a triddler means every fifth lane *within a family*.
+        for guide in picture.guides() {
             let points = [
-                to_screen * Pos2::new(0.0, y as f32),
-                to_screen * Pos2::new(x_size as f32, y as f32),
+                to_screen * Pos2::new(guide.from.x, guide.from.y),
+                to_screen * Pos2::new(guide.to.x, guide.to.y),
             ];
             let stroke = egui::Stroke::new(
                 1.0,
-                egui::Color32::from_black_alpha(if y % 5 == 0 { 64 } else { 16 }),
-            );
-            shapes.push(egui::Shape::line_segment(points, stroke));
-        }
-        for x in 0..=x_size {
-            let points = [
-                to_screen * Pos2::new(x as f32, 0.0),
-                to_screen * Pos2::new(x as f32, y_size as f32),
-            ];
-            let stroke = egui::Stroke::new(
-                1.0,
-                egui::Color32::from_black_alpha(if x % 5 == 0 { 64 } else { 16 }),
+                egui::Color32::from_black_alpha(if guide.emphasis { 64 } else { 16 }),
             );
             shapes.push(egui::Shape::line_segment(points, stroke));
         }
@@ -725,6 +678,44 @@ impl CanvasGui {
         response.mark_changed();
 
         hovered_cell
+    }
+
+    /// The cells between two points along whichever lane best matches the drag.
+    ///
+    /// A square grid offers two directions through a cell; a triddler offers three. Picking the
+    /// family whose lane actually contains both endpoints generalizes the old "is this drag more
+    /// horizontal than vertical?" test.
+    fn line_between(&mut self, start: u32, end: u32) -> HashMap<u32, Color> {
+        let picture = self.document.solution_mut();
+        let lanes = picture.lane_map();
+
+        let mut best: Option<(usize, usize, usize)> = None; // (lane, from, to)
+        for membership in lanes.memberships(start) {
+            let cells = &lanes.lane(membership.lane as usize).cells;
+            if let Some(end_pos) = cells.iter().position(|c| *c == end) {
+                let from = (membership.position as usize).min(end_pos);
+                let to = (membership.position as usize).max(end_pos);
+                // Prefer the longest run, so a drag along a lane wins over a one-cell overlap
+                // with a lane that merely happens to touch both ends.
+                if best.map_or(true, |(_, bf, bt)| to - from > bt - bf) {
+                    best = Some((membership.lane as usize, from, to));
+                }
+            }
+        }
+
+        let mut changes = HashMap::new();
+        match best {
+            Some((lane, from, to)) => {
+                for cell in &lanes.lane(lane).cells[from..=to] {
+                    changes.insert(*cell, self.drag_start_color);
+                }
+            }
+            // No lane joins them, so just paint the endpoint.
+            None => {
+                changes.insert(end, self.drag_start_color);
+            }
+        }
+        changes
     }
 
     fn palette_editor(&mut self, ui: &mut egui::Ui, read_only: bool) {
@@ -813,12 +804,9 @@ impl CanvasGui {
         }
         if add_color {
             let mut new_document = self.document.clone();
-            let Some(new_picture) = new_document.square_solution_mut() else {
-                self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
-                return;
-            };
-            let next_color = Color(new_picture.palette.keys().map(|k| k.0).max().unwrap() + 1);
-            new_picture.palette.insert(
+            let new_picture = new_document.solution_mut();
+            let next_color = Color(new_picture.palette().keys().map(|k| k.0).max().unwrap() + 1);
+            new_picture.palette_mut().insert(
                 next_color,
                 ColorInfo {
                     ch: (next_color.0 + 65) as char, // TODO: will break chargrid export
@@ -859,12 +847,15 @@ pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui
     Shape::convex_polygon(points, color, (0.0, color))
 }
 
+/// Build the shapes for one cell. `shape` and `origin` come from the geometry, so a triangle is
+/// drawn as a triangle and every overlay lands on the real centroid rather than the middle of a
+/// bounding box.
 fn cell_shape(
     ci: &ColorInfo,
     solved: bool,
     disambig: (&ColorInfo, f32),
-    x: usize,
-    y: usize,
+    shape: crate::layout::CellShape,
+    origin: crate::layout::Point,
     to_screen: &egui::emath::RectTransform,
     render_style: RenderStyle,
 ) -> Vec<egui::Shape> {
@@ -879,32 +870,41 @@ fn cell_shape(
         egui::Color32::from_rgb(r, g, b)
     };
 
-    let mut actual_cell = match ci.corner {
-        None => egui::Shape::rect_filled(
-            Rect::from_min_size(Pos2::new(0.3, 0.0), to_screen.scale()),
-            0.0,
-            color,
-        ),
-        Some(corner) => triangle_shape(corner, color, to_screen.scale()),
+    let screen = |p: crate::layout::Point| to_screen * Pos2::new(p.x, p.y);
+    let polygon = |(points, n): ([crate::layout::Point; 4], usize), fill| {
+        egui::Shape::convex_polygon(
+            points[..n].iter().map(|p| screen(*p)).collect(),
+            fill,
+            egui::Stroke::default(),
+        )
     };
 
-    actual_cell.translate((to_screen * Pos2::new(x as f32, y as f32)).to_vec2());
+    // A `Corner` colour is a half-square used by trianogram clues, which is a different thing
+    // from a triangular *cell* and only ever appears on a square grid.
+    let mut res = vec![match ci.corner {
+        None => polygon(shape.vertices(origin), color),
+        Some(corner) => {
+            let mut half = triangle_shape(corner, color, to_screen.scale());
+            half.translate(screen(origin).to_vec2());
+            half
+        }
+    }];
 
-    let mut res = vec![actual_cell];
+    let center = screen(shape.center(origin));
+    let unit = to_screen.scale().x;
 
     if ci.color == BACKGROUND {
-        let center = to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
         match render_style {
             RenderStyle::TraditionalDots => {
                 res.push(egui::Shape::circle_filled(
                     center,
-                    to_screen.scale().x * 0.1,
+                    unit * 0.1,
                     egui::Color32::from_rgb(190, 190, 190),
                 ));
             }
             RenderStyle::TraditionalXes => {
                 let stroke = egui::Stroke::new(2.0, Color32::from_rgb(190, 190, 190));
-                let radius = to_screen.scale().x * 0.2;
+                let radius = unit * 0.2;
                 res.push(egui::Shape::line_segment(
                     [
                         center + Vec2::new(-radius, -radius),
@@ -925,34 +925,24 @@ fn cell_shape(
     }
 
     if ci.color == UNSOLVED && render_style == RenderStyle::Experimental {
-        res.push(egui::Shape::convex_polygon(
-            vec![
-                to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 0.0),
-                to_screen * Pos2::new(x as f32 + 1.0, y as f32 + 0.5),
-                to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 1.0),
-                to_screen * Pos2::new(x as f32 + 0.0, y as f32 + 0.5),
-            ],
+        res.push(polygon(
+            shape.shrunk(origin, 0.6),
             egui::Color32::from_rgb(230, 230, 230),
-            egui::Stroke::default(),
         ));
     }
 
     if !solved {
         res.push(egui::Shape::circle_filled(
-            to_screen * Pos2::new(x as f32 + 0.5, y as f32 + 0.5),
-            to_screen.scale().x * 0.3,
+            center,
+            unit * 0.3,
             egui::Color32::from_rgb(190, 190, 190),
         ))
     }
 
     if disambig.1 < 1.0 {
         let (r, g, b) = disambig.0.rgb;
-        res.push(egui::Shape::rect_filled(
-            Rect::from_min_size(
-                to_screen * Pos2::new(x as f32 + 0.25, y as f32 + 0.25),
-                to_screen.scale() * 0.5,
-            ),
-            0.0,
+        res.push(polygon(
+            shape.shrunk(origin, 0.5),
             Color32::from_rgba_unmultiplied(r, g, b, ((1.0 - disambig.1) * 255.0) as u8),
         ));
     }
@@ -963,7 +953,20 @@ fn cell_shape(
 impl NonogramGui {
     pub fn new(mut document: Document) -> Self {
         // (Public for testing)
-        let picture = document.try_solution().unwrap();
+        //
+        // A document loaded from a clue-only format (olsak, webpbn) has no picture yet, so solve
+        // for one. A self-contradictory puzzle can't produce one at all; rather than panicking,
+        // fall back to a blank canvas and say so once the status cell exists.
+        let mut load_error = None;
+        if let Err(e) = document.solution() {
+            load_error = Some(format!("could not solve this puzzle: {e}"));
+            document = Document::from_solution(
+                DynSolution::Square(Solution::blank_bw(20, 20)),
+                document.file.clone(),
+            );
+        }
+
+        let picture = document.try_solution().expect("just ensured there is one");
         let solved_mask = vec![true; picture.cells().len()];
 
         let mut current_color = BACKGROUND;
@@ -999,7 +1002,13 @@ impl NonogramGui {
                     val: "".to_string(),
                     version: 0,
                 },
-                status: StatusCell::new(),
+                status: {
+                    let status = StatusCell::new();
+                    if let Some(message) = load_error {
+                        status.set(StatusMessage::error(message));
+                    }
+                    status
+                },
                 progress: Rc::new(RefCell::new(None)),
             },
             scale: 16.0,

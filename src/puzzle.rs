@@ -617,6 +617,30 @@ impl DynSolution {
         }
     }
 
+    /// Cells sharing an edge with this one: 4 for a square, 3 for a triangle.
+    pub fn neighbor_cells(&self, cell: u32) -> Vec<u32> {
+        with_solution!(self, |s| s.geometry.neighbor_cells(cell).collect())
+    }
+
+    /// Unit vectors toward each neighbouring lane direction, as `(backward, forward)` pairs per
+    /// family — matching what `runs_at_cell` returns.
+    pub fn arm_directions(&self) -> &'static [crate::layout::Vec2] {
+        with_solution!(self, |s| s.geometry.arm_directions())
+    }
+
+    /// Boundary lines between lanes, in abstract units, for drawing the grid.
+    pub fn guides(&self) -> &[crate::layout::Guide] {
+        with_solution!(self, |s| s.geometry.guides())
+    }
+
+    /// How far a run of the same colour extends from a cell along each clue family.
+    pub fn runs_at_cell(&self, cell: u32) -> Vec<(usize, usize)> {
+        with_solution!(self, |s| {
+            let target = s.cells[cell as usize];
+            s.geometry.runs(cell, |c| s.cells[c as usize] == target)
+        })
+    }
+
     /// The square picture, or `None` for a triddler. The one place code that only understands
     /// rows and columns is allowed to narrow.
     pub fn as_square(&self) -> Option<&Solution<Square>> {
