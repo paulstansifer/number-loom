@@ -28,7 +28,11 @@ pub enum RenderStyle {
 }
 
 impl SolveGui {
-    pub fn new(mut document: Document, status: crate::gui::SharedStatus) -> Self {
+    pub fn new(
+        mut document: Document,
+        status: crate::gui::SharedStatus,
+        progress: crate::gui::SharedProgress,
+    ) -> Self {
         let mut working_doc = document.clone();
         for line in &mut working_doc.solution_mut().grid {
             for cell in line {
@@ -85,6 +89,7 @@ impl SolveGui {
                     version: 0,
                 },
                 status,
+                progress,
             },
             clues,
             intended_solution: document.take_solution().unwrap(),

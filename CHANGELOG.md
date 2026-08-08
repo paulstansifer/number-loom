@@ -1,8 +1,11 @@
 ## Changelog
 
 ## 0.4.3 - future
+### Added
+ - Added a status bar to the GUI
 ### Fixed
  - Loading an unsolveable puzzle would cause a crash.
+ - Removed various panics on malformed input.
 
 ## 0.4.2 - 2025-12-18
 ### Fixed

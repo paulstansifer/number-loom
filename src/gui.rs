@@ -4,7 +4,10 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::mpsc,
+    time::Duration,
 };
+
+use web_time::Instant;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Tool {
@@ -41,9 +44,49 @@ impl StatusMessage {
     }
 }
 
+const STATUS_GRACE_PERIOD: Duration = Duration::from_secs(1);
+
 // Shared between `CanvasGui`s so that the editor and the solver (which have separate
 // `CanvasGui`s) can show messages in the same status bar.
-pub type SharedStatus = Rc<RefCell<Option<StatusMessage>>>;
+pub struct StatusCell {
+    // The `Instant` is when the message was set: for the first `STATUS_GRACE_PERIOD` after that,
+    // `maybe_clear_on_dirty` calls are ignored, so a message doesn't disappear before the user
+    // has had a chance to read it.
+    inner: RefCell<Option<(StatusMessage, Instant)>>,
+}
+
+impl StatusCell {
+    pub fn new() -> Rc<Self> {
+        Rc::new(StatusCell {
+            inner: RefCell::new(None),
+        })
+    }
+
+    pub fn set(&self, message: StatusMessage) {
+        *self.inner.borrow_mut() = Some((message, Instant::now()));
+    }
+
+    pub fn get(&self) -> Option<StatusMessage> {
+        self.inner.borrow().as_ref().map(|(message, _)| message.clone())
+    }
+
+    // Called when something dirties the editor (or otherwise makes the current message stale);
+    // clears the message, unless it was set too recently for the user to have read it yet.
+    pub fn maybe_clear_on_dirty(&self) {
+        let mut inner = self.inner.borrow_mut();
+        if let Some((_, set_at)) = *inner {
+            if set_at.elapsed() >= STATUS_GRACE_PERIOD {
+                *inner = None;
+            }
+        }
+    }
+}
+
+pub type SharedStatus = Rc<StatusCell>;
+
+// Shared the same way as `SharedStatus`, for a progress bar in the status bar. `Some(fraction)`
+// (0.0 to 1.0) while a long-running task is in progress, `None` otherwise.
+pub type SharedProgress = Rc<RefCell<Option<f32>>>;
 
 use crate::{
     export::to_bytes,
@@ -216,6 +259,7 @@ pub struct CanvasGui {
     pub disambiguator: Staleable<Disambiguator>,
     pub id: Staleable<String>,
     pub status: SharedStatus,
+    pub progress: SharedProgress,
 }
 
 pub struct NonogramGui {
@@ -328,6 +372,7 @@ impl CanvasGui {
 
         let reversed_action = self.reversed(&action);
 
+        let version_before = self.version;
         match action {
             Action::ChangeColor { changes } => {
                 let picture = self.document.solution_mut();
@@ -344,10 +389,13 @@ impl CanvasGui {
                     self.document = document;
                     self.version += 1;
                 } else {
-                    *self.status.borrow_mut() =
-                        Some(StatusMessage::error("That puzzle has no solution"));
+                    self.status
+                        .set(StatusMessage::error("That puzzle has no solution"));
                 }
             }
+        }
+        if self.version != version_before {
+            self.status.maybe_clear_on_dirty();
         }
 
         match mood {
@@ -919,7 +967,8 @@ impl NonogramGui {
                     val: "".to_string(),
                     version: 0,
                 },
-                status: Rc::new(RefCell::new(None)),
+                status: StatusCell::new(),
+                progress: Rc::new(RefCell::new(None)),
             },
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
@@ -1117,7 +1166,7 @@ impl NonogramGui {
             self.editor_gui
                 .disambiguator
                 .get_or_refresh(self.editor_gui.version, Disambiguator::new)
-                .disambig_widget(&picture, &self.editor_gui.status, ui);
+                .disambig_widget(&picture, &self.editor_gui.status, &self.editor_gui.progress, ui);
 
             ui.separator();
 
@@ -1189,8 +1238,9 @@ impl NonogramGui {
                         .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
                 }
                 Err(e) => {
-                    *self.editor_gui.status.borrow_mut() =
-                        Some(StatusMessage::error(format!("Error loading file: {:?}", e)));
+                    self.editor_gui
+                        .status
+                        .set(StatusMessage::error(format!("Error loading file: {:?}", e)));
                 }
             }
         }
@@ -1202,6 +1252,7 @@ impl NonogramGui {
         self.solve_gui = Some(crate::gui_solver::SolveGui::new(
             self.editor_gui.document.clone(),
             Rc::clone(&self.editor_gui.status),
+            Rc::clone(&self.editor_gui.progress),
         ));
     }
 
@@ -1405,12 +1456,10 @@ impl NonogramGui {
                                     next_enter_solve_mode = true;
                                 }
                                 Err(e) => {
-                                    *self.editor_gui.status.borrow_mut() = Some(
-                                        StatusMessage::error(format!(
-                                            "Error loading WOVEN puzzle: {:?}",
-                                            e
-                                        )),
-                                    );
+                                    self.editor_gui.status.set(StatusMessage::error(format!(
+                                        "Error loading WOVEN puzzle: {:?}",
+                                        e
+                                    )));
                                 }
                             }
                         }
@@ -1471,8 +1520,9 @@ impl NonogramGui {
                         }
 
                         if let Ok(Err(e)) = self.save_result_receiver.try_recv() {
-                            *self.editor_gui.status.borrow_mut() =
-                                Some(StatusMessage::error(format!("Error saving file: {:?}", e)));
+                            self.editor_gui
+                                .status
+                                .set(StatusMessage::error(format!("Error saving file: {:?}", e)));
                         }
                     });
             }
@@ -1541,18 +1591,30 @@ impl eframe::App for NonogramGui {
         ctx.set_style(style);
 
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            // `editor_gui.status` is shared (via `Rc<RefCell<_>>`) with `solve_gui.canvas.status`,
-            // so this shows the latest message regardless of which mode is active.
+            // `editor_gui.status`/`editor_gui.progress` are shared (via `Rc<RefCell<_>>`) with
+            // `solve_gui.canvas`, so this shows the latest message/progress regardless of which
+            // mode is active.
             ui.horizontal(|ui| {
-                if let Some(status) = self.editor_gui.status.borrow().as_ref() {
+                // Reserves a consistent height for the bar even when there's nothing to show,
+                // so the rest of the UI doesn't jump around as messages come and go.
+                ui.label("");
+
+                if let Some(progress) = *self.editor_gui.progress.borrow() {
+                    // ~50% wider than the sidebar (150.0) is by default.
+                    ui.add(
+                        egui::ProgressBar::new(progress)
+                            .animate(true)
+                            .desired_width(225.0),
+                    );
+                }
+
+                if let Some(status) = self.editor_gui.status.get() {
                     let color = if status.is_error {
                         Color32::DARK_RED
                     } else {
                         ui.visuals().text_color()
                     };
                     ui.colored_label(color, &status.text);
-                } else {
-                    ui.label("");
                 }
             });
         });
@@ -1589,9 +1651,15 @@ impl Disambiguator {
         self.progress = 0.0;
     }
 
-    pub fn disambig_widget(&mut self, picture: &Solution, status: &SharedStatus, ui: &mut egui::Ui) {
-        while let Ok(progress) = self.progress_r.try_recv() {
-            self.progress = progress;
+    pub fn disambig_widget(
+        &mut self,
+        picture: &Solution,
+        status: &SharedStatus,
+        progress: &SharedProgress,
+        ui: &mut egui::Ui,
+    ) {
+        while let Ok(p) = self.progress_r.try_recv() {
+            self.progress = p;
         }
         let report_running = self.progress > 0.0 && self.progress < 1.0;
 
@@ -1617,10 +1685,12 @@ impl Disambiguator {
             }
         }
         if let Ok(result) = self.report_r.try_recv() {
+            // Clear any stale message (e.g. a load error from before) now that disambiguation
+            // has something new to say (or, for `Report`, nothing to say).
+            status.maybe_clear_on_dirty();
             match result {
                 DisambigResult::Unnecessary => {
-                    *status.borrow_mut() =
-                        Some(StatusMessage::info("Disambiguation is unnecessary"));
+                    status.set(StatusMessage::info("Disambiguation is unnecessary"));
                 }
                 DisambigResult::Report(report) => {
                     self.report = Some(report);
@@ -1628,7 +1698,12 @@ impl Disambiguator {
             }
         }
 
-        ui.add(egui::ProgressBar::new(self.progress).animate(report_running));
+        *progress.borrow_mut() = if self.progress > 0.0 && self.progress < 1.0 {
+            Some(self.progress)
+        } else {
+            None
+        };
+
         if ui
             .add_enabled(self.report.is_some(), egui::Button::new("Clear"))
             .clicked()
