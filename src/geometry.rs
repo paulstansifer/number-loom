@@ -1594,11 +1594,8 @@ impl<'a, K: GridKind> Iterator for CellIter<'a, K> {
 
 impl<'a, K: GridKind> ExactSizeIterator for CellIter<'a, K> {}
 
-/// One boundary line per lane, plus a closing one per family.
-///
-/// A lane's outer edge is the union of its cells' bounding boxes projected onto the lane's
-/// direction, which for both kinds is just the segment from the first cell's leading corner to
-/// the last cell's trailing corner.
+/// One boundary line before each lane, plus one closing line after the family's last lane —
+/// `lane_count(family) + 1` guides per family in all, same as a square grid's `0..=size` gridlines.
 fn build_guides<K: GridKind>(
     dims: &K::Dims,
     lookup: &K::Lookup,
@@ -1607,86 +1604,111 @@ fn build_guides<K: GridKind>(
 ) -> Vec<Guide> {
     let origin = |c: u32| K::cell_origin(dims, lookup, coords[c as usize]);
     let shape = |c: u32| K::cell_shape(coords[c as usize]);
-    let lane_center = |lane: usize| -> Option<Point> {
-        let cells = &lanes.lane(lane).cells;
-        cells.first().map(|c| shape(*c).center(origin(*c)))
-    };
 
     let mut res = vec![];
     for family in 0..lanes.family_count() {
         let family_lanes: Vec<usize> = lanes.family(family).collect();
+        let Some(&first_lane) = family_lanes.first() else {
+            continue;
+        };
+        let Some(&ref_cell) = lanes.lane(first_lane).cells.first() else {
+            continue;
+        };
+        let ref_coord = coords[ref_cell as usize];
 
-        // The direction from one lane to the next within this family (e.g. row 0 toward row 1).
-        // Every guide in the family is oriented to face this way, so "the boundary before this
-        // lane" consistently means the same thing for every lane — and in particular, lane 0's
-        // guide is consistently the true outer edge rather than depending on which way an
-        // arbitrary perpendicular happened to point.
-        let t = family_lanes
-            .windows(2)
-            .find_map(|w| {
-                let (p0, p1) = (lane_center(w[0])?, lane_center(w[1])?);
-                let d = Vec2::new(p1.x - p0.x, p1.y - p0.y);
-                let len = (d.x * d.x + d.y * d.y).sqrt();
-                (len > 1e-6).then(|| Vec2::new(d.x / len, d.y / len))
-            })
-            .unwrap_or(Vec2::new(0.0, 1.0)); // A single-lane family has no "next" to orient by.
+        // Every lane in a family is a parallel line in the same lattice direction, so compute it
+        // once here rather than per lane. Two steps, not one, from a single reference coordinate:
+        // a single step's displacement depends on whether it starts from a ▲ or a ▼, so it isn't
+        // the lane's true direction on its own.
+        let stepped = K::step(K::step(ref_coord, family, true), family, true);
+        let (o0, o1) = (
+            K::cell_origin(dims, lookup, ref_coord),
+            K::cell_origin(dims, lookup, stepped),
+        );
+        let mut d = Vec2::new(o1.x - o0.x, o1.y - o0.y);
+        let len = (d.x * d.x + d.y * d.y).sqrt();
+        d = if len > 1e-6 {
+            Vec2::new(d.x / len, d.y / len)
+        } else {
+            Vec2::new(1.0, 0.0)
+        };
 
-        for (index, lane) in family_lanes.into_iter().enumerate() {
-            let cells = &lanes.lane(lane).cells;
-            let (Some(&first), Some(&last)) = (cells.first(), cells.last()) else {
-                continue;
-            };
-
-            // The lane's own direction, from its first cell's centre to its last. Used (rather
-            // than a fixed vertex index) so the guide runs parallel to the lane instead of
-            // connecting whichever corners happen to share an index — which for a square cell
-            // means "top-left of the first cell" to "bottom-left of the last", a diagonal that
-            // reads as a slight tilt across the whole grid.
-            let first_center = shape(first).center(origin(first));
-            let last_center = shape(last).center(origin(last));
-            let mut d = Vec2::new(
-                last_center.x - first_center.x,
-                last_center.y - first_center.y,
-            );
-            let len = (d.x * d.x + d.y * d.y).sqrt();
-            d = if len > 1e-6 {
-                Vec2::new(d.x / len, d.y / len)
-            } else {
-                Vec2::new(1.0, 0.0) // A single-cell lane has no real direction.
-            };
-            // Perpendicular to `d`, then flipped (if needed) to point the same way as `t` — so
-            // "against n" consistently means "facing the previous lane", for every family.
-            let mut n = Vec2::new(-d.y, d.x);
-            if n.x * t.x + n.y * t.y < 0.0 {
-                n = Vec2::new(-n.x, -n.y);
-            }
-
-            // The vertex on the `n`-side of the cell, breaking ties by `d` so the first cell
-            // contributes its backward corner and the last cell its forward one — together
-            // spanning the lane's full length rather than just one cell's width.
-            let edge_vertex = |cell: u32, forward: bool| -> Point {
-                let (points, count) = shape(cell).vertices(origin(cell));
-                let mut best = points[0];
-                let mut best_key = (f32::MAX, f32::MAX);
-                for p in &points[..count] {
-                    let n_dot = p.x * n.x + p.y * n.y;
-                    let d_dot = p.x * d.x + p.y * d.y;
-                    let key = (n_dot, if forward { -d_dot } else { d_dot });
-                    if key < best_key {
-                        best_key = key;
-                        best = *p;
-                    }
+        // The boundary at one end of a lane: `near` means "facing the previous lane" (or the
+        // grid's outer edge, for lane 0), `false` means "facing the next lane" (or the outer edge,
+        // for the last lane).
+        //
+        // A square cell has one edge on each side, contributed by every cell alike. A triangular
+        // cell has only one edge *total*, shared between exactly one of the two sides depending on
+        // whether it points up or down — a row's near (top) boundary is traced only by its
+        // down-triangles, its far (bottom) boundary only by its up-triangles. Mixing in the "wrong"
+        // orientation's cells doesn't just risk a slightly-off line: that cell has no edge on the
+        // wanted side at all, so its *other* two edges (belonging to the other two families) can
+        // easily be more extreme along `d` than the correct ones, producing a guide that cuts
+        // through the grid along entirely the wrong diagonal.
+        let lane_boundary = |cells: &[u32], near: bool| -> (Point, Point) {
+            let mut candidates: Vec<Point> = vec![];
+            for &cell in cells {
+                let s = shape(cell);
+                if !matches!(s, CellShape::Square) && s.triangle_edge_is_near(family) != near {
+                    continue;
                 }
-                best
-            };
+                let (a, b) = s.family_edge(origin(cell), family, near);
+                candidates.push(a);
+                candidates.push(b);
+            }
+            if candidates.is_empty() {
+                // Every cell in this (very short) lane has the "wrong" orientation for this side —
+                // only possible when the lane has just one cell. Its one edge for this family is
+                // still the geometrically correct boundary point, it's just also the far side.
+                for &cell in cells {
+                    let s = shape(cell);
+                    let (a, b) = s.family_edge(origin(cell), family, near);
+                    candidates.push(a);
+                    candidates.push(b);
+                }
+            }
+            let key = |p: &Point| p.x * d.x + p.y * d.y;
+            let from = *candidates
+                .iter()
+                .min_by(|a, b| key(a).partial_cmp(&key(b)).unwrap())
+                .unwrap();
+            let to = *candidates
+                .iter()
+                .max_by(|a, b| key(a).partial_cmp(&key(b)).unwrap())
+                .unwrap();
+            (from, to)
+        };
 
+        for (index, &lane) in family_lanes.iter().enumerate() {
+            let cells = &lanes.lane(lane).cells;
+            if cells.is_empty() {
+                continue;
+            }
+            let (from, to) = lane_boundary(cells, true);
             res.push(Guide {
-                from: edge_vertex(first, false),
-                to: edge_vertex(last, true),
+                from,
+                to,
                 family,
                 index,
                 emphasis: index % 5 == 0,
             });
+        }
+
+        // The far boundary of the very last lane: the far side of the whole family (the bottom of
+        // a square grid's rows, the right of its columns, or the far side of a triddler's last
+        // lane in each direction). Without this, that side of the grid has no line at all.
+        if let Some(&last_lane) = family_lanes.last() {
+            let cells = &lanes.lane(last_lane).cells;
+            if !cells.is_empty() {
+                let (from, to) = lane_boundary(cells, false);
+                res.push(Guide {
+                    from,
+                    to,
+                    family,
+                    index: family_lanes.len(),
+                    emphasis: family_lanes.len() % 5 == 0,
+                });
+            }
         }
     }
     res
@@ -1942,6 +1964,60 @@ mod typed_tests {
                 .collect();
             assert_eq!(seen, (0..geo.cell_count() as u32).collect::<Vec<_>>());
         }
+    }
+
+    /// Every individual triangle edge in the mesh — not just lane boundaries, but each cell's own
+    /// three sides, including the short diagonal edges at the ends of a lane where a ▲'s point
+    /// meets the adjacent family's guide — must be traced by some guide. This is deliberately
+    /// mapping-agnostic (it doesn't assume which family "should" cover which edge, just that one
+    /// of them does): a genuinely open gap in the mesh, or a guide that stops short of a corner,
+    /// shows up as an edge no guide covers, however it happens to occur.
+    fn assert_every_edge_is_covered<K: GridKind>(geo: &Geometry<K>) {
+        let on_segment = |from: Point, to: Point, p: Point| -> bool {
+            let (dx, dy) = (to.x - from.x, to.y - from.y);
+            let len2 = dx * dx + dy * dy;
+            if len2 < 1e-9 {
+                return (p.x - from.x).abs() < 1e-3 && (p.y - from.y).abs() < 1e-3;
+            }
+            let t = ((p.x - from.x) * dx + (p.y - from.y) * dy) / len2;
+            if !(-1e-3..=1.0 + 1e-3).contains(&t) {
+                return false;
+            }
+            let (px, py) = (from.x + t * dx, from.y + t * dy);
+            ((p.x - px).powi(2) + (p.y - py).powi(2)).sqrt() < 1e-3
+        };
+
+        for cell in 0..geo.cell_count() as u32 {
+            let (points, n) = geo.cell_shape(cell).vertices(geo.cell_origin(cell));
+            for i in 0..n {
+                let (a, b) = (points[i], points[(i + 1) % n]);
+                let covered = geo
+                    .guides()
+                    .iter()
+                    .any(|g| on_segment(g.from, g.to, a) && on_segment(g.from, g.to, b));
+                assert!(
+                    covered,
+                    "cell {cell} edge {i} ({a:?} - {b:?}) has no covering guide"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mesh_has_no_gaps() {
+        assert_every_edge_is_covered(&Geometry::<Square>::new(Rect {
+            width: 4,
+            height: 3,
+        }));
+        for side in 1..=4 {
+            assert_every_edge_is_covered(&Geometry::<Tri>::new(Outline::hexagon(side)));
+        }
+        // An off-centre outline, so the check isn't only exercised on a fully symmetric shape.
+        assert_every_edge_is_covered(&Geometry::<Tri>::new(Outline {
+            a: (0, 2),
+            b: (1, 3),
+            c: (-1, 2),
+        }));
     }
 
     /// The iterators' cheap incremental layout must match the authoritative per-coordinate one.
@@ -2325,11 +2401,10 @@ mod typed_tests {
     }
 
     #[test]
-    fn guides_and_gutters_cover_every_lane() {
+    fn gutters_cover_every_lane() {
         for dims in tri_shapes() {
             let geo = Geometry::<Tri>::new(dims);
             let lanes = geo.lane_map().lane_count();
-            assert_eq!(geo.guides().len(), lanes);
             assert_eq!(
                 geo.gutters().iter().map(|(_, g)| g.len()).sum::<usize>(),
                 lanes
@@ -2341,9 +2416,27 @@ mod typed_tests {
             width: 4,
             height: 3,
         });
-        assert_eq!(geo.guides().len(), 7);
         // Square lanes carry no clue set, so they all land in one bucket.
         assert_eq!(geo.gutters().len(), 1);
         assert_eq!(geo.gutters()[0].1.len(), 7);
+    }
+
+    /// Every family has one guide *before* each of its lanes, plus one closing guide after the
+    /// last — so the far side of the grid (bottom of the rows, right of the columns, and so on
+    /// for a triddler's other families) actually has a line, not just the near side.
+    #[test]
+    fn guides_include_the_closing_edge() {
+        for dims in tri_shapes() {
+            let geo = Geometry::<Tri>::new(dims);
+            assert_eq!(
+                geo.guides().len(),
+                geo.lane_map().lane_count() + geo.lane_map().family_count()
+            );
+        }
+        let geo = Geometry::<Square>::new(Rect {
+            width: 4,
+            height: 3,
+        });
+        assert_eq!(geo.guides().len(), 7 + 2);
     }
 }

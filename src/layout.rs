@@ -101,6 +101,54 @@ impl CellShape {
         }
     }
 
+    /// The two vertices bounding this cell's edge that borders family `family`.
+    ///
+    /// A square cell has *two* edges per family (e.g. top and bottom both border family 0, the
+    /// rows) — `near` picks which one (true = the edge facing lane 0, i.e. top for rows, left
+    /// for columns). A triangular cell has exactly one edge per family (its three edges cover
+    /// the three families one each), so `near` is ignored; use [`Self::triangle_edge_is_near`]
+    /// to find out in advance which side that single edge is actually on.
+    ///
+    /// Vertex indices below are verified against `vertices`' documented order, not re-derived by
+    /// eye: for an up-triangle `[apex, bottom-right, bottom-left]`, its right edge (apex to
+    /// bottom-right) borders whichever family groups by the coordinate that changes across that
+    /// edge, and so on for the other two edges and for a down-triangle's `[top-left, top-right,
+    /// bottom-apex]`.
+    pub fn family_edge(self, origin: Point, family: usize, near: bool) -> (Point, Point) {
+        let (p, _) = self.vertices(origin);
+        match self {
+            CellShape::Square => match (family, near) {
+                (0, true) => (p[0], p[1]),  // top
+                (0, false) => (p[3], p[2]), // bottom
+                (_, true) => (p[3], p[0]),  // left
+                (_, false) => (p[1], p[2]), // right
+            },
+            CellShape::UpTriangle => match family {
+                0 => (p[1], p[2]), // bottom
+                1 => (p[2], p[0]), // left
+                _ => (p[0], p[1]), // right
+            },
+            CellShape::DownTriangle => match family {
+                0 => (p[0], p[1]), // top
+                1 => (p[1], p[2]), // right
+                _ => (p[2], p[0]), // left
+            },
+        }
+    }
+
+    /// For a triangular cell, whether its single `family_edge` for `family` is on the "near"
+    /// (leading, e.g. the top of a row) side rather than the "far" (trailing) side. An
+    /// up-triangle's bottom edge leads to the *next* row, so it's a family-0 far edge; its left
+    /// edge leads to the previous "/" lane, so it's a family-1 near edge; and so on. Meaningless
+    /// for a square, which has both sides on every cell.
+    pub fn triangle_edge_is_near(self, family: usize) -> bool {
+        match self {
+            CellShape::UpTriangle => family == 1,
+            CellShape::DownTriangle => family != 1,
+            CellShape::Square => true,
+        }
+    }
+
     /// The cell's centroid — where a dot, cross, or overlay belongs. Note this is *not* the centre
     /// of the bounding box for a triangle: a triangle's centroid is a third of the way from its
     /// base toward its apex.
