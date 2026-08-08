@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<puzzleset>
+<puzzle type="triddler" defaultcolor="white">
+<source>number-loom</source>
+<title>Cut and polished</title>
+<author>number-loom</author>
+<color name="white" char=" ">FFFFFF</color>
+<color name="teal" char="a">008080</color>
+<clues type="topleft"><line><count color="teal">2</count><count color="teal">2</count></line>
+<line><count color="teal">2</count><count color="teal">2</count></line>
+<line><count color="teal">1</count><count color="teal">2</count><count color="teal">2</count></line>
+<line><count color="teal">3</count><count color="teal">2</count><count color="teal">2</count></line>
+</clues>
+<clues type="bottomleft"><line><count color="teal">2</count><count color="teal">2</count><count color="teal">2</count><count color="teal">2</count></line>
+<line><count color="teal">6</count><count color="teal">2</count><count color="teal">1</count></line>
+<line><count color="teal">2</count></line>
+<line><count color="teal">9</count></line>
+</clues>
+<clues type="top"><line><count color="teal">1</count></line>
+<line><count color="teal">2</count><count color="teal">6</count></line>
+<line><count color="teal">1</count><count color="teal">2</count><count color="teal">2</count><count color="teal">2</count></line>
+<line><count color="teal">2</count><count color="teal">2</count><count color="teal">3</count><count color="teal">1</count></line>
+</clues>
+<clues type="topright"><line><count color="teal">2</count><count color="teal">2</count><count color="teal">1</count><count color="teal">2</count></line>
+<line><count color="teal">2</count><count color="teal">2</count><count color="teal">2</count></line>
+<line><count color="teal">2</count><count color="teal">2</count><count color="teal">2</count></line>
+<line><count color="teal">2</count><count color="teal">3</count></line>
+</clues>
+<clues type="bottom"><line><count color="teal">3</count><count color="teal">2</count></line>
+<line><count color="teal">2</count><count color="teal">2</count><count color="teal">2</count></line>
+<line><count color="teal">7</count><count color="teal">2</count></line>
+<line><count color="teal">2</count></line>
+</clues>
+<clues type="bottomright"><line><count color="teal">15</count></line>
+<line></line>
+<line><count color="teal">11</count></line>
+<line></line>
+</clues>
+</puzzle></puzzleset>

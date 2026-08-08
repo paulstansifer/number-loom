@@ -255,8 +255,9 @@ unchanged — good evidence the refactor is behaviour-preserving for square puzz
       `report.affected_cells` (positions in *this* lane) to cell indices, then to the set of
       lanes to invalidate.
 * [x] `settle_solution` and `analyze_lines` — iterate all axes, not just rows/cols
-* [ ] `analyze_lines` returns `(Vec<LineStatus>, Vec<LineStatus>)`; make it per-axis. It now
-      computes all families but discards the third, pending a GUI that can show it.
+* [x] `analyze_lines` returns `Vec<Vec<LineStatus>>`, one entry per family — was a
+      `(Vec<LineStatus>, Vec<LineStatus>)` pair that silently discarded the third family. Now the
+      GUI (`ClueOverlay::analysis`) shows analysis marks on all three of a triddler's clue blocks.
 * [x] `LineCache<C>` keys on `(Vec<C>, Vec<u32>)` — works unchanged with gathered lanes ✅
 * [x] `grid_to_solution` / `grid_to_solved_mask` — currently `grid.columns()`
 * [ ] `disambig_candidates` — the `for x / for y` double loop becomes iteration over cells.
@@ -366,28 +367,51 @@ by a different, simpler mechanism than the one sketched here, noted per item).
       (see the Phase 1 item above), so `ColorInfo::corner` can never be `Some` in a triangular
       palette, and there's no code path that could add one.
 
-## Phase 5 — GUI: solving
+## Phase 5 — GUI: solving (done)
 
-* [ ] `draw_clues` (`gui_solver.rs:362`) and `draw_dyn_clues` (`gui_solver.rs:514`): six clue gutters
-      at 0°/60°/120°, rather than the current left/top `Orientation` pair
-* [ ] `Orientation` enum (`gui_solver.rs:309`) needs the new axes
-* [ ] Layout/sizing maths for the whole solve view (a hexagon's bounding box is not the grid)
-* [ ] Solve-mode canvas rendering + hit-testing (shares work with Phase 4)
-* [ ] Line-status highlighting from `analyze_lines` across three axes
+Solved differently than originally sketched: rather than extending `draw_clues`/`draw_dyn_clues`
+(square-only, `Orientation`-based panels) to six gutters, `SolveGui::body` detects a triangular
+puzzle and routes to `CanvasGui::canvas_with_clues` with a `ClueOverlay` — the same painter-sharing
+mechanism Phase 4's editing canvas already had for cells, extended to draw clue rhombi and analysis
+marks along `Geometry::gutters()`. So `draw_clues`/`draw_dyn_clues`/`Orientation` stay
+square-only and untouched; a triddler never reaches them.
+
+* [x] Six clue gutters at 0°/60°/120°, via `canvas_with_clues` + `ClueOverlay` (`gui.rs`), not by
+      extending `draw_dyn_clues`
+* [x] `Orientation` — left as-is; not needed on the triangular path
+* [x] Layout/sizing maths for the whole solve view: `canvas_with_clues` grows the drawing area to
+      cover wherever the gutters reach, via `Geometry::gutters()` + `clue_run_length`
+* [x] Solve-mode canvas rendering + hit-testing (shares work with Phase 4 — same `canvas_with_clues`)
+* [x] Line-status highlighting from `analyze_lines` across three axes — fixed by making
+      `analyze_lines` return `Vec<Vec<LineStatus>>` (see the Phase 2 item above); all three of a
+      triddler's clue blocks now get skim/scrub/error marks, not just two
+* [x] `tests/gui.rs::test_solving_a_triddler` covers solve mode end to end
 
 ## Phase 6 — Testing
 
-* [ ] Port the scratch verifier into real unit tests: the doc's 16-cell example reproduces rows
-      `ABCDE`/`FGHIJK`/`LMNOP` and clue-set counts 2/1, 2/1, 2/2; each family covers every cell
-      exactly once; `TriCoord` ↔ dense index round-trips; all six resize nudges stay valid
-* [ ] Round-trip tests: webpbn triddler → `Document` → webpbn, and Woven
-* [ ] Extend `solver_fuzzer.rs` to generate triangular puzzles
-* [ ] Add a triangular puzzle to `benches/benchmark.rs`. Note the existing benches load from PNG,
-      which triddlers won't support — they'll need a webpbn or Woven source file.
-* [ ] Re-run `cargo bench` after the Phase 2 refactor to confirm no square-puzzle regression
-* [ ] Add triangular examples under `examples/` and at least one puzzle under `puzzles/`
-* [ ] `lib.rs:17` `solve_examples` should cover them
-* [ ] `tests/gui.rs` — a smoke test for the triangular canvas
+* [x] Port the scratch verifier into real unit tests — already landed alongside Phase 1/2:
+      `geometry::tests::doc_example_matches_webpbn` / `doc_example_clue_set_split` reproduce the
+      doc's rows and clue-set counts, `every_family_covers_every_cell_exactly_once`,
+      `geometry::typed_tests::coord_and_cell_round_trip`, and `resizing_any_side_stays_valid`
+      cover the rest
+* [x] Round-trip tests: `formats::webpbn::tests::triddler_survives_a_webpbn_round_trip` (webpbn →
+      `Document` → webpbn) and `formats::woven::triangular_tests::*` (Woven)
+* [x] Extend `solver_fuzzer.rs` to generate triangular puzzles — `fuzz_triangular_grids` now
+      exercises `grid_solve` (not just `line_solve`) over random fills of several outlines, on top
+      of the pre-existing `grid_solve::tests::solves_triangular_puzzles_soundly`
+* [x] Add a triangular puzzle to `benches/benchmark.rs` — `hexagon_side_4`, loaded from
+      `examples/triddler/blob.g` (Woven/PNG can't express a triddler, so this needed a webpbn or
+      Olsak source, per the original plan)
+* [x] Re-run `cargo bench` after the Phase 2 refactor to confirm no square-puzzle regression —
+      done and the numbers are recorded above ("Line solving is already geometry-agnostic")
+* [x] Add triangular examples under `examples/` (`examples/triddler/blob.g`, pre-existing) and at
+      least one puzzle under `puzzles/` (`puzzles/hexagonal_garden.xml`)
+* [x] `lib.rs:17` — added `solve_triddler_examples` alongside `solve_examples`, walking
+      `examples/triddler/` and asserting every `.g` file there solves completely by line logic.
+      A separate test rather than folding into `solve_examples`, since that one pins an exact
+      line count/content for `examples/png` and a triddler's `Puzzle` is a different type.
+* [x] `tests/gui.rs` — `test_editing_a_triddler` and `test_solving_a_triddler` smoke-test the
+      triangular canvas in both modes
 
 ## Phase 7 — Docs
 

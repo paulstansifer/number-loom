@@ -3,8 +3,9 @@ mod tests {
     use std::collections::HashSet;
 
     use ndarray::Array1;
-    use number_loom::geometry::Square;
-    use number_loom::import::{solution_to_puzzle, solution_to_triano_puzzle};
+    use number_loom::geometry::{Geometry, Outline, Square, Tri};
+    use number_loom::grid_solve::{SolveOptions, solve};
+    use number_loom::import::{bw_palette, solution_to_puzzle, solution_to_triano_puzzle};
     use number_loom::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
     use number_loom::puzzle::{
         BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Puzzle, Solution,
@@ -194,6 +195,63 @@ mod tests {
                     original_partial_solution,
                     solution_to_triano_puzzle,
                 );
+            }
+        }
+    }
+
+    /// As `fuzzer`, but at the grid level rather than the line level, so it exercises
+    /// `grid_solve`'s triangular-specific intersection invalidation rather than just
+    /// `line_solve`'s already-geometry-agnostic line logic.
+    #[test]
+    fn fuzz_triangular_grids() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        let outlines = [
+            Outline::hexagon(1),
+            Outline::hexagon(2),
+            Outline::hexagon(3),
+            // The webpbn worked example: a shape with an off-centre bend, not a regular hexagon.
+            Outline {
+                a: (0, 2),
+                b: (1, 3),
+                c: (-1, 2),
+            },
+        ];
+
+        for outline in outlines {
+            let geometry = Geometry::<Tri>::new(outline);
+            for case in 0..25 {
+                let num_colors = rng.gen_range(1..=3u8);
+                let cells: Vec<Color> = (0..geometry.cell_count())
+                    .map(|_| {
+                        if rng.gen_bool(0.5) {
+                            BACKGROUND
+                        } else {
+                            Color(rng.gen_range(1..=num_colors))
+                        }
+                    })
+                    .collect();
+
+                let mut palette = bw_palette();
+                for c in 2..=num_colors {
+                    palette.insert(Color(c), ColorInfo::default_fg(Color(c)));
+                }
+
+                let solution =
+                    Solution::new(ClueStyle::Nono, palette, geometry.clone(), cells.clone());
+                let puzzle: Puzzle<_, Tri> = number_loom::import::solution_to_tri_puzzle(&solution);
+
+                let report = solve(&puzzle, &mut None, &SolveOptions::default())
+                    .unwrap_or_else(|e| panic!("outline {outline:?} case {case}: {e}"));
+
+                for (index, (&found, &actual)) in
+                    report.solution.cells().iter().zip(&cells).enumerate()
+                {
+                    assert!(
+                        found == number_loom::puzzle::UNSOLVED || found == actual,
+                        "outline {outline:?} case {case}: solver got cell {index} wrong \
+                         (found {found:?}, actual {actual:?})"
+                    );
+                }
             }
         }
     }

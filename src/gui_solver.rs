@@ -14,7 +14,7 @@ pub struct SolveGui {
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
-    pub line_analysis: Staleable<Option<(Vec<LineStatus>, Vec<LineStatus>)>>,
+    pub line_analysis: Staleable<Option<Vec<Vec<LineStatus>>>>,
     pub render_style: RenderStyle,
     last_inferred_version: u32,
     pub hovered_cell: Option<u32>,
@@ -157,8 +157,7 @@ impl SolveGui {
             // A triddler's rosette has six rhombus arms instead of a square grid's four square
             // ones, and a rhombus is wider across its short diagonal than it is long — so it
             // needs more room to keep adjacent arms from overlapping.
-            let triangular =
-                matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_));
+            let triangular = matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_));
             let plus_size = if triangular { scale * 4.4 } else { scale * 3.0 };
 
             if let Some(cell) = self.hovered_cell {
@@ -360,7 +359,7 @@ impl SolveGui {
                     &self.clues,
                     scale,
                     Orientation::Vertical,
-                    line_analysis.map(|la| &la.1[..]),
+                    line_analysis.and_then(|la| la.get(1)).map(|v| &v[..]),
                     is_stale,
                 );
                 ui.end_row();
@@ -370,7 +369,7 @@ impl SolveGui {
                     &self.clues,
                     scale,
                     Orientation::Horizontal,
-                    line_analysis.map(|la| &la.0[..]),
+                    line_analysis.and_then(|la| la.get(0)).map(|v| &v[..]),
                     is_stale,
                 );
                 self.hovered_cell = self.canvas.canvas(ui, scale, self.render_style);

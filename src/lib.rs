@@ -96,3 +96,34 @@ fn solve_examples() {
 
     assert_eq!(report.lines().collect::<Vec<_>>().len(), 35);
 }
+
+#[test]
+// As `solve_examples`, but for the triddlers under `examples/triddler`. A separate test since
+// that directory also holds a `README.md` that isn't a puzzle file, and since a triddler's
+// `Puzzle` is a different type from a square one's.
+fn solve_triddler_examples() {
+    use crate::{grid_solve::Report, import};
+    use std::path::PathBuf;
+
+    let examples_dir = PathBuf::from("examples/triddler");
+    let mut solved_any = false;
+    for entry in std::fs::read_dir(examples_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("g") {
+            continue;
+        }
+
+        let mut document = import::load_path(&path, None).unwrap();
+        let puzzle = document
+            .puzzle()
+            .as_tri_nono()
+            .unwrap_or_else(|| panic!("{path:?}: expected a triddler"));
+        let Report { cells_left, .. } = puzzle
+            .plain_solve()
+            .unwrap_or_else(|e| panic!("{path:?}: internal error: {e:?}"));
+        assert_eq!(cells_left, 0, "{path:?}: should solve by line logic alone");
+        solved_any = true;
+    }
+    assert!(solved_any, "no triddler examples found to solve");
+}

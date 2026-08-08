@@ -22,6 +22,14 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("fire_sub", |b| {
         b.iter(|| solve(std::hint::black_box(&fire_sub.clone()), &mut None, &options));
     });
+
+    // Triddlers can't load from PNG (out of scope), so this needs a webpbn or Olsak source file.
+    let mut hexagon_doc = load_path(&PathBuf::from("examples/triddler/blob.g"), None).unwrap();
+    let hexagon = hexagon_doc.puzzle().as_tri_nono().unwrap();
+
+    c.bench_function("hexagon_side_4", |b| {
+        b.iter(|| solve(std::hint::black_box(&hexagon.clone()), &mut None, &options));
+    });
 }
 
 criterion_group!(name=benches;

@@ -521,12 +521,8 @@ impl CanvasGui {
 /// supplies this; the editor draws the picture alone.
 pub struct ClueOverlay<'a> {
     pub puzzle: &'a crate::puzzle::DynPuzzle,
-    /// Line analysis for the first two families. `analyze_lines` still returns a pair, so a
-    /// triddler's third family has no marks yet.
-    pub analysis: Option<&'a (
-        Vec<crate::grid_solve::LineStatus>,
-        Vec<crate::grid_solve::LineStatus>,
-    )>,
+    /// One `Vec<LineStatus>` per clue family, in family order.
+    pub analysis: Option<&'a Vec<Vec<crate::grid_solve::LineStatus>>>,
     pub is_stale: bool,
 }
 
@@ -760,12 +756,9 @@ impl CanvasGui {
                     let family = lane_families[g.lane];
                     for (i, (color_info, count)) in expressed.iter().enumerate() {
                         let c = g.clue_box_center(i);
-                        let points = crate::layout::tri_clue_rhombus(
-                            c,
-                            family,
-                            crate::layout::CLUE_BOX,
-                        )
-                        .map(|p| to_screen * Pos2::new(p.x, p.y));
+                        let points =
+                            crate::layout::tri_clue_rhombus(c, family, crate::layout::CLUE_BOX)
+                                .map(|p| to_screen * Pos2::new(p.x, p.y));
                         let text = match count {
                             Some(n) => n.to_string(),
                             None => color_info.ch.to_string(),
@@ -784,12 +777,7 @@ impl CanvasGui {
                     if let Some(analysis) = overlay.analysis {
                         let family = lane_families[g.lane];
                         let index = g.lane - family_starts[family];
-                        let per_family = match family {
-                            0 => Some(&analysis.0),
-                            1 => Some(&analysis.1),
-                            _ => None, // `analyze_lines` doesn't report the third family yet.
-                        };
-                        if let Some(status) = per_family.and_then(|f| f.get(index)) {
+                        if let Some(status) = analysis.get(family).and_then(|f| f.get(index)) {
                             let at = to_screen
                                 * Pos2::new(
                                     g.anchor.x + g.outward.x * (crate::layout::CLUE_PAD / 2.0),

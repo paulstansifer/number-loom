@@ -552,12 +552,10 @@ fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
 pub fn analyze_lines<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
-) -> (Vec<LineStatus>, Vec<LineStatus>) {
-    // TODO: return one `Vec` per family, rather than a pair, once the GUI can display a third.
-    let mut per_family = vec![];
+) -> Vec<Vec<LineStatus>> {
     let lanes = puzzle.geometry.lane_map();
-    for family in 0..lanes.family_count() {
-        per_family.push(
+    (0..lanes.family_count())
+        .map(|family| {
             lanes
                 .family(family)
                 .map(|lane| {
@@ -565,14 +563,9 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
                     gather_into(lanes, lane, grid, &mut gathered);
                     analyze_line(&puzzle.lines[lane], ArrayView1::from(&gathered[..]))
                 })
-                .collect::<Vec<_>>(),
-        );
-    }
-
-    let mut families = per_family.into_iter();
-    let rows = families.next().unwrap_or_default();
-    let cols = families.next().unwrap_or_default();
-    (rows, cols)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 pub enum DisambigResult {
@@ -674,7 +667,9 @@ mod tests {
         grid[0] = Cell::from_color(BACKGROUND); // (x=0, y=0)
         grid[3] = Cell::from_color(BACKGROUND); // (x=1, y=1)
 
-        let (row_tech, col_tech) = analyze_lines(&puzzle, &grid);
+        let mut families = analyze_lines(&puzzle, &grid).into_iter();
+        let row_tech = families.next().unwrap();
+        let col_tech = families.next().unwrap();
 
         assert_eq!(
             row_tech.into_iter().map(|r| r.ok()).collect::<Vec<_>>(),
