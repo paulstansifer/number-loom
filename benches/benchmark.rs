@@ -6,7 +6,8 @@ use number_loom::grid_solve::{solve, SolveOptions};
 use number_loom::import::load_path;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut dust_40_doc = load_path(&PathBuf::from("examples/png/tedious_dust_40x40.png"), None);
+    let mut dust_40_doc =
+        load_path(&PathBuf::from("examples/png/tedious_dust_40x40.png"), None).unwrap();
     let dust_40 = dust_40_doc.puzzle().assume_nono();
     let options = SolveOptions::default();
 
@@ -14,7 +15,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| solve(std::hint::black_box(&dust_40.clone()), &mut None, &options));
     });
 
-    let mut fire_sub_doc = load_path(&PathBuf::from("examples/png/fire_submarine.png"), None);
+    let mut fire_sub_doc =
+        load_path(&PathBuf::from("examples/png/fire_submarine.png"), None).unwrap();
     let fire_sub = fire_sub_doc.puzzle().assume_nono();
 
     c.bench_function("fire_sub", |b| {

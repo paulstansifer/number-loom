@@ -53,7 +53,8 @@ fn main() -> std::io::Result<()> {
         }
     };
 
-    let mut document = import::load_path(&input_path, args.input_format);
+    let mut document =
+        import::load_path(&input_path, args.input_format).expect("could not load puzzle");
     for problem in document.quality_check() {
         eprintln!("Warning: {}", problem);
     }

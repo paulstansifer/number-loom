@@ -7,7 +7,7 @@ mod tests {
 
     #[test]
     fn test_solve_button() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None);
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
 
         let nonogram_gui = NonogramGui::new(doc.clone());
         let mut harness = Harness::new_state(
@@ -29,7 +29,7 @@ mod tests {
 
     #[test]
     fn test_palette_editor() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None);
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
 
         let nonogram_gui = NonogramGui::new(doc.clone());
         let mut harness = Harness::new_state(
@@ -57,7 +57,7 @@ mod tests {
 
     #[test]
     fn test_pencil_tool() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None);
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
         let original_grid = doc.try_solution().unwrap().grid.clone();
 
         let nonogram_gui = NonogramGui::new(doc);
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_undo_redo() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None);
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
         let original_grid = doc.try_solution().unwrap().grid.clone();
 
         let nonogram_gui = NonogramGui::new(doc);

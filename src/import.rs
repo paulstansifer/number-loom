@@ -1,4 +1,4 @@
-use anyhow::bail;
+use anyhow::{Context, bail};
 use image::{DynamicImage, GenericImageView, Pixel, Rgba};
 use std::{
     char::from_digit,
@@ -17,52 +17,61 @@ use crate::{
     },
 };
 
-pub fn load_path(path: &PathBuf, format: Option<NonogramFormat>) -> Document {
+pub fn load_path(path: &PathBuf, format: Option<NonogramFormat>) -> anyhow::Result<Document> {
     let mut bytes = vec![];
     if path == &PathBuf::from("-") {
-        std::io::stdin().read_to_end(&mut bytes).unwrap();
+        std::io::stdin().read_to_end(&mut bytes)?;
     } else {
-        bytes = std::fs::read(path).unwrap();
+        bytes = std::fs::read(path)?;
     }
 
-    load(&path.to_str().unwrap(), bytes, format)
+    load(
+        path.to_str().context("path is not valid UTF-8")?,
+        bytes,
+        format,
+    )
 }
 
-pub fn load(filename: &str, bytes: Vec<u8>, format: Option<NonogramFormat>) -> Document {
+pub fn load(
+    filename: &str,
+    bytes: Vec<u8>,
+    format: Option<NonogramFormat>,
+) -> anyhow::Result<Document> {
     use crate::formats::webpbn::webpbn_to_document;
 
     let input_format = puzzle::infer_format(&filename, format);
 
-    match input_format {
+    Ok(match input_format {
         NonogramFormat::Html => {
-            panic!("HTML input is not supported.")
+            bail!("HTML input is not supported.")
         }
         NonogramFormat::Image => {
-            let img = image::load_from_memory(&bytes).unwrap();
+            let img = image::load_from_memory(&bytes).context("could not decode image")?;
             let solution = image_to_solution(&img);
             Document::from_solution(solution, filename.to_string())
         }
         NonogramFormat::Webpbn => {
-            let webpbn_string = String::from_utf8(bytes).unwrap();
+            let webpbn_string =
+                String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
             let mut doc = webpbn_to_document(&webpbn_string);
             doc.file = filename.to_string();
             doc
         }
         NonogramFormat::CharGrid => {
-            let grid_string = String::from_utf8(bytes).unwrap();
+            let grid_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
             let solution = char_grid_to_solution(&grid_string);
             Document::from_solution(solution, filename.to_string())
         }
         NonogramFormat::Woven => {
-            let woven_string = String::from_utf8(bytes).unwrap();
-            from_woven(&woven_string).unwrap()
+            let woven_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
+            from_woven(&woven_string)?
         }
         NonogramFormat::Olsak => {
-            let olsak_string = String::from_utf8(bytes).unwrap();
-            let puzzle = olsak_to_puzzle(&olsak_string).unwrap();
+            let olsak_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
+            let puzzle = olsak_to_puzzle(&olsak_string)?;
             Document::from_puzzle(puzzle, filename.to_string())
         }
-    }
+    })
 }
 
 pub fn image_to_solution(image: &DynamicImage) -> Solution {
@@ -782,7 +791,7 @@ pub async fn puzzles_from_github() -> anyhow::Result<Vec<Document>> {
 
             let content = client.get(download_url).send().await?.bytes().await?;
 
-            res.push(load(name, content.to_vec(), None));
+            res.push(load(name, content.to_vec(), None)?);
         }
     }
 
@@ -807,7 +816,7 @@ pub async fn load_zip_from_url(url: &str) -> anyhow::Result<Vec<Document>> {
 
         let mut bytes = vec![];
         file.read_to_end(&mut bytes)?;
-        documents.push(load(&filename, bytes, None));
+        documents.push(load(&filename, bytes, None)?);
     }
 
     Ok(documents)

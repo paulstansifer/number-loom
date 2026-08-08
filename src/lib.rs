@@ -29,7 +29,7 @@ fn solve_examples() {
         let entry = entry.unwrap();
         let path = entry.path();
         if path.is_file() {
-            let mut document = import::load_path(&path, None);
+            let mut document = import::load_path(&path, None).unwrap();
             match document.puzzle().plain_solve() {
                 Ok(Report {
                     solve_counts,

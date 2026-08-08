@@ -1,6 +1,8 @@
 use std::{
+    cell::RefCell,
     cmp::{max, min},
     collections::HashMap,
+    rc::Rc,
     sync::mpsc,
 };
 
@@ -38,6 +40,10 @@ impl StatusMessage {
         }
     }
 }
+
+// Shared between `CanvasGui`s so that the editor and the solver (which have separate
+// `CanvasGui`s) can show messages in the same status bar.
+pub type SharedStatus = Rc<RefCell<Option<StatusMessage>>>;
 
 use crate::{
     export::to_bytes,
@@ -209,14 +215,15 @@ pub struct CanvasGui {
     pub solved_mask: Staleable<(String, Vec<Vec<bool>>)>,
     pub disambiguator: Staleable<Disambiguator>,
     pub id: Staleable<String>,
-    pub status: Option<StatusMessage>,
+    pub status: SharedStatus,
 }
 
 pub struct NonogramGui {
     // The `pub`s are solely for tests/gui.rs
     pub editor_gui: CanvasGui,
     scale: f32,
-    opened_file_receiver: mpsc::Receiver<Document>,
+    opened_file_receiver: mpsc::Receiver<anyhow::Result<Document>>,
+    save_result_receiver: mpsc::Receiver<anyhow::Result<()>>,
     library_receiver: mpsc::Receiver<anyhow::Result<Vec<Document>>>,
     library_dialog: Option<LibraryStatus>,
     new_dialog: Option<NewPuzzleDialog>,
@@ -337,7 +344,8 @@ impl CanvasGui {
                     self.document = document;
                     self.version += 1;
                 } else {
-                    self.status = Some(StatusMessage::error("That puzzle has no solution"));
+                    *self.status.borrow_mut() =
+                        Some(StatusMessage::error("That puzzle has no solution"));
                 }
             }
         }
@@ -911,10 +919,11 @@ impl NonogramGui {
                     val: "".to_string(),
                     version: 0,
                 },
-                status: None,
+                status: Rc::new(RefCell::new(None)),
             },
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
+            save_result_receiver: mpsc::channel().1,
             library_receiver: mpsc::channel().1,
             new_dialog: None,
             library_dialog: None,
@@ -1108,7 +1117,7 @@ impl NonogramGui {
             self.editor_gui
                 .disambiguator
                 .get_or_refresh(self.editor_gui.version, Disambiguator::new)
-                .disambig_widget(&picture, &mut self.editor_gui.status, ui);
+                .disambig_widget(&picture, &self.editor_gui.status, ui);
 
             ui.separator();
 
@@ -1173,9 +1182,17 @@ impl NonogramGui {
             });
         }
 
-        if let Ok(document) = self.opened_file_receiver.try_recv() {
-            self.editor_gui
-                .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
+        if let Ok(result) = self.opened_file_receiver.try_recv() {
+            match result {
+                Ok(document) => {
+                    self.editor_gui
+                        .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
+                }
+                Err(e) => {
+                    *self.editor_gui.status.borrow_mut() =
+                        Some(StatusMessage::error(format!("Error loading file: {:?}", e)));
+                }
+            }
         }
     }
 
@@ -1184,6 +1201,7 @@ impl NonogramGui {
 
         self.solve_gui = Some(crate::gui_solver::SolveGui::new(
             self.editor_gui.document.clone(),
+            Rc::clone(&self.editor_gui.status),
         ));
     }
 
@@ -1387,8 +1405,12 @@ impl NonogramGui {
                                     next_enter_solve_mode = true;
                                 }
                                 Err(e) => {
-                                    // TODO: we probably need to make statuses coherent somehow
-                                    self.solve_report = format!("Error: {:?}", e);
+                                    *self.editor_gui.status.borrow_mut() = Some(
+                                        StatusMessage::error(format!(
+                                            "Error loading WOVEN puzzle: {:?}",
+                                            e
+                                        )),
+                                    );
                                 }
                             }
                         }
@@ -1413,6 +1435,9 @@ impl NonogramGui {
                         if ui.button("Save").clicked() {
                             let mut document_copy = self.editor_gui.document.clone();
 
+                            let (sender, receiver) = mpsc::channel();
+                            self.save_result_receiver = receiver;
+
                             spawn_async(async move {
                                 let handle = rfd::AsyncFileDialog::new()
                                     .add_filter(
@@ -1430,15 +1455,24 @@ impl NonogramGui {
                                     .await;
 
                                 if let Some(handle) = handle {
-                                    let bytes = to_bytes(
-                                        &mut document_copy,
-                                        Some(handle.file_name()),
-                                        None,
-                                    )
-                                    .unwrap();
-                                    handle.write(&bytes).await.unwrap();
+                                    let result = async {
+                                        let bytes = to_bytes(
+                                            &mut document_copy,
+                                            Some(handle.file_name()),
+                                            None,
+                                        )?;
+                                        handle.write(&bytes).await?;
+                                        Ok(())
+                                    }
+                                    .await;
+                                    sender.send(result).unwrap();
                                 }
                             });
+                        }
+
+                        if let Ok(Err(e)) = self.save_result_receiver.try_recv() {
+                            *self.editor_gui.status.borrow_mut() =
+                                Some(StatusMessage::error(format!("Error saving file: {:?}", e)));
                         }
                     });
             }
@@ -1507,14 +1541,10 @@ impl eframe::App for NonogramGui {
         ctx.set_style(style);
 
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            let status = if let Some(solve_gui) = &mut self.solve_gui {
-                &mut solve_gui.canvas.status
-            } else {
-                &mut self.editor_gui.status
-            };
-
+            // `editor_gui.status` is shared (via `Rc<RefCell<_>>`) with `solve_gui.canvas.status`,
+            // so this shows the latest message regardless of which mode is active.
             ui.horizontal(|ui| {
-                if let Some(status) = status {
+                if let Some(status) = self.editor_gui.status.borrow().as_ref() {
                     let color = if status.is_error {
                         Color32::DARK_RED
                     } else {
@@ -1559,12 +1589,7 @@ impl Disambiguator {
         self.progress = 0.0;
     }
 
-    pub fn disambig_widget(
-        &mut self,
-        picture: &Solution,
-        status: &mut Option<StatusMessage>,
-        ui: &mut egui::Ui,
-    ) {
+    pub fn disambig_widget(&mut self, picture: &Solution, status: &SharedStatus, ui: &mut egui::Ui) {
         while let Ok(progress) = self.progress_r.try_recv() {
             self.progress = progress;
         }
@@ -1594,7 +1619,8 @@ impl Disambiguator {
         if let Ok(result) = self.report_r.try_recv() {
             match result {
                 DisambigResult::Unnecessary => {
-                    *status = Some(StatusMessage::info("Disambiguation is unnecessary"));
+                    *status.borrow_mut() =
+                        Some(StatusMessage::info("Disambiguation is unnecessary"));
                 }
                 DisambigResult::Report(report) => {
                     self.report = Some(report);
