@@ -158,6 +158,18 @@ pub struct Guide {
     pub emphasis: bool,
 }
 
+/// A clue box's side, in abstract units (one cell edge = 1.0).
+///
+/// Adjacent parallel lanes are `TRI_ROW_HEIGHT` apart, but the boxes are axis-aligned while a
+/// diagonal gutter is not: that 0.866 of separation splits into (0.75, 0.43), so the box has to
+/// fit inside the *larger* component or neighbouring lanes' clues would still overlap on screen.
+pub const CLUE_BOX: f32 = 0.7;
+/// The gap between one clue box and the next along a gutter. Chosen so that consecutive boxes on
+/// a diagonal gutter clear each other too.
+pub const CLUE_GAP: f32 = 0.18;
+/// Breathing room between the grid and the nearest clue.
+pub const CLUE_PAD: f32 = 0.35;
+
 /// Where one lane's clues should be drawn.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct GutterLane {
@@ -167,4 +179,26 @@ pub struct GutterLane {
     pub anchor: Point,
     /// The unit vector clue boxes march along, pointing away from the grid.
     pub outward: Vec2,
+    /// Whether the lane's stored clue list must be reversed to read in display order.
+    pub reversed: bool,
+}
+
+impl GutterLane {
+    /// The centre of the `i`th clue box, counting outward from the grid.
+    pub fn clue_box_center(&self, i: usize) -> Point {
+        let out = CLUE_PAD + CLUE_BOX / 2.0 + i as f32 * (CLUE_BOX + CLUE_GAP);
+        Point::new(
+            self.anchor.x + self.outward.x * out,
+            self.anchor.y + self.outward.y * out,
+        )
+    }
+
+    /// How far `count` clue boxes reach out from the grid.
+    pub fn clue_run_length(count: usize) -> f32 {
+        if count == 0 {
+            0.0
+        } else {
+            CLUE_PAD + count as f32 * (CLUE_BOX + CLUE_GAP)
+        }
+    }
 }

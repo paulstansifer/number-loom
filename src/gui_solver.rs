@@ -279,10 +279,25 @@ impl SolveGui {
     }
 
     pub fn body(&mut self, ui: &mut egui::Ui, scale: f32) {
+        let is_stale = !self.line_analysis.fresh(self.canvas.version);
+
+        // A hexagon's three clue blocks run along the lane directions, so they can't be laid out
+        // as panels beside the grid; they share the picture's painter instead.
+        if matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_)) {
+            let overlay = crate::gui::ClueOverlay {
+                puzzle: &self.clues,
+                analysis: self.line_analysis.val.as_ref(),
+                is_stale,
+            };
+            self.hovered_cell =
+                self.canvas
+                    .canvas_with_clues(ui, scale, self.render_style, Some(overlay));
+            return;
+        }
+
         ui.vertical(|ui| {
             egui::Grid::new("solve_grid").show(ui, |ui| {
                 ui.label(""); // Top-left is empty
-                let is_stale = !self.line_analysis.fresh(self.canvas.version);
                 let line_analysis = self.line_analysis.val.as_ref();
                 draw_dyn_clues(
                     ui,
@@ -317,7 +332,61 @@ pub enum Orientation {
 
 use crate::line_solve::SolveMode;
 
-fn draw_string_in_box(
+/// The little mark showing which technique will crack a line: a dot for skimming, a diamond for
+/// scrubbing, a red cross for a contradiction.
+pub(crate) fn draw_analysis_mark(
+    painter: &egui::Painter,
+    center: Pos2,
+    scale: f32,
+    status: &LineStatus,
+    is_stale: bool,
+) {
+    let radius = scale * 0.2;
+    let color = if is_stale {
+        Color32::from_gray(192)
+    } else {
+        Color32::BLACK
+    };
+
+    match status {
+        Ok(Some(SolveMode::Skim)) => {
+            painter.circle_filled(center, radius, color);
+        }
+        Ok(Some(SolveMode::Scrub)) => {
+            let points = vec![
+                center + Vec2::new(0.0, -radius),
+                center + Vec2::new(radius, 0.0),
+                center + Vec2::new(0.0, radius),
+                center + Vec2::new(-radius, 0.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        Err(_) => {
+            let stroke = egui::Stroke::new(2.0, Color32::RED);
+            painter.line_segment(
+                [
+                    center + Vec2::new(-radius, -radius),
+                    center + Vec2::new(radius, radius),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + Vec2::new(radius, -radius),
+                    center + Vec2::new(-radius, radius),
+                ],
+                stroke,
+            );
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn draw_string_in_box(
     ui: &egui::Ui,
     painter: &egui::Painter,
     rect: Rect,
@@ -411,49 +480,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
                     response.rect.max.y - puzz_padding / 2.0,
                 ),
             };
-            let radius = scale * 0.2;
-            let color = if is_stale {
-                Color32::from_gray(192)
-            } else {
-                Color32::BLACK
-            };
-
-            match &analysis[i] {
-                Ok(Some(SolveMode::Skim)) => {
-                    painter.circle_filled(center, radius, color);
-                }
-                Ok(Some(SolveMode::Scrub)) => {
-                    let points = vec![
-                        center + Vec2::new(0.0, -radius),
-                        center + Vec2::new(radius, 0.0),
-                        center + Vec2::new(0.0, radius),
-                        center + Vec2::new(-radius, 0.0),
-                    ];
-                    painter.add(egui::Shape::convex_polygon(
-                        points,
-                        color,
-                        egui::Stroke::NONE,
-                    ));
-                }
-                Err(_) => {
-                    let stroke = egui::Stroke::new(2.0, Color32::RED);
-                    painter.line_segment(
-                        [
-                            center + Vec2::new(-radius, -radius),
-                            center + Vec2::new(radius, radius),
-                        ],
-                        stroke,
-                    );
-                    painter.line_segment(
-                        [
-                            center + Vec2::new(radius, -radius),
-                            center + Vec2::new(-radius, radius),
-                        ],
-                        stroke,
-                    );
-                }
-                _ => {}
-            }
+            draw_analysis_mark(&painter, center, scale, &analysis[i], is_stale);
         }
 
         let line_clues = &clues_vec[i];

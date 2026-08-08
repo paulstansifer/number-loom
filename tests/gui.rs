@@ -236,4 +236,44 @@ mod tests {
             "exactly one triangle should change"
         );
     }
+
+    /// Solve mode must render a triddler's clues, which share the picture's painter rather than
+    /// living in panels beside it.
+    #[test]
+    fn test_solving_a_triddler() {
+        let doc = import::load_path(&"examples/triddler/blob.g".into(), None).unwrap();
+
+        let nonogram_gui = NonogramGui::new(doc);
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui| {
+                CentralPanel::default().show(ctx, |ui| {
+                    nonogram_gui.main_ui(ctx, ui);
+                });
+            },
+            nonogram_gui,
+        );
+
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+
+        let gui = harness.state();
+        assert!(gui.solve_mode);
+        let solve_gui = gui.solve_gui.as_ref().expect("solve mode is on");
+        // Solve mode blanks the picture (bar whatever background it can infer immediately), so
+        // most of it should still be undecided.
+        let cells = solve_gui.canvas.document.try_solution().unwrap().cells();
+        let unsolved = cells
+            .iter()
+            .filter(|c| **c == number_loom::puzzle::UNSOLVED)
+            .count();
+        assert!(
+            unsolved > cells.len() / 2,
+            "{unsolved} of {} cells undecided",
+            cells.len()
+        );
+
+        // Draw a few more frames; this is what would panic if the clue layout were malformed.
+        harness.run();
+        harness.run();
+    }
 }

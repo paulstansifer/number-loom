@@ -162,10 +162,35 @@ endpoints, so it covers three directions on a triddler instead of two.
 `examples/triddler/blob.g` plus `tests/gui.rs::test_editing_a_triddler` cover this end to end:
 open a triddler in the editor, click the canvas, and exactly one triangle changes colour.
 
-**Still to do in the GUI:** clue gutters are still two axis-aligned rectangles, so solve mode
-shows a triddler's picture but none of its clues — `Geometry::gutters()` has the per-lane anchors
-and outward directions a six-way version needs, and `SolveGui::body`'s 2x2 layout grid is what has
-to change. The resizer is also still rows-and-columns only (`Geometry::resized` and `K::SIDES` are
+## Triddler clues (done)
+
+Solve mode draws a triddler's clues. They share the picture's painter rather than living in panels
+beside it, because a hexagon's clue blocks aren't axis-aligned rectangles: `canvas_with_clues`
+reserves room around the picture for wherever the gutters reach, then draws the cells and the
+clues in one coordinate system.
+
+There are **three** clue blocks, not six. Clues run along their own lane's direction, so each
+family gets one block (left, upper-right, lower-right); the six *clue sets* are three families x
+two boundary edges, and the two sets of a family nest along the same block rather than sitting on
+opposite sides.
+
+Three placement bugs that only the geometry tests could have caught, since there's no way to eyeball
+this without a display:
+
+* The outward direction has to come from stepping **two** cells along a lane, not one: consecutive
+  cells alternate ▲/▼ and the two displacements differ, so a single step gave a direction that
+  depended on the end cell's orientation.
+* The anchor has to be the midpoint of the edge the lane exits through, not the centroid pushed
+  outward — a ▲ and a ▼ have centroids at different heights, which bunched adjacent rows' clues.
+* `CLUE_BOX` has to be 0.7, not 0.9. Adjacent lanes are `√3/2` apart, but the boxes are
+  axis-aligned while a diagonal gutter is not, so that separation splits into (0.75, 0.43) and the
+  box must fit inside the larger component.
+
+`clue_boxes_clear_the_grid_and_each_other` checks all of this on a real puzzle: no clue box centre
+lands on a cell, no two boxes overlap, and everything fits the reserved margin.
+
+**Still to do in the GUI:** `analyze_lines` still returns a pair, so a triddler's third family gets
+no analysis marks. The resizer is rows-and-columns only (`Geometry::resized` and `K::SIDES` are
 ready for the six-handle version), and the new-puzzle dialog can't offer a hexagon yet.
 
 ## Phase 1 — Data model

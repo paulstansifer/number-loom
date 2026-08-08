@@ -628,6 +628,16 @@ impl DynSolution {
         with_solution!(self, |s| s.geometry.arm_directions())
     }
 
+    /// Where each lane's clues are drawn, in abstract units.
+    pub fn gutters(
+        &self,
+    ) -> &[(
+        Option<crate::geometry::ClueSet>,
+        Vec<crate::layout::GutterLane>,
+    )] {
+        with_solution!(self, |s| s.geometry.gutters())
+    }
+
     /// Boundary lines between lanes, in abstract units, for drawing the grid.
     pub fn guides(&self) -> &[crate::layout::Guide] {
         with_solution!(self, |s| s.geometry.guides())

@@ -90,7 +90,7 @@ use crate::{
     gui_solver::{RenderStyle, SolveGui},
     import,
     puzzle::{
-        BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynSolution, PuzzleDynOps,
+        BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynSolution, PuzzleDynOps,
         Solution, UNSOLVED,
     },
     user_settings::{UserSettings, consts},
@@ -515,6 +515,32 @@ impl CanvasGui {
             self.perform(Action::ChangeColor { changes }, ActionMood::Normal);
         }
     }
+}
+
+/// What a canvas needs in order to draw clue gutters around the picture. Only the solve view
+/// supplies this; the editor draws the picture alone.
+pub struct ClueOverlay<'a> {
+    pub puzzle: &'a crate::puzzle::DynPuzzle,
+    /// Line analysis for the first two families. `analyze_lines` still returns a pair, so a
+    /// triddler's third family has no marks yet.
+    pub analysis: Option<&'a (
+        Vec<crate::grid_solve::LineStatus>,
+        Vec<crate::grid_solve::LineStatus>,
+    )>,
+    pub is_stale: bool,
+}
+
+impl CanvasGui {
+    /// How far each lane's clues reach out from the grid, in abstract units.
+    fn clue_run_length(puzzle: &crate::puzzle::DynPuzzle, lane: usize) -> f32 {
+        let parts = crate::with_puzzle!(puzzle, |p| {
+            p.lines[lane]
+                .iter()
+                .map(|c| c.express(&p.palette).len())
+                .sum::<usize>()
+        });
+        crate::layout::GutterLane::clue_run_length(parts)
+    }
 
     /// Draw the picture and handle pointer input. Returns the hovered cell, if any.
     ///
@@ -527,18 +553,57 @@ impl CanvasGui {
         scale: f32,
         render_style: RenderStyle,
     ) -> Option<u32> {
+        self.canvas_with_clues(ui, scale, render_style, None)
+    }
+
+    /// As `canvas`, but reserving room around the picture for clue gutters and drawing them.
+    ///
+    /// Clues share the picture's painter and coordinate system rather than living in their own
+    /// widgets, because a hexagon's three clue blocks are not axis-aligned rectangles and can't be
+    /// laid out by a grid of separate panels.
+    pub fn canvas_with_clues(
+        &mut self,
+        ui: &mut egui::Ui,
+        scale: f32,
+        render_style: RenderStyle,
+        clues: Option<ClueOverlay<'_>>,
+    ) -> Option<u32> {
         let extent = self.document.solution_mut().extent();
 
+        // Grow the drawing area to cover wherever the clues reach.
+        let (mut lo, mut hi) = (
+            crate::layout::Point::new(0.0, 0.0),
+            crate::layout::Point::new(extent.x, extent.y),
+        );
+        if let Some(overlay) = &clues {
+            for (_, gutter) in self.document.solution_mut().gutters() {
+                for g in gutter {
+                    let len = Self::clue_run_length(overlay.puzzle, g.lane);
+                    let tip = crate::layout::Point::new(
+                        g.anchor.x + g.outward.x * len,
+                        g.anchor.y + g.outward.y * len,
+                    );
+                    let half = crate::layout::CLUE_BOX;
+                    lo.x = lo.x.min(tip.x - half);
+                    lo.y = lo.y.min(tip.y - half);
+                    hi.x = hi.x.max(tip.x + half);
+                    hi.y = hi.y.max(tip.y + half);
+                }
+            }
+        }
+        let full = Vec2::new(hi.x - lo.x, hi.y - lo.y);
+
         let (mut response, painter) = ui.allocate_painter(
-            Vec2::new(scale * extent.x, scale * extent.y) + Vec2::new(2.0, 2.0), // for the border
+            Vec2::new(scale * full.x, scale * full.y) + Vec2::new(2.0, 2.0), // for the border
             egui::Sense::click_and_drag(),
         );
 
         let canvas_without_border = response.rect.shrink(1.0);
 
-        // One abstract unit is one cell edge, so this is a plain uniform scale.
+        // One abstract unit is one cell edge, so this is a plain uniform scale. `lo` is where the
+        // outermost clue sits, so the picture itself is offset by `-lo`.
         let to_screen = egui::emath::RectTransform::from_to(
-            Rect::from_min_size(Pos2::ZERO, Vec2::new(extent.x, extent.y)),
+            Rect::from_min_size(Pos2::new(lo.x, lo.y), full),
             canvas_without_border,
         );
         let from_screen = to_screen.inverse();
@@ -659,6 +724,86 @@ impl CanvasGui {
                 }
             }
         });
+
+        // Clue gutters, in the same coordinate system as the picture.
+        if let Some(overlay) = &clues {
+            let lane_families: Vec<usize> = picture
+                .lane_map()
+                .lanes()
+                .iter()
+                .map(|l| l.family)
+                .collect();
+            let family_starts: Vec<usize> = (0..picture.lane_map().family_count())
+                .map(|f| picture.lane_map().family(f).start)
+                .collect();
+
+            for (_, gutter) in picture.gutters() {
+                for g in gutter {
+                    let expressed = crate::with_puzzle!(overlay.puzzle, |p| {
+                        let mut v: Vec<(ColorInfo, Option<u16>)> = p.lines[g.lane]
+                            .iter()
+                            .flat_map(|c| {
+                                c.express(&p.palette)
+                                    .into_iter()
+                                    .map(|(ci, n)| (ci.clone(), n))
+                            })
+                            .collect();
+                        // Clues run in the lane's own direction, so the box nearest the grid is
+                        // the last one; `reversed` covers the families whose clues are labelled
+                        // at the far end from where the lane is stored.
+                        if !g.reversed {
+                            v.reverse();
+                        }
+                        v
+                    });
+
+                    for (i, (color_info, count)) in expressed.iter().enumerate() {
+                        let c = g.clue_box_center(i);
+                        let rect = Rect::from_center_size(
+                            to_screen * Pos2::new(c.x, c.y),
+                            Vec2::splat(crate::layout::CLUE_BOX * scale),
+                        );
+                        let text = match count {
+                            Some(n) => n.to_string(),
+                            None => color_info.ch.to_string(),
+                        };
+                        crate::gui_solver::draw_string_in_box(
+                            ui,
+                            &painter,
+                            rect,
+                            &text,
+                            scale,
+                            color_info.rgb,
+                        );
+                    }
+
+                    // The analysis mark sits between the clues and the grid.
+                    if let Some(analysis) = overlay.analysis {
+                        let family = lane_families[g.lane];
+                        let index = g.lane - family_starts[family];
+                        let per_family = match family {
+                            0 => Some(&analysis.0),
+                            1 => Some(&analysis.1),
+                            _ => None, // `analyze_lines` doesn't report the third family yet.
+                        };
+                        if let Some(status) = per_family.and_then(|f| f.get(index)) {
+                            let at = to_screen
+                                * Pos2::new(
+                                    g.anchor.x + g.outward.x * (crate::layout::CLUE_PAD / 2.0),
+                                    g.anchor.y + g.outward.y * (crate::layout::CLUE_PAD / 2.0),
+                                );
+                            crate::gui_solver::draw_analysis_mark(
+                                &painter,
+                                at,
+                                scale,
+                                status,
+                                overlay.is_stale,
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Grid lines, precomputed by the geometry: one boundary per lane, with every fifth one
         // heavier — which for a triddler means every fifth lane *within a family*.

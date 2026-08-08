@@ -814,6 +814,11 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     /// Used to lay out the solver's contiguous-run widget.
     fn arm_directions() -> &'static [Vec2];
 
+    /// Whether a family's clues are labelled at the *last* cell of its lanes rather than the
+    /// first. True only for `\` lines, which are stored reading top-left to bottom-right but are
+    /// labelled at the bottom — the same asymmetry both file formats have.
+    fn clue_end_is_last(family: usize) -> bool;
+
     /// Erase the kind, for results that cross back to the GUI and the CLI.
     fn wrap_solution(s: crate::puzzle::Solution<Self>) -> crate::puzzle::DynSolution;
 }
@@ -956,6 +961,10 @@ impl GridKind for Square {
             Vec2 { x: 0.0, y: 1.0 },
         ];
         &DIRS
+    }
+
+    fn clue_end_is_last(_family: usize) -> bool {
+        false
     }
 
     fn wrap_solution(s: crate::puzzle::Solution<Square>) -> crate::puzzle::DynSolution {
@@ -1251,6 +1260,10 @@ impl GridKind for Tri {
             Vec2 { x: -0.5, y: S },
         ];
         &DIRS
+    }
+
+    fn clue_end_is_last(family: usize) -> bool {
+        family == 2
     }
 
     fn wrap_solution(s: crate::puzzle::Solution<Tri>) -> crate::puzzle::DynSolution {
@@ -1616,8 +1629,12 @@ fn build_guides<K: GridKind>(
     res
 }
 
-/// Where each lane's clues are drawn: the midpoint of the outer edge of its clued end, and the
-/// direction clue boxes march away from the grid.
+/// Where each lane's clues are drawn.
+///
+/// The gutter sits at the end the file formats label, which spreads a hexagon's clues over all six
+/// of its sides. For rows and `/` lines that is the end the lane is read from; for `\` lines it is
+/// the other end, so their clues are drawn in the reverse of the stored order — the convention
+/// Olsak describes as reading "from underneath upstairs".
 fn build_gutters<K: GridKind>(
     dims: &K::Dims,
     lookup: &K::Lookup,
@@ -1626,18 +1643,24 @@ fn build_gutters<K: GridKind>(
 ) -> Vec<(Option<ClueSet>, Vec<GutterLane>)> {
     let mut res: Vec<(Option<ClueSet>, Vec<GutterLane>)> = vec![];
     for family in 0..lanes.family_count() {
+        let at_last = K::clue_end_is_last(family);
         for lane in lanes.family(family) {
             let cells = &lanes.lane(lane).cells;
-            let Some(first) = cells.first() else { continue };
+            let Some(end) = (if at_last { cells.last() } else { cells.first() }) else {
+                continue;
+            };
             let clue_set = lanes.lane(lane).clue_set;
 
-            let coord = coords[*first as usize];
+            let coord = coords[*end as usize];
             let origin = K::cell_origin(dims, lookup, coord);
             let center = K::cell_shape(coord).center(origin);
-            // Clues sit at the end the lane is read from, marching backwards out of the grid.
+            // Step off the end of the lane; that direction leads away from the grid.
+            //
+            // Two steps, not one: consecutive cells of a triangular lane alternate ▲/▼, and the
+            // two displacements differ. Only their sum is parallel to the lane itself.
             let outward = {
-                let back = K::step(coord, family, false);
-                let far = K::cell_origin(dims, lookup, back);
+                let past = K::step(K::step(coord, family, at_last), family, at_last);
+                let far = K::cell_origin(dims, lookup, past);
                 let d = Vec2::new(far.x - origin.x, far.y - origin.y);
                 let len = (d.x * d.x + d.y * d.y).sqrt();
                 if len > 0.0 {
@@ -1646,7 +1669,25 @@ fn build_gutters<K: GridKind>(
                     Vec2::new(-1.0, 0.0)
                 }
             };
-            let anchor = Point::new(center.x + outward.x * 0.5, center.y + outward.y * 0.5);
+            // The midpoint of the edge the lane exits through — *not* the centroid pushed
+            // outward. A ▲ and a ▼ have centroids at different heights, so using those would
+            // bunch adjacent rows' clues together; their exit edges are properly spaced.
+            let anchor = {
+                let shape = K::cell_shape(coord);
+                let (points, n) = shape.vertices(origin);
+                let mut best = center;
+                let mut best_dot = f32::MIN;
+                for i in 0..n {
+                    let (a, b) = (points[i], points[(i + 1) % n]);
+                    let mid = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+                    let dot = (mid.x - center.x) * outward.x + (mid.y - center.y) * outward.y;
+                    if dot > best_dot {
+                        best_dot = dot;
+                        best = mid;
+                    }
+                }
+                best
+            };
 
             let entry = res.iter_mut().find(|(cs, _)| *cs == clue_set);
             let bucket = match entry {
@@ -1660,6 +1701,7 @@ fn build_gutters<K: GridKind>(
                 lane,
                 anchor,
                 outward,
+                reversed: at_last,
             });
         }
     }
@@ -1971,6 +2013,181 @@ mod typed_tests {
             .resized(SquareSide::Left, -1)
             .is_none()
         );
+    }
+
+    /// Clues are laid out along their own lane's direction, so there are three clue blocks (one
+    /// per family), not six. The six clue *sets* are three families x two boundary edges: the two
+    /// sets of a family share a direction but cover disjoint lanes, so they nest rather than
+    /// overlap.
+    #[test]
+    fn hexagon_gutters_form_three_blocks() {
+        let geo = Geometry::<Tri>::new(Outline::hexagon(3));
+        let extent = geo.extent();
+        let middle = Point::new(extent.x / 2.0, extent.y / 2.0);
+
+        let mut directions = vec![];
+        for (clue_set, lanes) in geo.gutters() {
+            let set = clue_set.expect("a triddler labels every lane");
+            let first = lanes[0];
+            // Every lane in a clue set shares one outward direction.
+            for l in lanes {
+                assert!(
+                    (l.outward.x - first.outward.x).abs() < 1e-4
+                        && (l.outward.y - first.outward.y).abs() < 1e-4,
+                    "{set:?} lanes disagree about which way is out"
+                );
+                // The anchor must be outside the hexagon's middle in that direction.
+                let away =
+                    (l.anchor.x - middle.x) * l.outward.x + (l.anchor.y - middle.y) * l.outward.y;
+                assert!(away > 0.0, "{set:?} anchor {:?} faces inward", l.anchor);
+            }
+            directions.push((set, first.outward));
+        }
+
+        assert_eq!(directions.len(), 6, "a hexagon uses all six clue sets");
+
+        // Exactly three distinct directions, one per family.
+        let mut distinct: Vec<Vec2> = vec![];
+        for (_, d) in &directions {
+            if !distinct
+                .iter()
+                .any(|e: &Vec2| (e.x - d.x).abs() < 1e-4 && (e.y - d.y).abs() < 1e-4)
+            {
+                distinct.push(*d);
+            }
+        }
+        assert_eq!(
+            distinct.len(),
+            3,
+            "one clue direction per family: {directions:?}"
+        );
+
+        // The two sets of one family must cover disjoint lanes, or their clues would collide.
+        for (a, b) in [
+            (ClueSet::TopLeft, ClueSet::BottomLeft),
+            (ClueSet::Top, ClueSet::TopRight),
+            (ClueSet::Bottom, ClueSet::BottomRight),
+        ] {
+            let lanes_of = |set| -> std::collections::HashSet<usize> {
+                geo.gutters()
+                    .iter()
+                    .filter(|(cs, _)| *cs == Some(set))
+                    .flat_map(|(_, l)| l.iter().map(|g| g.lane))
+                    .collect()
+            };
+            assert!(lanes_of(a).is_disjoint(&lanes_of(b)), "{a:?} vs {b:?}");
+        }
+    }
+
+    /// Rows read left-to-right and are labelled on the left; `\` lines read top-left to
+    /// bottom-right but are labelled at the bottom, so their clue list is drawn reversed.
+    #[test]
+    fn gutters_sit_at_the_labelled_end() {
+        let geo = Geometry::<Tri>::new(Outline::hexagon(2));
+        for (clue_set, lanes) in geo.gutters() {
+            let reversed_expected =
+                matches!(clue_set, Some(ClueSet::Bottom) | Some(ClueSet::BottomRight));
+            for l in lanes {
+                assert_eq!(l.reversed, reversed_expected, "{clue_set:?}");
+                // The anchor must be next to the end of the lane it belongs to.
+                let cells = &geo.lane(l.lane).cells;
+                let end = if l.reversed {
+                    *cells.last().unwrap()
+                } else {
+                    *cells.first().unwrap()
+                };
+                let center = geo.cell_shape(end).center(geo.cell_origin(end));
+                let d = ((l.anchor.x - center.x).powi(2) + (l.anchor.y - center.y).powi(2)).sqrt();
+                assert!(d < 0.75, "{clue_set:?} anchor is not beside its end cell");
+            }
+        }
+    }
+
+    /// The layout check I can't do by eye: real clue boxes for a real puzzle must sit outside the
+    /// grid and must not pile up on each other.
+    #[test]
+    fn clue_boxes_clear_the_grid_and_each_other() {
+        use crate::layout::{CLUE_BOX, GutterLane};
+
+        let outline = Outline::hexagon(3);
+        let geo = Geometry::<Tri>::new(outline);
+
+        // A pattern with a decent spread of clue counts.
+        let filled: Vec<bool> = (0..geo.cell_count())
+            .map(|i| i % 3 != 0 && i % 7 != 1)
+            .collect();
+        let clue_counts: Vec<usize> = (0..geo.lane_count())
+            .map(|lane| {
+                let mut runs = 0;
+                let mut prev = false;
+                for c in &geo.lane(lane).cells {
+                    let f = filled[*c as usize];
+                    if f && !prev {
+                        runs += 1;
+                    }
+                    prev = f;
+                }
+                runs
+            })
+            .collect();
+
+        let mut boxes: Vec<(usize, usize, Point)> = vec![];
+        for (_, gutter) in geo.gutters() {
+            for g in gutter {
+                for i in 0..clue_counts[g.lane] {
+                    boxes.push((g.lane, i, g.clue_box_center(i)));
+                }
+            }
+        }
+        assert!(boxes.len() > 40, "expected a decent number of clues");
+
+        // No clue box centre may land on a cell.
+        for (lane, i, c) in &boxes {
+            for cell in 0..geo.cell_count() as u32 {
+                assert!(
+                    !geo.cell_shape(cell).contains(geo.cell_origin(cell), *c),
+                    "clue {i} of lane {lane} at {c:?} sits on top of cell {cell}"
+                );
+            }
+        }
+
+        // Nor may two clue boxes overlap.
+        for (i, (la, ia, a)) in boxes.iter().enumerate() {
+            for (lb, ib, b) in &boxes[i + 1..] {
+                let (dx, dy) = ((a.x - b.x).abs(), (a.y - b.y).abs());
+                assert!(
+                    dx >= CLUE_BOX - 1e-3 || dy >= CLUE_BOX - 1e-3,
+                    "clue {ia} of lane {la} overlaps clue {ib} of lane {lb} ({a:?} vs {b:?})"
+                );
+            }
+        }
+
+        // And the reserved margin must actually contain them.
+        let extent = geo.extent();
+        let (mut lo, mut hi) = (Point::new(0.0, 0.0), Point::new(extent.x, extent.y));
+        for (_, gutter) in geo.gutters() {
+            for g in gutter {
+                let len = GutterLane::clue_run_length(clue_counts[g.lane]);
+                let tip = Point::new(
+                    g.anchor.x + g.outward.x * len,
+                    g.anchor.y + g.outward.y * len,
+                );
+                lo.x = lo.x.min(tip.x - CLUE_BOX);
+                lo.y = lo.y.min(tip.y - CLUE_BOX);
+                hi.x = hi.x.max(tip.x + CLUE_BOX);
+                hi.y = hi.y.max(tip.y + CLUE_BOX);
+            }
+        }
+        for (lane, i, c) in &boxes {
+            let half = CLUE_BOX / 2.0;
+            assert!(
+                c.x - half >= lo.x - 1e-3
+                    && c.y - half >= lo.y - 1e-3
+                    && c.x + half <= hi.x + 1e-3
+                    && c.y + half <= hi.y + 1e-3,
+                "clue {i} of lane {lane} at {c:?} escapes the reserved area {lo:?}..{hi:?}"
+            );
+        }
     }
 
     #[test]
