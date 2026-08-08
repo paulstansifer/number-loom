@@ -1609,21 +1609,58 @@ fn build_guides<K: GridKind>(
     for family in 0..lanes.family_count() {
         for (index, lane) in lanes.family(family).enumerate() {
             let cells = &lanes.lane(lane).cells;
-            let (Some(first), Some(last)) = (cells.first(), cells.last()) else {
+            let (Some(&first), Some(&last)) = (cells.first(), cells.last()) else {
                 continue;
             };
             let origin = |c: u32| K::cell_origin(dims, lookup, coords[c as usize]);
             let shape = |c: u32| K::cell_shape(coords[c as usize]);
-            let (from_pts, from_n) = shape(*first).vertices(origin(*first));
-            let (to_pts, to_n) = shape(*last).vertices(origin(*last));
+
+            // The lane's own direction, from its first cell's centre to its last. Used (rather
+            // than a fixed vertex index) so the guide runs parallel to the lane instead of
+            // connecting whichever corners happen to share an index — which for a square cell
+            // means "top-left of the first cell" to "bottom-left of the last", a diagonal that
+            // reads as a slight tilt across the whole grid.
+            let first_center = shape(first).center(origin(first));
+            let last_center = shape(last).center(origin(last));
+            let mut d = Vec2::new(
+                last_center.x - first_center.x,
+                last_center.y - first_center.y,
+            );
+            let len = (d.x * d.x + d.y * d.y).sqrt();
+            d = if len > 1e-6 {
+                Vec2::new(d.x / len, d.y / len)
+            } else {
+                Vec2::new(1.0, 0.0) // A single-cell lane has no real direction.
+            };
+            // Perpendicular to `d`: picks a consistent side of the lane to draw the guide on.
+            let n = Vec2::new(-d.y, d.x);
+
+            // The vertex on the `n`-side of the cell, breaking ties by `d` so the first cell
+            // contributes its backward corner and the last cell its forward one — together
+            // spanning the lane's full length rather than just one cell's width.
+            let edge_vertex = |cell: u32, forward: bool| -> Point {
+                let (points, count) = shape(cell).vertices(origin(cell));
+                let mut best = points[0];
+                let mut best_key = (f32::MAX, f32::MAX);
+                for p in &points[..count] {
+                    let n_dot = p.x * n.x + p.y * n.y;
+                    let d_dot = p.x * d.x + p.y * d.y;
+                    let key = (n_dot, if forward { -d_dot } else { d_dot });
+                    if key < best_key {
+                        best_key = key;
+                        best = *p;
+                    }
+                }
+                best
+            };
+
             res.push(Guide {
-                from: from_pts[0],
-                to: to_pts[to_n - 1],
+                from: edge_vertex(first, false),
+                to: edge_vertex(last, true),
                 family,
                 index,
                 emphasis: index % 5 == 0,
             });
-            let _ = from_n;
         }
     }
     res
@@ -1979,6 +2016,40 @@ mod typed_tests {
                     assert!(
                         bigger.cell(coord).is_some(),
                         "growing {side:?} lost {coord:?} from {dims:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A square grid's guides must be axis-aligned and span the full width/height, not a diagonal
+    /// clipped to one cell — the bug that made the whole grid look slightly tilted.
+    #[test]
+    fn square_guides_are_not_skewed() {
+        let geo = Geometry::<Square>::new(Rect {
+            width: 6,
+            height: 4,
+        });
+        for guide in geo.guides() {
+            match guide.family {
+                0 => {
+                    assert!(
+                        (guide.from.y - guide.to.y).abs() < 1e-4,
+                        "row guide tilts: {guide:?}"
+                    );
+                    assert!(
+                        (guide.to.x - guide.from.x - 6.0).abs() < 1e-4,
+                        "row guide doesn't span the full width: {guide:?}"
+                    );
+                }
+                _ => {
+                    assert!(
+                        (guide.from.x - guide.to.x).abs() < 1e-4,
+                        "column guide tilts: {guide:?}"
+                    );
+                    assert!(
+                        (guide.to.y - guide.from.y - 4.0).abs() < 1e-4,
+                        "column guide doesn't span the full height: {guide:?}"
                     );
                 }
             }
