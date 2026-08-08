@@ -154,7 +154,12 @@ impl SolveGui {
 
             ui.separator();
             let scale = 20.0;
-            let plus_size = scale * 3.0;
+            // A triddler's rosette has six rhombus arms instead of a square grid's four square
+            // ones, and a rhombus is wider across its short diagonal than it is long — so it
+            // needs more room to keep adjacent arms from overlapping.
+            let triangular =
+                matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_));
+            let plus_size = if triangular { scale * 4.4 } else { scale * 3.0 };
 
             if let Some(cell) = self.hovered_cell {
                 let picture = self.canvas.document.try_solution().unwrap();
@@ -170,36 +175,87 @@ impl SolveGui {
                     ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
 
                 let rect = resp.rect;
-                let size = Vec2::new(20.0, 20.0);
-                let center = rect.min + Vec2::new(scale, scale);
+                let text = if color == UNSOLVED { "?" } else { " " };
 
-                // `arm_directions` lists each family's two directions adjacently, matching the
-                // `(backward, forward)` pairs `runs_at_cell` returns.
-                for (family, (back, forward)) in runs.iter().enumerate() {
-                    for (i, count) in [back, forward].into_iter().enumerate() {
-                        let Some(dir) = dirs.get(family * 2 + i) else {
-                            continue;
-                        };
-                        if *count == 0 {
-                            continue;
+                if triangular {
+                    let true_center = rect.center();
+                    // The centre swatch matches the hovered triangle's own shape (▲ or ▼)
+                    // instead of a generic square.
+                    let cell_shape = picture.cell_shape(cell);
+                    let mid_size =
+                        crate::layout::Vec2::new(scale, scale * crate::layout::TRI_ROW_HEIGHT);
+                    let (verts, n) = cell_shape.vertices_sized(
+                        crate::layout::Point::new(
+                            true_center.x - mid_size.x / 2.0,
+                            true_center.y - mid_size.y / 2.0,
+                        ),
+                        mid_size,
+                    );
+                    let mid_points: Vec<Pos2> =
+                        verts[..n].iter().map(|p| Pos2::new(p.x, p.y)).collect();
+                    draw_string_in_polygon(ui, &painter, &mid_points, text, scale, rgb);
+
+                    // Arms are shaped like the rhombus that lane's clue boxes use, so they read
+                    // as belonging to that lane, and pushed further out than a square grid's
+                    // arms so neighbouring rhombuses (60° apart, wide across their short
+                    // diagonal) don't overlap each other or the centre swatch.
+                    let arm_size = scale * 0.68;
+                    let arm_distance = scale * 1.7;
+                    for (family, (back, forward)) in runs.iter().enumerate() {
+                        for (i, count) in [back, forward].into_iter().enumerate() {
+                            let Some(dir) = dirs.get(family * 2 + i) else {
+                                continue;
+                            };
+                            if *count == 0 {
+                                continue;
+                            }
+                            let arm_center = true_center + Vec2::new(dir.x, dir.y) * arm_distance;
+                            let points: Vec<Pos2> = crate::layout::tri_clue_rhombus(
+                                crate::layout::Point::new(arm_center.x, arm_center.y),
+                                family,
+                                arm_size,
+                            )
+                            .iter()
+                            .map(|p| Pos2::new(p.x, p.y))
+                            .collect();
+                            draw_string_in_rhombus(
+                                ui,
+                                &painter,
+                                &points,
+                                &count.to_string(),
+                                scale,
+                                rgb,
+                            );
                         }
-                        let at = center + Vec2::new(dir.x * scale, dir.y * scale);
-                        draw_string_in_box(
-                            ui,
-                            &painter,
-                            Rect::from_min_size(at, size),
-                            &count.to_string(),
-                            scale,
-                            rgb,
-                        );
                     }
-                }
-
-                let mid_rect = Rect::from_min_size(center, size);
-                if color == UNSOLVED {
-                    draw_string_in_box(ui, &painter, mid_rect, "?", scale, rgb);
                 } else {
-                    draw_string_in_box(ui, &painter, mid_rect, " ", scale, rgb);
+                    let size = Vec2::new(20.0, 20.0);
+                    let center = rect.min + Vec2::new(scale, scale);
+
+                    // `arm_directions` lists each family's two directions adjacently, matching
+                    // the `(backward, forward)` pairs `runs_at_cell` returns.
+                    for (family, (back, forward)) in runs.iter().enumerate() {
+                        for (i, count) in [back, forward].into_iter().enumerate() {
+                            let Some(dir) = dirs.get(family * 2 + i) else {
+                                continue;
+                            };
+                            if *count == 0 {
+                                continue;
+                            }
+                            let at = center + Vec2::new(dir.x * scale, dir.y * scale);
+                            draw_string_in_box(
+                                ui,
+                                &painter,
+                                Rect::from_min_size(at, size),
+                                &count.to_string(),
+                                scale,
+                                rgb,
+                            );
+                        }
+                    }
+
+                    let mid_rect = Rect::from_min_size(center, size);
+                    draw_string_in_box(ui, &painter, mid_rect, text, scale, rgb);
                 }
             } else {
                 ui.add_space(plus_size);
@@ -386,15 +442,14 @@ pub(crate) fn draw_analysis_mark(
     }
 }
 
-pub(crate) fn draw_string_in_box(
+fn draw_string_at(
     ui: &egui::Ui,
     painter: &egui::Painter,
-    rect: Rect,
+    center: Pos2,
     clue_txt: &str,
     scale: f32,
     (r, g, b): (u8, u8, u8),
 ) {
-    painter.rect_filled(rect, 0.0, Color32::from_rgb(r, g, b));
     let base_font = egui::FontId::monospace(scale * 0.7);
     let text_width = |fonts: &Fonts, t: &str| {
         fonts
@@ -424,12 +479,70 @@ pub(crate) fn draw_string_in_box(
     let clue_font = fonts_by_digit[clue_txt.len().min(fonts_by_digit.len() - 1)].clone();
 
     painter.text(
-        rect.center(),
+        center,
         egui::Align2::CENTER_CENTER,
         clue_txt,
         clue_font,
         text_color,
     );
+}
+
+pub(crate) fn draw_string_in_box(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    clue_txt: &str,
+    scale: f32,
+    rgb: (u8, u8, u8),
+) {
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(rgb.0, rgb.1, rgb.2));
+    draw_string_at(ui, painter, rect.center(), clue_txt, scale, rgb);
+}
+
+/// The mean of a convex polygon's vertices: the true centre for a parallelogram, and a triangle's
+/// centroid — exactly where `CellShape::center` puts it.
+fn polygon_centroid(points: &[Pos2]) -> Pos2 {
+    let sum = points.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2());
+    Pos2::ZERO + sum / points.len() as f32
+}
+
+fn fill_polygon(painter: &egui::Painter, points: &[Pos2], (r, g, b): (u8, u8, u8)) {
+    painter.add(egui::Shape::convex_polygon(
+        points.to_vec(),
+        Color32::from_rgb(r, g, b),
+        egui::Stroke::NONE,
+    ));
+}
+
+/// As `draw_string_in_box`, but the clue box is an arbitrary convex polygon — the solver
+/// sidebar's rosette centre is whatever shape the hovered cell is, rather than a rect.
+pub(crate) fn draw_string_in_polygon(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    points: &[Pos2],
+    clue_txt: &str,
+    scale: f32,
+    rgb: (u8, u8, u8),
+) {
+    fill_polygon(painter, points, rgb);
+    draw_string_at(ui, painter, polygon_centroid(points), clue_txt, scale, rgb);
+}
+
+/// As `draw_string_in_polygon`, but for a rhombus clue box specifically: the label is nudged down
+/// by about a third of its own height, since centring it exactly on the rhombus's geometric
+/// middle reads as sitting slightly too high.
+pub(crate) fn draw_string_in_rhombus(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    points: &[Pos2],
+    clue_txt: &str,
+    scale: f32,
+    rgb: (u8, u8, u8),
+) {
+    fill_polygon(painter, points, rgb);
+    let text_height = scale * 0.7;
+    let center = polygon_centroid(points) + Vec2::new(0.0, text_height / 3.0);
+    draw_string_at(ui, painter, center, clue_txt, scale, rgb);
 }
 
 fn draw_clues<C: crate::puzzle::Clue>(

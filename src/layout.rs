@@ -66,23 +66,30 @@ impl CellShape {
     /// The cell's corners, clockwise, given the top-left of its bounding box. Returns a fixed
     /// array plus how much of it is used, so callers need no allocation.
     pub fn vertices(self, origin: Point) -> ([Point; 4], usize) {
+        self.vertices_sized(origin, self.size())
+    }
+
+    /// As `vertices`, but for an arbitrary bounding box instead of the unit lattice cell — for
+    /// drawing a cell-shaped swatch that isn't itself a grid cell (e.g. the solver sidebar's
+    /// rosette, which shows the hovered cell's own shape at UI scale).
+    pub fn vertices_sized(self, origin: Point, size: Vec2) -> ([Point; 4], usize) {
         let (x, y) = (origin.x, origin.y);
-        let h = TRI_ROW_HEIGHT;
+        let (w, h) = (size.x, size.y);
         match self {
             CellShape::Square => (
                 [
                     Point::new(x, y),
-                    Point::new(x + 1.0, y),
-                    Point::new(x + 1.0, y + 1.0),
-                    Point::new(x, y + 1.0),
+                    Point::new(x + w, y),
+                    Point::new(x + w, y + h),
+                    Point::new(x, y + h),
                 ],
                 4,
             ),
             // Apex at the top, base along the bottom.
             CellShape::UpTriangle => (
                 [
-                    Point::new(x + 0.5, y),
-                    Point::new(x + 1.0, y + h),
+                    Point::new(x + w / 2.0, y),
+                    Point::new(x + w, y + h),
                     Point::new(x, y + h),
                     Point::default(),
                 ],
@@ -92,8 +99,8 @@ impl CellShape {
             CellShape::DownTriangle => (
                 [
                     Point::new(x, y),
-                    Point::new(x + 1.0, y),
-                    Point::new(x + 0.5, y + h),
+                    Point::new(x + w, y),
+                    Point::new(x + w / 2.0, y + h),
                     Point::default(),
                 ],
                 3,
@@ -217,6 +224,40 @@ pub const CLUE_BOX: f32 = 0.7;
 pub const CLUE_GAP: f32 = 0.18;
 /// Breathing room between the grid and the nearest clue.
 pub const CLUE_PAD: f32 = 0.35;
+
+/// Unit vectors along each triangular family's own lane direction: rows, `/` lines, `\` lines.
+const TRI_LANE_DIR: [Vec2; 3] = [
+    Vec2 { x: 1.0, y: 0.0 },
+    Vec2 {
+        x: 0.5,
+        y: -TRI_ROW_HEIGHT,
+    },
+    Vec2 {
+        x: 0.5,
+        y: TRI_ROW_HEIGHT,
+    },
+];
+
+/// √3, for the ratio between a 60°/120° rhombus's two diagonals.
+const SQRT_3: f32 = 1.732_050_8;
+
+/// A clue box shaped like a rhombus pointing along the lane: its long diagonal runs along the
+/// lane's own direction (i.e. along `outward`) and its short diagonal crosses it, so a chain of
+/// clues reads as beads strung along the gutter rather than a stack of fat diamonds poking into
+/// their neighbours. `size` is the box's extent along the lane's own direction.
+pub fn tri_clue_rhombus(center: Point, family: usize, size: f32) -> [Point; 4] {
+    let dir = TRI_LANE_DIR[family];
+    let perp = Vec2::new(-dir.y, dir.x);
+    let (ax, ay) = (dir.x * size / 2.0, dir.y * size / 2.0);
+    let across = size / SQRT_3;
+    let (bx, by) = (perp.x * across / 2.0, perp.y * across / 2.0);
+    [
+        Point::new(center.x + ax + bx, center.y + ay + by),
+        Point::new(center.x - ax + bx, center.y - ay + by),
+        Point::new(center.x - ax - bx, center.y - ay - by),
+        Point::new(center.x + ax - bx, center.y + ay - by),
+    ]
+}
 
 /// Where one lane's clues should be drawn.
 #[derive(Clone, Copy, PartialEq, Debug)]

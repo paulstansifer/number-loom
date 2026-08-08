@@ -757,20 +757,23 @@ impl CanvasGui {
                         v
                     });
 
+                    let family = lane_families[g.lane];
                     for (i, (color_info, count)) in expressed.iter().enumerate() {
                         let c = g.clue_box_center(i);
-                        let rect = Rect::from_center_size(
-                            to_screen * Pos2::new(c.x, c.y),
-                            Vec2::splat(crate::layout::CLUE_BOX * scale),
-                        );
+                        let points = crate::layout::tri_clue_rhombus(
+                            c,
+                            family,
+                            crate::layout::CLUE_BOX,
+                        )
+                        .map(|p| to_screen * Pos2::new(p.x, p.y));
                         let text = match count {
                             Some(n) => n.to_string(),
                             None => color_info.ch.to_string(),
                         };
-                        crate::gui_solver::draw_string_in_box(
+                        crate::gui_solver::draw_string_in_rhombus(
                             ui,
                             &painter,
-                            rect,
+                            &points,
                             &text,
                             scale,
                             color_info.rgb,

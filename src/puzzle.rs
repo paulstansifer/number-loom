@@ -622,6 +622,12 @@ impl DynSolution {
         with_solution!(self, |s| s.geometry.neighbor_cells(cell).collect())
     }
 
+    /// This cell's shape: always `Square` for a square puzzle, `UpTriangle`/`DownTriangle` for a
+    /// triddler.
+    pub fn cell_shape(&self, cell: u32) -> crate::layout::CellShape {
+        with_solution!(self, |s| s.geometry.cell_shape(cell))
+    }
+
     /// Unit vectors toward each neighbouring lane direction, as `(backward, forward)` pairs per
     /// family — matching what `runs_at_cell` returns.
     pub fn arm_directions(&self) -> &'static [crate::layout::Vec2] {

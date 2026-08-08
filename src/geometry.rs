@@ -1249,15 +1249,19 @@ impl GridKind for Tri {
 
     fn arm_directions() -> &'static [Vec2] {
         // 0 degrees, plus or minus 60, and their opposites: the six directions a triangular lane
-        // can leave a cell in.
+        // can leave a cell in, ordered (back, forward) per family to match `runs_at_cell`, which
+        // walks `LaneMap::memberships` in family order (0 = rows, 1 = `/` lines, 2 = `\` lines —
+        // see `Geometry::gutters`' `outward` for the same three directions, independently derived
+        // from `CellShape::family_edge`). Families 1 and 2 were swapped here before; confirmed by
+        // comparing against `gutters()`'s `outward` vectors for a real hexagon.
         const S: f32 = 0.866_025_4; // sin 60
         const DIRS: [Vec2; 6] = [
             Vec2 { x: -1.0, y: 0.0 },
             Vec2 { x: 1.0, y: 0.0 },
+            Vec2 { x: -0.5, y: S },
+            Vec2 { x: 0.5, y: -S },
             Vec2 { x: -0.5, y: -S },
             Vec2 { x: 0.5, y: S },
-            Vec2 { x: 0.5, y: -S },
-            Vec2 { x: -0.5, y: S },
         ];
         &DIRS
     }
