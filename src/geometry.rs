@@ -1605,15 +1605,37 @@ fn build_guides<K: GridKind>(
     coords: &[K::Coord],
     lanes: &LaneMap,
 ) -> Vec<Guide> {
+    let origin = |c: u32| K::cell_origin(dims, lookup, coords[c as usize]);
+    let shape = |c: u32| K::cell_shape(coords[c as usize]);
+    let lane_center = |lane: usize| -> Option<Point> {
+        let cells = &lanes.lane(lane).cells;
+        cells.first().map(|c| shape(*c).center(origin(*c)))
+    };
+
     let mut res = vec![];
     for family in 0..lanes.family_count() {
-        for (index, lane) in lanes.family(family).enumerate() {
+        let family_lanes: Vec<usize> = lanes.family(family).collect();
+
+        // The direction from one lane to the next within this family (e.g. row 0 toward row 1).
+        // Every guide in the family is oriented to face this way, so "the boundary before this
+        // lane" consistently means the same thing for every lane — and in particular, lane 0's
+        // guide is consistently the true outer edge rather than depending on which way an
+        // arbitrary perpendicular happened to point.
+        let t = family_lanes
+            .windows(2)
+            .find_map(|w| {
+                let (p0, p1) = (lane_center(w[0])?, lane_center(w[1])?);
+                let d = Vec2::new(p1.x - p0.x, p1.y - p0.y);
+                let len = (d.x * d.x + d.y * d.y).sqrt();
+                (len > 1e-6).then(|| Vec2::new(d.x / len, d.y / len))
+            })
+            .unwrap_or(Vec2::new(0.0, 1.0)); // A single-lane family has no "next" to orient by.
+
+        for (index, lane) in family_lanes.into_iter().enumerate() {
             let cells = &lanes.lane(lane).cells;
             let (Some(&first), Some(&last)) = (cells.first(), cells.last()) else {
                 continue;
             };
-            let origin = |c: u32| K::cell_origin(dims, lookup, coords[c as usize]);
-            let shape = |c: u32| K::cell_shape(coords[c as usize]);
 
             // The lane's own direction, from its first cell's centre to its last. Used (rather
             // than a fixed vertex index) so the guide runs parallel to the lane instead of
@@ -1632,8 +1654,12 @@ fn build_guides<K: GridKind>(
             } else {
                 Vec2::new(1.0, 0.0) // A single-cell lane has no real direction.
             };
-            // Perpendicular to `d`: picks a consistent side of the lane to draw the guide on.
-            let n = Vec2::new(-d.y, d.x);
+            // Perpendicular to `d`, then flipped (if needed) to point the same way as `t` — so
+            // "against n" consistently means "facing the previous lane", for every family.
+            let mut n = Vec2::new(-d.y, d.x);
+            if n.x * t.x + n.y * t.y < 0.0 {
+                n = Vec2::new(-n.x, -n.y);
+            }
 
             // The vertex on the `n`-side of the cell, breaking ties by `d` so the first cell
             // contributes its backward corner and the last cell its forward one — together
@@ -2024,6 +2050,43 @@ mod typed_tests {
 
     /// A square grid's guides must be axis-aligned and span the full width/height, not a diagonal
     /// clipped to one cell — the bug that made the whole grid look slightly tilted.
+    #[test]
+    fn guide_zero_is_on_the_outward_side() {
+        fn check<K: GridKind>(geo: &Geometry<K>) {
+            let lanes = geo.lane_map();
+            for family in 0..lanes.family_count() {
+                let family_lanes: Vec<usize> = lanes.family(family).collect();
+                if family_lanes.len() < 2 {
+                    continue; // No "next" lane to be inward of.
+                }
+                let center = |lane: usize| -> Point {
+                    let cell = lanes.lane(lane).cells[0];
+                    geo.cell_shape(cell).center(geo.cell_origin(cell))
+                };
+                let c0 = center(family_lanes[0]);
+                let c1 = center(family_lanes[1]);
+                let t = Vec2::new(c1.x - c0.x, c1.y - c0.y);
+
+                let guide0 = geo
+                    .guides()
+                    .iter()
+                    .find(|g| g.family == family && g.index == 0)
+                    .unwrap();
+                let dot = (guide0.from.x - c0.x) * t.x + (guide0.from.y - c0.y) * t.y;
+                assert!(
+                    dot < 0.0,
+                    "family {family} guide 0 is on the inward side: {guide0:?}"
+                );
+            }
+        }
+
+        check(&Geometry::<Square>::new(Rect {
+            width: 6,
+            height: 4,
+        }));
+        check(&Geometry::<Tri>::new(Outline::hexagon(3)));
+    }
+
     #[test]
     fn square_guides_are_not_skewed() {
         let geo = Geometry::<Square>::new(Rect {
