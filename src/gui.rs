@@ -17,9 +17,31 @@ pub enum LibraryStatus {
     Failed(String),
 }
 
+#[derive(Clone)]
+pub struct StatusMessage {
+    pub text: String,
+    pub is_error: bool,
+}
+
+impl StatusMessage {
+    pub fn info(text: impl Into<String>) -> Self {
+        StatusMessage {
+            text: text.into(),
+            is_error: false,
+        }
+    }
+
+    pub fn error(text: impl Into<String>) -> Self {
+        StatusMessage {
+            text: text.into(),
+            is_error: true,
+        }
+    }
+}
+
 use crate::{
     export::to_bytes,
-    grid_solve::{self, disambig_candidates},
+    grid_solve::{self, DisambigResult, disambig_candidates},
     gui_solver::{RenderStyle, SolveGui},
     import,
     puzzle::{
@@ -187,6 +209,7 @@ pub struct CanvasGui {
     pub solved_mask: Staleable<(String, Vec<Vec<bool>>)>,
     pub disambiguator: Staleable<Disambiguator>,
     pub id: Staleable<String>,
+    pub status: Option<StatusMessage>,
 }
 
 pub struct NonogramGui {
@@ -314,10 +337,7 @@ impl CanvasGui {
                     self.document = document;
                     self.version += 1;
                 } else {
-                    // TODO: we should have a centralized message system, and not go through rfd!
-                    rfd::MessageDialog::new()
-                        .set_description("That puzzle has no solution")
-                        .show();
+                    self.status = Some(StatusMessage::error("That puzzle has no solution"));
                 }
             }
         }
@@ -891,6 +911,7 @@ impl NonogramGui {
                     val: "".to_string(),
                     version: 0,
                 },
+                status: None,
             },
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
@@ -1083,10 +1104,11 @@ impl NonogramGui {
 
             ui.separator();
 
+            let picture = self.editor_gui.document.try_solution().unwrap().clone();
             self.editor_gui
                 .disambiguator
                 .get_or_refresh(self.editor_gui.version, Disambiguator::new)
-                .disambig_widget(self.editor_gui.document.try_solution().unwrap(), ui);
+                .disambig_widget(&picture, &mut self.editor_gui.status, ui);
 
             ui.separator();
 
@@ -1484,6 +1506,27 @@ impl eframe::App for NonogramGui {
         };
         ctx.set_style(style);
 
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            let status = if let Some(solve_gui) = &mut self.solve_gui {
+                &mut solve_gui.canvas.status
+            } else {
+                &mut self.editor_gui.status
+            };
+
+            ui.horizontal(|ui| {
+                if let Some(status) = status {
+                    let color = if status.is_error {
+                        Color32::DARK_RED
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    ui.colored_label(color, &status.text);
+                } else {
+                    ui.label("");
+                }
+            });
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             self.main_ui(ctx, ui);
         });
@@ -1495,7 +1538,7 @@ pub struct Disambiguator {
     pub terminate_s: mpsc::Sender<()>,
     progress_r: mpsc::Receiver<f32>,
     progress: f32,
-    report_r: mpsc::Receiver<Vec<Vec<(Color, f32)>>>,
+    report_r: mpsc::Receiver<DisambigResult>,
 }
 
 impl Disambiguator {
@@ -1516,7 +1559,12 @@ impl Disambiguator {
         self.progress = 0.0;
     }
 
-    pub fn disambig_widget(&mut self, picture: &Solution, ui: &mut egui::Ui) {
+    pub fn disambig_widget(
+        &mut self,
+        picture: &Solution,
+        status: &mut Option<StatusMessage>,
+        ui: &mut egui::Ui,
+    ) {
         while let Ok(progress) = self.progress_r.try_recv() {
             self.progress = progress;
         }
@@ -1543,8 +1591,15 @@ impl Disambiguator {
                 self.progress = 0.0;
             }
         }
-        if let Ok(report) = self.report_r.try_recv() {
-            self.report = Some(report);
+        if let Ok(result) = self.report_r.try_recv() {
+            match result {
+                DisambigResult::Unnecessary => {
+                    *status = Some(StatusMessage::info("Disambiguation is unnecessary"));
+                }
+                DisambigResult::Report(report) => {
+                    self.report = Some(report);
+                }
+            }
         }
 
         ui.add(egui::ProgressBar::new(self.progress).animate(report_running));

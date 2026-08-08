@@ -75,6 +75,14 @@ fn main() -> std::io::Result<()> {
                 std::sync::mpsc::channel().1,
             ));
 
+        let disambig = match disambig {
+            grid_solve::DisambigResult::Unnecessary => {
+                println!("Disambiguation is unnecessary");
+                return Ok(());
+            }
+            grid_solve::DisambigResult::Report(disambig) => disambig,
+        };
+
         let mut best_result = f32::MAX;
         for row in &disambig {
             for cell in row {

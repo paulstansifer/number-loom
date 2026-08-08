@@ -84,6 +84,7 @@ impl SolveGui {
                     val: "".to_string(),
                     version: 0,
                 },
+                status: None,
             },
             clues,
             intended_solution: document.take_solution().unwrap(),

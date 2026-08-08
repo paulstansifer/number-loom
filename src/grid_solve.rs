@@ -517,11 +517,17 @@ pub fn analyze_lines<C: Clue>(
     (row_techniques, col_techniques)
 }
 
+pub enum DisambigResult {
+    // The puzzle is already fully solvable without any extra cells: disambiguation is a no-op.
+    Unnecessary,
+    Report(Vec<Vec<(Color, f32)>>),
+}
+
 pub async fn disambig_candidates(
     s: &Solution,
     progress: mpsc::Sender<f32>,
     terminate: mpsc::Receiver<()>,
-) -> Vec<Vec<(Color, f32)>> {
+) -> DisambigResult {
     let mut solve_cache = crate::puzzle::DynSolveCache::new();
 
     let p = s.to_puzzle();
@@ -535,9 +541,8 @@ pub async fn disambig_candidates(
 
     let mut res = vec![vec![(BACKGROUND, 0.0); s.grid.first().unwrap().len()]; s.grid.len()];
     if orig_cells_left == 0 {
-        // TODO: probably send a result
         progress.send(0.0).unwrap();
-        return res;
+        return DisambigResult::Unnecessary;
     }
 
     for x in 0..s.x_size() {
@@ -578,13 +583,13 @@ pub async fn disambig_candidates(
             res[x][y] = (best_color, (best_result as f32) / (orig_cells_left as f32));
 
             if terminate.try_recv().is_ok() {
-                return res;
+                return DisambigResult::Report(res);
             }
         }
     }
     progress.send(1.0).unwrap();
 
-    return res;
+    DisambigResult::Report(res)
 }
 
 #[cfg(test)]
