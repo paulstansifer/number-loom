@@ -53,7 +53,7 @@ pub fn load(
         NonogramFormat::Webpbn => {
             let webpbn_string =
                 String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
-            let mut doc = webpbn_to_document(&webpbn_string);
+            let mut doc = webpbn_to_document(&webpbn_string)?;
             doc.file = filename.to_string();
             doc
         }
@@ -422,9 +422,9 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
                 .map(|c| c.extract())
             {
                 (
-                    u8::from_str_radix(rs, 16).unwrap(),
-                    u8::from_str_radix(gs, 16).unwrap(),
-                    u8::from_str_radix(bs, 16).unwrap(),
+                    u8::from_str_radix(rs, 16).context("expected hex digits in color")?,
+                    u8::from_str_radix(gs, 16).context("expected hex digits in color")?,
+                    u8::from_str_radix(bs, 16).context("expected hex digits in color")?,
                 )
             } else if corner.is_some() {
                 (0, 0, 0) // Assumes Triano puzzles are black-and-white!
@@ -501,8 +501,12 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
                                 .trim_end_matches(|c: char| !c.is_numeric())
                                 .parse()?;
                             let input_ch = clue_str.chars().last().unwrap();
+                            let color = olsak_palette
+                                .get(&input_ch)
+                                .with_context(|| format!("undefined color: {input_ch}"))?
+                                .color;
                             clues.push(Nono {
-                                color: olsak_palette[&input_ch].color,
+                                color,
                                 count: count as u16,
                             })
                         }
@@ -528,8 +532,13 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
                         if back_cap.is_some() {
                             chars.pop();
                         }
-                        let body_color = if !chars.last().unwrap().is_numeric() {
-                            olsak_palette[&chars.pop().unwrap()].color
+                        let last_char = *chars.last().context("clue has no body")?;
+                        let body_color = if !last_char.is_numeric() {
+                            let body_ch = chars.pop().unwrap();
+                            olsak_palette
+                                .get(&body_ch)
+                                .with_context(|| format!("undefined color: {body_ch}"))?
+                                .color
                         } else {
                             olsak_palette[&'1'].color
                         };

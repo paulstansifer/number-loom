@@ -1,4 +1,4 @@
-use anyhow::bail;
+use anyhow::{Context, bail};
 use std::collections::HashMap;
 
 use crate::puzzle::{BACKGROUND, Clue, Color, ColorInfo, Document, Nono, Puzzle};
@@ -44,10 +44,10 @@ fn get_single_child<'a, 'input>(
     Ok(res.pop().unwrap())
 }
 
-pub fn webpbn_to_document(webpbn: &str) -> Document {
-    let doc = roxmltree::Document::parse(webpbn).unwrap();
+pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
+    let doc = roxmltree::Document::parse(webpbn).context("could not parse XML")?;
     let puzzleset = doc.root_element();
-    let puzzle_node = get_single_child(puzzleset, "puzzle").unwrap();
+    let puzzle_node = get_single_child(puzzleset, "puzzle")?;
 
     let mut title = None;
     let mut description = None;
@@ -58,7 +58,7 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
 
     let default_color = puzzle_node
         .attribute("defaultcolor")
-        .expect("Expected a 'defaultcolor");
+        .context("expected a 'defaultcolor' attribute")?;
     let mut next_color_index = 1;
 
     let mut named_colors = HashMap::<String, Color>::new();
@@ -88,7 +88,9 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
         } else if tag_name == "copyright" {
             license = puzzle_part.text().map(|s| s.trim().to_string());
         } else if tag_name == "color" {
-            let color_name = puzzle_part.attribute("name").unwrap();
+            let color_name = puzzle_part
+                .attribute("name")
+                .context("color element missing 'name' attribute")?;
             let color = if color_name == default_color {
                 BACKGROUND
             } else {
@@ -104,22 +106,27 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
             )
             .unwrap();
 
-            let color_text = puzzle_part.text().expect("Expected hex color in text");
+            let color_text = puzzle_part
+                .text()
+                .context("expected hex color in text")?;
             let (_, component_strs) = hex_color
-                .captures(&color_text)
-                .expect("Expected a string of 6 hex digits")
+                .captures(color_text)
+                .context("expected a string of 6 hex digits")?
                 .extract();
 
-            let [r, g, b] = component_strs.map(|s| u8::from_str_radix(s, 16).unwrap());
+            let [r, g, b] = component_strs;
+            let r = u8::from_str_radix(r, 16).context("expected hex digits")?;
+            let g = u8::from_str_radix(g, 16).context("expected hex digits")?;
+            let b = u8::from_str_radix(b, 16).context("expected hex digits")?;
 
             let color_info = ColorInfo {
                 // TODO: error if there's more than one char!
                 ch: puzzle_part
                     .attribute("char")
-                    .unwrap()
+                    .context("color element missing 'char' attribute")?
                     .chars()
                     .next()
-                    .unwrap(),
+                    .context("'char' attribute is empty")?,
                 name: color_name.to_string(),
                 rgb: (r, g, b),
                 color: color,
@@ -134,21 +141,25 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
             } else if puzzle_part.attribute("type") == Some("columns") {
                 false
             } else {
-                panic!("Expected rows or columns.")
+                bail!("expected clues of type 'rows' or 'columns'")
             };
 
             let mut clue_lanes = vec![];
 
-            for lane in get_children(puzzle_part, "line").unwrap() {
+            for lane in get_children(puzzle_part, "line")? {
                 let mut clues = vec![];
-                for block in get_children(lane, "count").unwrap() {
-                    clues.push(Nono {
-                        color: named_colors[block
-                            .attribute("color")
-                            .expect("Expected 'color' attribute")],
-                        count: u16::from_str_radix(&block.text().unwrap(), 10)
-                            .expect("Expected a number."),
-                    });
+                for block in get_children(lane, "count")? {
+                    let color_name = block
+                        .attribute("color")
+                        .context("count element missing 'color' attribute")?;
+                    let color = *named_colors
+                        .get(color_name)
+                        .with_context(|| format!("undefined color: {color_name}"))?;
+                    let count_text = block.text().context("count element has no text")?;
+                    let count: u16 = count_text
+                        .parse()
+                        .with_context(|| format!("expected a number, got: {count_text}"))?;
+                    clues.push(Nono { color, count });
                 }
                 clue_lanes.push(clues);
             }
@@ -161,7 +172,7 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
         }
     }
 
-    Document::new(
+    Ok(Document::new(
         Some(Nono::to_dyn(puzzle)),
         None,
         "".to_string(),
@@ -170,7 +181,7 @@ pub fn webpbn_to_document(webpbn: &str) -> Document {
         author.or(authorid),
         id,
         license,
-    )
+    ))
 }
 
 pub fn as_webpbn(document: &Document) -> String {
