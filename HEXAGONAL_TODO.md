@@ -220,10 +220,18 @@ tests.
 * [x] Add `geometry` to `Solution` and to `Puzzle<C>`; `Solution::x_size`/`y_size` and
       `Document::dimensions` need triangular-aware replacements
 * [x] Replaced `Solution::grid` with a flat `cells: Vec<Color>` indexed by the geometry
-* [ ] Reject `Geometry::Triangular` + `ClueStyle::Triano` wherever a `Solution` is constructed
+* [x] Reject `Geometry::Triangular` + `ClueStyle::Triano` wherever a `Solution` is constructed —
+      not a runtime check at construction after all: `DynPuzzle` simply has no
+      `From<Puzzle<Triano, Tri>>` impl, so the combination is constructible in isolation but
+      nothing can convert it into anything a consumer accepts. `Solution::<Tri>::to_puzzle()`
+      also asserts `clue_style == Nono` as a second layer.
 * [ ] `Solution::blank_bw` gains a geometry/outline argument (or a `blank_hex` sibling) — still
-      square-only, needed by the new-puzzle dialog in Phase 4
-* [ ] `Solution::count_contiguous` — 3 axes, 6 directions (still square-only; used by the editor)
+      square-only. The New-puzzle dialog (Phase 4) doesn't call it for a triddler; it builds the
+      blank `Solution<Tri>` inline instead, so the *need* is met without generalizing this fn.
+* [ ] `Solution::count_contiguous` — still square-only (`(x, y) -> (up, down, left, right)`), but
+      the general 3-axis/6-direction capability it wanted now exists as `Geometry::runs` /
+      `DynSolution::runs_at_cell`, which the solver sidebar's triddler "plus" widget uses.
+      `count_contiguous` itself could be rewritten as a thin wrapper but nothing requires it yet.
 * [x] `Solution::quality_check` — now scales off cell count and lane count, which work for any shape
 
 ## Phase 2 — Solver
@@ -316,21 +324,47 @@ RGB rather than by `Color` index.
 
 ## Phase 4 — GUI: editing
 
-* [ ] `EditGui::canvas` (`gui.rs:521`): triangular rendering. Note `triangle_shape` (`gui.rs:809`)
-      already exists for Triano corner colors and may be partly reusable.
-* [ ] Hit-testing: screen position → `TriCoord` (the current `canvas_pos.x as usize` won't do)
-* [ ] Grid lines: three families instead of two; decide what the every-5th-line emphasis means here
-* [ ] `cell_shape` (`gui.rs:830`): the solved/disambiguation overlays are drawn as rects
-* [ ] `flood_fill` (`gui.rs:480`): triangular neighbours (each triangle has 3 edge-neighbours)
-* [ ] `Tool::OrthographicLine`: three directions instead of two
-* [ ] `Action::ChangeColor` keys on `(usize, usize)` — needs to key on `TriCoord`
-* [ ] `resize` / `resizer` (`gui.rs:991`, `gui.rs:1039`): six grow/shrink controls, one per bound.
-      The model side is trivial (±1 on an integer, always valid); the work is entirely in laying
-      out six pairs of buttons around a hexagon instead of four around a rectangle, and in
-      remapping existing cell contents when a bound moves.
-* [ ] Guard against shrinking a bound until the puzzle is empty
-* [ ] New-puzzle UI: choose geometry, and an outline (hexagon of side *n* is the sensible default)
-* [ ] Disallow the Triano palette / corner-color UI when geometry is triangular
+Done except the resizer. See "Editing triddlers (done)" above for the session that landed most of
+this; line numbers below are from the original plan and are stale (several of these were solved
+by a different, simpler mechanism than the one sketched here, noted per item).
+
+* [x] `EditGui::canvas`: triangular rendering, via `Geometry::rows()`'s nested iterator rather than
+      reusing `triangle_shape` (which draws a Triano *corner* color, a different thing from a
+      triddler *cell* — `CellShape::vertices`/`center`/`shrunk` do the real cell geometry instead).
+* [x] Hit-testing: `DynSolution::cell_at(Point) -> Option<DynCoord>`, O(1), not literally
+      `canvas_pos.x as usize` but the equivalent for any shape.
+* [x] Grid lines: three families, via `Geometry::guides()`. The every-5th-line emphasis means
+      "every 5th lane index within a family" — settled and tested
+      (`guide_zero_is_on_the_outward_side`, `guides_include_the_closing_edge`,
+      `square_guides_are_not_skewed`, `mesh_has_no_gaps`). This took three follow-up bug reports
+      to get right (skew, an off-by-one in which lane is "index 0", and real gaps in the mesh from
+      picking a vertex belonging to the wrong triangle edge) — see the commit history on the
+      `triddlers` branch for the detail.
+* [x] `cell_shape`: overlays now use `CellShape::vertices`/`shrunk`, not hardcoded rects.
+* [x] `flood_fill`: triangular neighbours, via `Geometry::neighbor_cells` (3 for a triangle, 4 for
+      a square).
+* [x] `Tool::OrthographicLine`: renamed `LineAlongLane`; follows whichever lane joins the drag's
+      two endpoints, covering all of a triddler's three directions.
+* [x] `Action::ChangeColor` keying — resolved differently: keyed on dense `u32` cell index, not
+      `TriCoord`/`DynCoord`. Every consumer (undo, the tools, merging) wanted a cell anyway, so
+      indices make that whole layer shape-agnostic with zero dispatch; coordinates only appear at
+      the hit-test boundary.
+* [ ] `resize` / `resizer`: six grow/shrink controls, one per bound. **Not done** — this is the one
+      real gap left in Phase 4. The model side is trivial (`Geometry::resized` + `K::SIDES` are
+      ready, and since outlines are stored raw rather than normalized, growing a side never
+      disturbs existing cell contents — no remapping needed, simpler than originally planned). The
+      work remaining is entirely UI: laying out six pairs of buttons around a hexagon instead of
+      four around a rectangle.
+* [ ] Guard against shrinking a bound until the puzzle is empty — the *model* already refuses
+      (`Outline::resized` returns `None` rather than emptying the puzzle), so this is moot until
+      the resizer UI above exists to need guarding.
+* [x] New-puzzle UI: choose geometry, and an outline. Offers Square or Triddler; Triddler shows a
+      single "hexagon side" slider (not full outline generality — matches the agreed scope of "a
+      reasonable shape, not every shape").
+* [x] Disallow the Triano palette / corner-color UI when geometry is triangular — by construction
+      rather than a dedicated check: a triangular `Solution` can never have `ClueStyle::Triano`
+      (see the Phase 1 item above), so `ColorInfo::corner` can never be `Some` in a triangular
+      palette, and there's no code path that could add one.
 
 ## Phase 5 — GUI: solving
 
