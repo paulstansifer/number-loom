@@ -1473,49 +1473,83 @@ impl NonogramGui {
             if ui.button("New").clicked() {
                 let (x_size, y_size) = self.editor_gui.document.dimensions();
                 self.new_dialog = Some(NewPuzzleDialog {
+                    shape: NewPuzzleShape::Square,
                     clue_style: self.editor_gui.document.solution_mut().clue_style(),
                     x_size,
                     y_size,
+                    tri_side: 3,
                 });
             }
             let mut new_document = None;
             if let Some(dialog) = self.new_dialog.as_mut() {
                 egui::Window::new("New puzzle").show(ctx, |ui| {
-                    ui.add(
-                        egui::Slider::new(&mut dialog.x_size, 5..=100)
-                            .step_by(5.0)
-                            .text("x size"),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut dialog.y_size, 5..=100)
-                            .step_by(5.0)
-                            .text("y size"),
-                    );
-                    ui.radio_value(
-                        &mut dialog.clue_style,
-                        crate::puzzle::ClueStyle::Nono,
-                        "Nonogram",
-                    );
-                    ui.radio_value(
-                        &mut dialog.clue_style,
-                        crate::puzzle::ClueStyle::Triano,
-                        "Trianogram",
-                    );
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut dialog.shape, NewPuzzleShape::Square, "Square");
+                        ui.radio_value(&mut dialog.shape, NewPuzzleShape::Triangular, "Triddler");
+                    });
+
+                    match dialog.shape {
+                        NewPuzzleShape::Square => {
+                            ui.add(
+                                egui::Slider::new(&mut dialog.x_size, 5..=100)
+                                    .step_by(5.0)
+                                    .text("x size"),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut dialog.y_size, 5..=100)
+                                    .step_by(5.0)
+                                    .text("y size"),
+                            );
+                            ui.radio_value(
+                                &mut dialog.clue_style,
+                                crate::puzzle::ClueStyle::Nono,
+                                "Nonogram",
+                            );
+                            ui.radio_value(
+                                &mut dialog.clue_style,
+                                crate::puzzle::ClueStyle::Triano,
+                                "Trianogram",
+                            );
+                        }
+                        NewPuzzleShape::Triangular => {
+                            // Trianogram clues on a triddler are rejected at construction, so
+                            // there's nothing to choose here — a triddler is always a nonogram.
+                            ui.add(
+                                egui::Slider::new(&mut dialog.tri_side, 1..=10)
+                                    .text("hexagon side"),
+                            );
+                        }
+                    }
+
                     if ui.button("Ok").clicked() {
-                        let new_solution = Solution::new(
-                            dialog.clue_style,
-                            match dialog.clue_style {
-                                ClueStyle::Nono => import::bw_palette(),
-                                ClueStyle::Triano => import::triano_palette(),
-                            },
-                            crate::geometry::Geometry::new(crate::geometry::Rect {
-                                width: dialog.x_size,
-                                height: dialog.y_size,
-                            }),
-                            vec![BACKGROUND; dialog.x_size * dialog.y_size],
-                        );
+                        let new_solution = match dialog.shape {
+                            NewPuzzleShape::Square => DynSolution::Square(Solution::new(
+                                dialog.clue_style,
+                                match dialog.clue_style {
+                                    ClueStyle::Nono => import::bw_palette(),
+                                    ClueStyle::Triano => import::triano_palette(),
+                                },
+                                crate::geometry::Geometry::new(crate::geometry::Rect {
+                                    width: dialog.x_size,
+                                    height: dialog.y_size,
+                                }),
+                                vec![BACKGROUND; dialog.x_size * dialog.y_size],
+                            )),
+                            NewPuzzleShape::Triangular => {
+                                let geometry = crate::geometry::Geometry::new(
+                                    crate::geometry::Outline::hexagon(dialog.tri_side),
+                                );
+                                let cells = vec![BACKGROUND; geometry.cell_count()];
+                                DynSolution::Tri(Solution::new(
+                                    ClueStyle::Nono,
+                                    import::bw_palette(),
+                                    geometry,
+                                    cells,
+                                ))
+                            }
+                        };
                         new_document = Some(Document::from_solution(
-                            DynSolution::Square(new_solution),
+                            new_solution,
                             "blank.xml".to_owned(),
                         ));
                         self.solve_mode = false;
@@ -1775,10 +1809,20 @@ impl NonogramGui {
     }
 }
 
+#[derive(PartialEq, Eq)]
+enum NewPuzzleShape {
+    Square,
+    Triangular,
+}
+
 struct NewPuzzleDialog {
+    shape: NewPuzzleShape,
     clue_style: crate::puzzle::ClueStyle,
     x_size: usize,
     y_size: usize,
+    /// Hexagon side length, used only when `shape` is `Triangular`. Doesn't cover every possible
+    /// triddler outline (see `Outline`) — just a reasonable default shape to start editing from.
+    tri_side: i32,
 }
 
 impl eframe::App for NonogramGui {

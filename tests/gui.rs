@@ -276,4 +276,81 @@ mod tests {
         harness.run();
         harness.run();
     }
+
+    /// The "New" dialog's Triddler option must actually produce an editable triangular puzzle,
+    /// not just compile. This is the path that constructs a `Geometry::<Tri>` outline and a
+    /// `DynSolution::Tri` from scratch, rather than loading one from a file.
+    #[test]
+    fn test_new_triddler_dialog() {
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let nonogram_gui = NonogramGui::new(doc);
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui| {
+                CentralPanel::default().show(ctx, |ui| {
+                    nonogram_gui.main_ui(ctx, ui);
+                });
+            },
+            nonogram_gui,
+        );
+        harness.run();
+
+        harness.get_by_label("New").click();
+        harness.run();
+        harness.get_by_label("Triddler").click();
+        harness.run();
+        harness.get_by_label("Ok").click();
+        harness.run();
+
+        let solution = harness
+            .state()
+            .editor_gui
+            .document
+            .try_solution()
+            .unwrap()
+            .clone();
+        assert!(
+            matches!(
+                solution.shape(),
+                number_loom::geometry::Shape::Triangular(_)
+            ),
+            "expected a triangular puzzle after choosing Triddler"
+        );
+        assert!(solution.cells().len() > 6, "a side-3 hexagon has 54 cells");
+        assert!(
+            solution
+                .cells()
+                .iter()
+                .all(|c| *c == number_loom::puzzle::BACKGROUND),
+            "a fresh puzzle should start blank"
+        );
+
+        // And it must be paintable, same as any other triddler.
+        let before = solution.cells().to_vec();
+        let center = Pos2::new(220.0, 120.0);
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: center,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: center,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        harness.run();
+        let after = harness
+            .state()
+            .editor_gui
+            .document
+            .try_solution()
+            .unwrap()
+            .cells()
+            .to_vec();
+        assert_ne!(
+            before, after,
+            "clicking a fresh triddler should paint a triangle"
+        );
+    }
 }
