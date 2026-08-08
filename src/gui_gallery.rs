@@ -1,6 +1,6 @@
 //! The UI for a gallery of puzzles.
 
-use crate::puzzle::{BACKGROUND, Document, Solution};
+use crate::puzzle::{BACKGROUND, Clue, Document, DynSolution};
 use eframe::egui;
 use egui::{CornerRadius, Vec2};
 use itertools::Itertools;
@@ -41,25 +41,17 @@ pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Respon
         .get_or_make_up_title()
         .unwrap_or_else(|_| "Untitled".to_string());
 
-    let (width, height) = if let Some(solution) = doc.try_solution() {
-        (solution.x_size(), solution.y_size())
-    } else {
-        let p = doc.try_puzzle().unwrap();
-        p.specialize(
-            |n| (n.cols.len(), n.rows.len()),
-            |t| (t.cols.len(), t.rows.len()),
-        )
-    };
+    let (width, height) = doc.dimensions();
 
-    let puzzle_type = if let Some(solution) = doc.try_solution() {
-        match solution.clue_style {
-            crate::puzzle::ClueStyle::Nono => "nonogram",
-            crate::puzzle::ClueStyle::Triano => "triangogram",
-        }
-    } else {
-        doc.try_puzzle()
-            .unwrap()
-            .specialize(|_| "nonogram", |_| "triangogram")
+    let puzzle_type = match (doc.try_solution(), doc.try_puzzle()) {
+        (Some(s), _) => match (s.shape(), s.clue_style()) {
+            (crate::geometry::Shape::Triangular(_), _) => "triddler",
+            (_, crate::puzzle::ClueStyle::Nono) => "nonogram",
+            (_, crate::puzzle::ClueStyle::Triano) => "triangogram",
+        },
+        (_, Some(crate::puzzle::DynPuzzle::SquareTriano(_))) => "triangogram",
+        (_, Some(crate::puzzle::DynPuzzle::TriNono(_))) => "triddler",
+        _ => "nonogram",
     };
 
     let inner_response = egui::Frame::new()
@@ -98,68 +90,40 @@ fn count_colors(doc: &Document) -> HashMap<(u8, u8, u8), usize> {
     if let Some(solution) = doc.try_solution() {
         count_colors_from_solution(solution)
     } else {
+        // Every family covers the whole picture, so counting one is enough. `Clue::express`
+        // flattens both clue styles into (colour, count) pairs, which is what makes this one loop
+        // rather than one per clue type.
         let mut counts = HashMap::new();
-
         let puzzle = doc.try_puzzle().unwrap();
-        puzzle.specialize(
-            |p| {
-                for row in &p.rows {
-                    for clue in row {
-                        let color_info = &p.palette[&clue.color];
-                        *counts.entry(color_info.rgb).or_insert(0) += clue.count as usize;
-                    }
-                }
-
-                counts.insert(
-                    p.palette[&BACKGROUND].rgb,
-                    p.rows.len() * p.cols.len() - counts.values().sum::<usize>(),
-                );
-            },
-            |p| {
-                let mut counts = HashMap::new();
-                for row in &p.rows {
-                    for clue in row {
-                        if let Some(color_info) = p.palette.get(&clue.body_color) {
-                            if color_info.corner.is_none() {
-                                *counts.entry(color_info.rgb).or_insert(0) +=
-                                    clue.body_len as usize;
-                            }
-                        }
-                        if let Some(front_cap) = clue.front_cap {
-                            if let Some(color_info) = p.palette.get(&front_cap) {
-                                if color_info.corner.is_none() {
-                                    *counts.entry(color_info.rgb).or_insert(0) += 1;
-                                }
-                            }
-                        }
-                        if let Some(back_cap) = clue.back_cap {
-                            if let Some(color_info) = p.palette.get(&back_cap) {
-                                if color_info.corner.is_none() {
-                                    *counts.entry(color_info.rgb).or_insert(0) += 1;
-                                }
-                            }
+        let mut filled = 0usize;
+        crate::with_puzzle!(puzzle, |p| {
+            for lane in p.lane_map().family(0) {
+                for clue in &p.lines[lane] {
+                    for (color_info, count) in clue.express(&p.palette) {
+                        let n = count.unwrap_or(1) as usize;
+                        filled += n;
+                        if color_info.corner.is_none() {
+                            *counts.entry(color_info.rgb).or_insert(0) += n;
                         }
                     }
                 }
-                counts.insert(
-                    p.palette[&BACKGROUND].rgb,
-                    p.rows.len() * p.cols.len() - counts.values().sum::<usize>(),
-                );
-            },
-        );
+            }
+            counts.insert(
+                p.palette[&BACKGROUND].rgb,
+                p.geometry.cell_count().saturating_sub(filled),
+            );
+        });
 
         counts
     }
 }
 
-fn count_colors_from_solution(solution: &Solution) -> HashMap<(u8, u8, u8), usize> {
+fn count_colors_from_solution(solution: &DynSolution) -> HashMap<(u8, u8, u8), usize> {
     let mut counts = HashMap::new();
-    for col in &solution.grid {
-        for &color in col {
-            if let Some(color_info) = solution.palette.get(&color) {
-                if color_info.corner.is_none() {
-                    *counts.entry(color_info.rgb).or_insert(0) += 1;
-                }
+    for color in solution.cells() {
+        if let Some(color_info) = solution.palette().get(color) {
+            if color_info.corner.is_none() {
+                *counts.entry(color_info.rgb).or_insert(0) += 1;
             }
         }
     }

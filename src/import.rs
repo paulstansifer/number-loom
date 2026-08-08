@@ -11,9 +11,10 @@ use std::{
 
 use crate::{
     formats::woven::from_woven,
+    geometry::{GridKind, Square, Tri},
     puzzle::{
-        self, BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, Nono,
-        NonogramFormat, Puzzle, Solution, Triano,
+        self, BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynPuzzle, DynSolution,
+        Nono, NonogramFormat, Puzzle, Solution, Triano,
     },
 };
 
@@ -48,11 +49,10 @@ pub fn load(
         NonogramFormat::Image => {
             let img = image::load_from_memory(&bytes).context("could not decode image")?;
             let solution = image_to_solution(&img);
-            Document::from_solution(solution, filename.to_string())
+            Document::from_solution(DynSolution::Square(solution), filename.to_string())
         }
         NonogramFormat::Webpbn => {
-            let webpbn_string =
-                String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
+            let webpbn_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
             let mut doc = webpbn_to_document(&webpbn_string)?;
             doc.file = filename.to_string();
             doc
@@ -60,7 +60,7 @@ pub fn load(
         NonogramFormat::CharGrid => {
             let grid_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
             let solution = char_grid_to_solution(&grid_string);
-            Document::from_solution(solution, filename.to_string())
+            Document::from_solution(DynSolution::Square(solution), filename.to_string())
         }
         NonogramFormat::Woven => {
             let woven_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
@@ -74,7 +74,7 @@ pub fn load(
     })
 }
 
-pub fn image_to_solution(image: &DynamicImage) -> Solution {
+pub fn image_to_solution(image: &DynamicImage) -> Solution<Square> {
     let (width, height) = image.dimensions();
 
     let mut palette = HashMap::<image::Rgba<u8>, ColorInfo>::new();
@@ -122,17 +122,17 @@ pub fn image_to_solution(image: &DynamicImage) -> Solution {
         }
     }
 
-    Solution {
-        clue_style: ClueStyle::Nono, // Images can't have triangular pixels!
-        palette: palette
+    Solution::from_columns(
+        ClueStyle::Nono, // Images can't have triangular pixels!
+        palette
             .into_values()
             .map(|color_info| (color_info.color, color_info))
             .collect(),
         grid,
-    }
+    )
 }
 
-pub fn char_grid_to_solution(char_grid: &str) -> Solution {
+pub fn char_grid_to_solution(char_grid: &str) -> Solution<Square> {
     let mut palette = HashMap::<char, ColorInfo>::new();
 
     // We want deterministic behavior
@@ -286,14 +286,93 @@ pub fn char_grid_to_solution(char_grid: &str) -> Solution {
         ClueStyle::Nono
     };
 
-    Solution {
+    Solution::from_columns(
         clue_style,
-        palette: palette
+        palette
             .into_values()
             .map(|color_info| (color_info.color, color_info))
             .collect(),
         grid,
+    )
+}
+
+/// Assemble a triddler from Olsak's six data groups.
+///
+/// Olsak labels the hexagon's sides `A`..`F` counterclockwise from the upper left:
+///
+/// ```text
+///          F
+///       -------
+///    A /       \ E
+///     /        /
+///     \       / D
+///    B \     /
+///       -----
+///         C
+/// ```
+///
+/// so `A`=topleft, `B`=bottomleft, `C`=bottom, `D`=bottomright, `E`=topright, `F`=top. Because the
+/// traversal is counterclockwise, `A`/`B` and `C`/`D` list their lines in increasing lane order,
+/// but `E`/`F` run the other way around the hexagon and so are listed in *decreasing* lane order.
+///
+/// The `C`/`D` blocks are written in the reverse of our order, which is what Olsak's own warning
+/// about reading columns that "begin at the bottom of hexagonal ... from underneath upstairs"
+/// refers to. (Note that these two facts were confirmed empirically: of the 1024 readings that fit
+/// `tkocka.g`'s line lengths, only two solve it completely, and this is the one that also matches
+/// the documented side diagram. The other is its mirror image.)
+///
+/// A blank line inside a group is significant — it means "no blocks in this line" — so unlike most
+/// of this format, trailing blank lines must *not* be trimmed.
+///
+/// Olsak also documents two identities the side lengths must satisfy (`E = A + B - D` and
+/// `F = C + D - A`); those hold automatically for any real outline, so rather than checking them
+/// we just recover the outline from the six lengths and let that fail if they're inconsistent.
+fn olsak_triddler(
+    palette: HashMap<Color, ColorInfo>,
+    mut groups: Vec<Vec<Vec<Nono>>>,
+) -> anyhow::Result<Puzzle<Nono, Tri>> {
+    use crate::geometry::{ClueSet, ClueSetCounts, Geometry, Outline};
+
+    let counts = ClueSetCounts {
+        topleft: groups[0].len(),
+        bottomleft: groups[1].len(),
+        bottom: groups[2].len(),
+        bottomright: groups[3].len(),
+        topright: groups[4].len(),
+        top: groups[5].len(),
+    };
+    let outline = Outline::from_clue_set_counts(counts)?;
+    let geometry = Geometry::<Tri>::new(outline);
+
+    let mut lines = vec![vec![]; geometry.lane_map().lane_count()];
+    // Group index, its clue set, whether Olsak lists that side's lines backwards, and whether the
+    // blocks within each line are written in the opposite order to ours.
+    let assignment = [
+        (0, ClueSet::TopLeft, false, false),
+        (1, ClueSet::BottomLeft, false, false),
+        (2, ClueSet::Bottom, false, true),
+        (3, ClueSet::BottomRight, false, true),
+        (4, ClueSet::TopRight, true, false),
+        (5, ClueSet::Top, true, false),
+    ];
+    for (group_idx, clue_set, lines_reversed, blocks_reversed) in assignment {
+        let mut group_lines = std::mem::take(&mut groups[group_idx]);
+        if lines_reversed {
+            group_lines.reverse();
+        }
+        for (lane, mut clue_line) in geometry
+            .lanes_in_clue_set(clue_set)
+            .into_iter()
+            .zip(group_lines)
+        {
+            if blocks_reversed {
+                clue_line.reverse();
+            }
+            lines[lane] = clue_line;
+        }
     }
+
+    Ok(Puzzle::triangular(palette, outline, lines))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -337,9 +416,11 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
         HashMap::<(char, Glue), ColorInfo>::new(),
     ];
     let mut clue_style = ClueStyle::Nono;
+    // `#t`/`#T` declares a triddler, which has six data groups rather than two.
+    let mut triddler = false;
 
     // Dimension > Position > Clue index
-    let mut nono_clues: Vec<Vec<Vec<Nono>>> = vec![vec![], vec![]];
+    let mut nono_clues: Vec<Vec<Vec<Nono>>> = vec![vec![]; 6];
     let mut triano_clues: Vec<Vec<Vec<Triano>>> = vec![vec![], vec![]];
 
     for line in olsak.lines() {
@@ -350,12 +431,16 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
 
             let palette_ch = palette_ch.to_lowercase();
 
+            // `#t`/`#T` only declares that this is a triddler; the palette (if any) is still
+            // introduced by a separate `#d`, and comments may sit between the two. A triddler
+            // with no colours has no `#d` at all.
             if palette_ch.starts_with("t") {
-                bail!("Triddlers not yet supported!");
+                triddler = true;
+            } else if palette_ch.starts_with("d") {
+                cur_stanza = Palette;
+            } else {
+                bail!("unrecognized directive: #{palette_ch}");
             }
-
-            assert!(palette_ch.starts_with("d"));
-            cur_stanza = Palette;
         } else if line.starts_with(":") {
             cur_stanza = Dimension(if let Dimension(n) = cur_stanza {
                 n + 1
@@ -365,6 +450,9 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
         } else if cur_stanza == Preamble {
             /* Just comments */
         } else if cur_stanza == Palette {
+            if line.trim().is_empty() {
+                continue;
+            }
             let captures = regex::Regex::new(r"^\s*(\S):(.)\s+(\S+)\s*(.*)$")
                 .unwrap()
                 .captures(line)
@@ -482,7 +570,7 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
                 );
             }
 
-            if d >= 2 {
+            if d >= if triddler { 6 } else { 2 } {
                 // There can be comments after the end!
                 continue;
             }
@@ -572,23 +660,30 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
         }
     }
 
+    if triddler {
+        if clue_style == ClueStyle::Triano {
+            bail!("a puzzle can't be both a triddler and a trianogram");
+        }
+        return Ok(olsak_triddler(palette, nono_clues)?.into());
+    }
+
     Ok(match clue_style {
-        ClueStyle::Nono => DynPuzzle::Nono(Puzzle::<Nono> {
+        ClueStyle::Nono => {
+            Puzzle::<Nono, Square>::square(palette, nono_clues[0].clone(), nono_clues[1].clone())
+                .into()
+        }
+        ClueStyle::Triano => Puzzle::<Triano, Square>::square(
             palette,
-            rows: nono_clues[0].clone(),
-            cols: nono_clues[1].clone(),
-        }),
-        ClueStyle::Triano => DynPuzzle::Triano(Puzzle::<Triano> {
-            palette,
-            rows: triano_clues[0].clone(),
-            cols: triano_clues[1].clone(),
-        }),
+            triano_clues[0].clone(),
+            triano_clues[1].clone(),
+        )
+        .into(),
     })
 }
 
-pub fn solution_to_triano_puzzle(solution: &Solution) -> Puzzle<Triano> {
-    let width = solution.grid.len();
-    let height = solution.grid.first().unwrap().len();
+pub fn solution_to_triano_puzzle(solution: &Solution<Square>) -> Puzzle<Triano, Square> {
+    let width = solution.x_size();
+    let height = solution.y_size();
 
     let mut rows: Vec<Vec<Triano>> = Vec::new();
     let mut cols: Vec<Vec<Triano>> = Vec::new();
@@ -606,7 +701,7 @@ pub fn solution_to_triano_puzzle(solution: &Solution) -> Puzzle<Triano> {
         let mut cur_clue = blank_clue;
 
         for x in 0..width {
-            let color = solution.grid[x][y];
+            let color = solution[(x, y)];
             let color_info = &solution.palette[&color];
 
             // For example `!left` means ◢ or ◥:
@@ -652,7 +747,7 @@ pub fn solution_to_triano_puzzle(solution: &Solution) -> Puzzle<Triano> {
         let mut cur_clue = blank_clue;
 
         for y in 0..height {
-            let color = solution.grid[x][y];
+            let color = solution[(x, y)];
             let color_info = &solution.palette[&color];
 
             if color_info.corner.is_some_and(|c| !c.upper) {
@@ -691,79 +786,53 @@ pub fn solution_to_triano_puzzle(solution: &Solution) -> Puzzle<Triano> {
         cols.push(clues);
     }
 
+    Puzzle::square(solution.palette.clone(), rows, cols)
+}
+
+/// Read off the clues for one lane: maximal runs of a single non-background colour.
+fn clues_along_lane<K: GridKind>(solution: &Solution<K>, cells: &[u32]) -> Vec<Nono> {
+    let mut clues = Vec::<Nono>::new();
+
+    let mut prev_color: Option<Color> = None;
+    let mut run = 1;
+    // One extra step past the end, so the final run gets flushed.
+    for i in 0..cells.len() + 1 {
+        let color = cells.get(i).map(|c| solution.cells[*c as usize]);
+        if prev_color == color {
+            run += 1;
+            continue;
+        }
+        match prev_color {
+            None => {}
+            Some(color) if color == BACKGROUND => {}
+            Some(color) => clues.push(Nono { color, count: run }),
+        }
+        prev_color = color;
+        run = 1;
+    }
+    clues
+}
+
+/// Derive a puzzle's clues from a finished picture, for any geometry.
+pub fn solution_to_nono_puzzle<K: GridKind>(solution: &Solution<K>) -> Puzzle<Nono, K> {
+    let lanes = solution.geometry.lane_map();
+    let lines = (0..lanes.lane_count())
+        .map(|lane| clues_along_lane(solution, &lanes.lane(lane).cells))
+        .collect();
+
     Puzzle {
         palette: solution.palette.clone(),
-        rows,
-        cols,
+        geometry: solution.geometry.clone(),
+        lines,
     }
 }
 
-pub fn solution_to_puzzle(solution: &Solution) -> Puzzle<Nono> {
-    let width = solution.grid.len();
-    let height = solution.grid.first().unwrap().len();
+pub fn solution_to_puzzle(solution: &Solution<Square>) -> Puzzle<Nono, Square> {
+    solution_to_nono_puzzle(solution)
+}
 
-    let mut rows: Vec<Vec<Nono>> = Vec::new();
-    let mut cols: Vec<Vec<Nono>> = Vec::new();
-
-    // Generate row clues
-    for y in 0..height {
-        let mut clues = Vec::<Nono>::new();
-
-        let mut prev_color: Option<Color> = None;
-        let mut run = 1;
-        for x in 0..width + 1 {
-            let color = if x < width {
-                Some(solution.grid[x][y])
-            } else {
-                None
-            };
-            if prev_color == color {
-                run += 1;
-                continue;
-            }
-            match prev_color {
-                None => {}
-                Some(color) if color == puzzle::BACKGROUND => {}
-                Some(color) => clues.push(Nono { color, count: run }),
-            }
-            prev_color = color;
-            run = 1;
-        }
-        rows.push(clues);
-    }
-
-    // Generate column clues
-    for x in 0..width {
-        let mut clues = Vec::<Nono>::new();
-
-        let mut prev_color = None;
-        let mut run = 1;
-        for y in 0..height + 1 {
-            let color = if y < height {
-                Some(solution.grid[x][y])
-            } else {
-                None
-            };
-            if prev_color == color {
-                run += 1;
-                continue;
-            }
-            match prev_color {
-                None => {}
-                Some(color) if color == BACKGROUND => {}
-                Some(color) => clues.push(Nono { color, count: run }),
-            }
-            prev_color = color;
-            run = 1;
-        }
-        cols.push(clues);
-    }
-
-    Puzzle {
-        palette: solution.palette.clone(),
-        rows,
-        cols,
-    }
+pub fn solution_to_tri_puzzle(solution: &Solution<Tri>) -> Puzzle<Nono, Tri> {
+    solution_to_nono_puzzle(solution)
 }
 
 pub fn bw_palette() -> HashMap<Color, ColorInfo> {

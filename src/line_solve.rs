@@ -3,7 +3,7 @@
 
 use std::{fmt::Debug, u32};
 
-use crate::puzzle::{BACKGROUND, Clue, Color, Puzzle};
+use crate::puzzle::{BACKGROUND, Clue, Color};
 use anyhow::{Context, bail};
 use colored::{ColoredString, Colorize};
 use ndarray::{ArrayView1, ArrayViewMut1};
@@ -131,9 +131,9 @@ impl Debug for Cell {
 }
 
 impl Cell {
-    pub fn new(puzzle: &Puzzle<impl Clue>) -> Cell {
+    pub fn new(palette: &crate::puzzle::Palette) -> Cell {
         let mut res: u32 = 0;
-        for color in puzzle.palette.keys() {
+        for color in palette.keys() {
             res |= 1 << color.0
         }
         Cell {

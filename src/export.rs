@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::path::{Path, PathBuf};
 
 use axohtml::{html, text};
@@ -5,8 +6,17 @@ use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 
 use crate::{
     formats::woven::to_woven,
-    puzzle::{self, Clue, Document, NonogramFormat, Puzzle, Solution},
+    geometry::{Shape, Square},
+    puzzle::{self, Clue, Document, DynPuzzle, NonogramFormat, Puzzle, Solution},
 };
+
+/// The square-only writers need a square picture; asking for one is how we find out.
+fn square_solution(document: &mut Document) -> anyhow::Result<&Solution<Square>> {
+    document
+        .solution()?
+        .as_square()
+        .context("this format needs a square puzzle, not a triddler")
+}
 
 pub fn to_bytes(
     document: &mut Document,
@@ -24,17 +34,38 @@ pub fn to_bytes(
         )
     });
 
+    // Triangular puzzles round-trip through webpbn and olsak. The other writers all assume two
+    // clue directions and a rectangular grid of cells, and would quietly emit nonsense.
+    if let Some(puzzle) = document.try_puzzle() {
+        let triangular = matches!(puzzle.shape(), Shape::Triangular(_));
+        let supports_triddlers = matches!(format, NonogramFormat::Webpbn | NonogramFormat::Olsak);
+        if triangular && !supports_triddlers {
+            anyhow::bail!(
+                "{:?} can't represent a triddler; use the webpbn or olsak format",
+                format
+            );
+        }
+    }
+
     let bytes = if format == NonogramFormat::Image {
         let file_name = file_name.expect("need file name to pick image format");
-        as_image_bytes(document.solution()?, file_name)?
+        as_image_bytes(square_solution(document)?, file_name)?
     } else {
         match format {
-            NonogramFormat::Olsak => document.puzzle().specialize(as_olsak_nono, as_olsak_triano),
+            NonogramFormat::Olsak => match document.puzzle() {
+                DynPuzzle::SquareNono(p) => as_olsak_nono(p),
+                DynPuzzle::TriNono(p) => as_olsak_nono(p),
+                DynPuzzle::SquareTriano(p) => as_olsak_triano(p),
+            },
             NonogramFormat::Webpbn => as_webpbn(document),
-            NonogramFormat::Html => document.puzzle().specialize(as_html, as_html),
+            NonogramFormat::Html => match document.puzzle() {
+                DynPuzzle::SquareNono(p) => as_html(p),
+                DynPuzzle::SquareTriano(p) => as_html(p),
+                DynPuzzle::TriNono(_) => unreachable!("refused above"),
+            },
             NonogramFormat::Image => panic!(),
             NonogramFormat::Woven => to_woven(document)?,
-            NonogramFormat::CharGrid => as_char_grid(document.solution()?),
+            NonogramFormat::CharGrid => as_char_grid(square_solution(document)?),
         }
         .into_bytes()
     };
@@ -59,7 +90,7 @@ pub fn save(
     Ok(())
 }
 
-pub fn as_html<C: Clue>(puzzle: &Puzzle<C>) -> String {
+pub fn as_html<C: Clue>(puzzle: &Puzzle<C, Square>) -> String {
     let html: axohtml::dom::DOMTree<String> = html!(
         <html>
             <head>
@@ -110,18 +141,18 @@ table td:last-child {
                     <thead>
                         <tr>
                         <th></th>
-                        { puzzle.cols.iter().map(|col| html!(<th class="col">{
-                            col.iter().map(|clue| html!(<div style=(clue.html_color(puzzle))>{text!("{} ", clue.html_text(puzzle))} </div>))
+                        { puzzle.col_clues().iter().map(|col| html!(<th class="col">{
+                            col.iter().map(|clue| html!(<div style=(clue.html_color(&puzzle.palette))>{text!("{} ", clue.html_text(&puzzle.palette))} </div>))
                         }</th>))}
                         </tr>
                     </thead>
                     <tbody>
                     {
-                        puzzle.rows.iter().map(|row| html!(<tr><th class="row">{
-                            row.iter().map(|clue| html!(<span style=(clue.html_color(puzzle))>{text!("{} ", clue.html_text(puzzle))} </span>))
+                        puzzle.row_clues().iter().map(|row| html!(<tr><th class="row">{
+                            row.iter().map(|clue| html!(<span style=(clue.html_color(&puzzle.palette))>{text!("{} ", clue.html_text(&puzzle.palette))} </span>))
                         }</th>
                         {
-                            puzzle.cols.iter().map(|_| html!(<td></td>))
+                            puzzle.col_clues().iter().map(|_| html!(<td></td>))
                         }
                         </tr>))
                     }
@@ -134,19 +165,18 @@ table td:last-child {
     html.to_string()
 }
 
-pub fn as_image_bytes<P>(solution: &Solution, path_or_filename: P) -> anyhow::Result<Vec<u8>>
+pub fn as_image_bytes<P>(
+    solution: &Solution<Square>,
+    path_or_filename: P,
+) -> anyhow::Result<Vec<u8>>
 where
     P: AsRef<Path>,
 {
-    let mut image = RgbImage::new(
-        solution.grid.len() as u32,
-        solution.grid.first().unwrap().len() as u32,
-    );
+    let mut image = RgbImage::new(solution.x_size() as u32, solution.y_size() as u32);
 
-    for (x, col) in solution.grid.iter().enumerate() {
-        for (y, color) in col.iter().enumerate() {
-            let color_info = &solution.palette[color];
-            let (r, g, b) = color_info.rgb;
+    for x in 0..solution.x_size() {
+        for y in 0..solution.y_size() {
+            let (r, g, b) = solution.palette[&solution[(x, y)]].rgb;
             image.put_pixel(x as u32, y as u32, Rgb::<u8>([r, g, b]));
         }
     }
@@ -165,12 +195,12 @@ where
         .into_inner())
 }
 
-pub fn as_char_grid(solution: &Solution) -> String {
+pub fn as_char_grid(solution: &Solution<Square>) -> String {
     let mut result = String::new();
 
-    for y in 0..solution.grid[0].len() {
-        for x in 0..solution.grid.len() {
-            let color = solution.grid[x][y];
+    for y in 0..solution.y_size() {
+        for x in 0..solution.x_size() {
+            let color = solution[(x, y)];
             let color_info = &solution.palette[&color];
             result.push(color_info.ch);
         }
@@ -186,6 +216,7 @@ mod tests {
     use anyhow::bail;
 
     use crate::{
+        geometry::Square,
         import::olsak_to_puzzle,
         puzzle::{Color, ColorInfo, Corner, Puzzle, Triano},
     };
@@ -219,19 +250,23 @@ mod tests {
         Ok(())
     }
 
-    fn puzzles_eq(lhs: &Puzzle<Triano>, rhs: &Puzzle<Triano>) -> anyhow::Result<()> {
-        if lhs.rows.len() != rhs.rows.len() {
+    fn puzzles_eq(
+        lhs: &Puzzle<Triano, Square>,
+        rhs: &Puzzle<Triano, Square>,
+    ) -> anyhow::Result<()> {
+        if lhs.row_clues().len() != rhs.row_clues().len() {
             bail!(
                 "Row length mismatch {} vs {}",
-                lhs.rows.len(),
-                rhs.rows.len()
+                lhs.row_clues().len(),
+                rhs.row_clues().len()
             );
         }
 
-        for (l_lines, r_lines, _dim) in
-            [(&lhs.cols, &rhs.cols, "col"), (&lhs.rows, &rhs.rows, "row")]
-        {
-            for (l_row, r_row) in match_march(&l_lines, &r_lines)? {
+        for (l_lines, r_lines, _dim) in [
+            (lhs.col_clues(), rhs.col_clues(), "col"),
+            (lhs.row_clues(), rhs.row_clues(), "row"),
+        ] {
+            for (l_row, r_row) in match_march(l_lines, r_lines)? {
                 for (l_clue, r_clue) in match_march(l_row, r_row)? {
                     if let (Some(l), Some(r)) = (l_clue.front_cap, r_clue.front_cap) {
                         colors_eq(l, r, &lhs.palette, &rhs.palette)?;
@@ -270,46 +305,46 @@ mod tests {
 
     #[test]
     fn round_trip_olsak_triano() {
-        let p = Puzzle::<Triano> {
-            palette: HashMap::from_iter([
-                (Color(0), ColorInfo::default_bg()),
-                (Color(1), ColorInfo::default_fg(Color(1))),
-                (
-                    Color(2),
-                    ColorInfo {
-                        ch: '◢',
-                        name: "foo".to_string(),
-                        rgb: (0, 0, 0),
-                        color: Color(2),
-                        corner: Some(Corner {
-                            upper: false,
-                            left: false,
-                        }),
-                    },
-                ),
-            ]),
-            // Listen: I know this isn't a coherent puzzle
-            cols: vec![vec![
-                Triano {
-                    front_cap: Some(Color(2)),
-                    body_len: 3,
-                    body_color: Color(1),
-                    back_cap: None,
+        let palette = HashMap::from_iter([
+            (Color(0), ColorInfo::default_bg()),
+            (Color(1), ColorInfo::default_fg(Color(1))),
+            (
+                Color(2),
+                ColorInfo {
+                    ch: '◢',
+                    name: "foo".to_string(),
+                    rgb: (0, 0, 0),
+                    color: Color(2),
+                    corner: Some(Corner {
+                        upper: false,
+                        left: false,
+                    }),
                 },
-                Triano {
-                    front_cap: None,
-                    body_len: 2,
-                    body_color: Color(1),
-                    back_cap: None,
-                },
-            ]],
-            rows: vec![vec![Triano {
-                front_cap: None,
+            ),
+        ]);
+        // Listen: I know this isn't a coherent puzzle
+        let cols = vec![vec![
+            Triano {
+                front_cap: Some(Color(2)),
                 body_len: 3,
                 body_color: Color(1),
                 back_cap: None,
-            }]],
-        };
+            },
+            Triano {
+                front_cap: None,
+                body_len: 2,
+                body_color: Color(1),
+                back_cap: None,
+            },
+        ]];
+        let rows = vec![vec![Triano {
+            front_cap: None,
+            body_len: 3,
+            body_color: Color(1),
+            back_cap: None,
+        }]];
+
+        let p = Puzzle::<Triano, Square>::square(palette, rows, cols);
 
         let serialized = crate::formats::olsak::as_olsak_triano(&p);
 
@@ -319,6 +354,6 @@ mod tests {
 
         println!("{:?}", roundtripped);
 
-        puzzles_eq(&p, &roundtripped.assume_triano()).unwrap();
+        puzzles_eq(&p, &roundtripped.as_square_triano().unwrap()).unwrap();
     }
 }

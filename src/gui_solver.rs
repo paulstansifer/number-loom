@@ -1,16 +1,16 @@
 use crate::{
     grid_solve::LineStatus,
     gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
-    puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, Solution, UNSOLVED},
+    puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
 
-use crate::puzzle::Document;
+use crate::puzzle::{Document, DynSolution};
 pub struct SolveGui {
     pub canvas: CanvasGui,
     pub clues: DynPuzzle,
-    pub intended_solution: Solution,
+    pub intended_solution: DynSolution,
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
@@ -34,12 +34,10 @@ impl SolveGui {
         progress: crate::gui::SharedProgress,
     ) -> Self {
         let mut working_doc = document.clone();
-        for line in &mut working_doc.solution_mut().grid {
-            for cell in line {
-                *cell = UNSOLVED;
-            }
+        for cell in working_doc.solution_mut().cells_mut() {
+            *cell = UNSOLVED;
         }
-        working_doc.solution_mut().palette.insert(
+        working_doc.solution_mut().palette_mut().insert(
             UNSOLVED,
             crate::puzzle::ColorInfo {
                 ch: '?',
@@ -50,15 +48,16 @@ impl SolveGui {
             },
         );
         let mut current_color = BACKGROUND;
-        if working_doc.solution_mut().palette.contains_key(&Color(1)) {
+        if working_doc
+            .solution_mut()
+            .palette_mut()
+            .contains_key(&Color(1))
+        {
             current_color = Color(1)
         }
 
         let clues = document.puzzle().clone();
-        let solved_mask = vec![
-            vec![true; document.solution_mut().grid[0].len()];
-            document.solution_mut().grid.len()
-        ];
+        let solved_mask = vec![true; document.solution_mut().cells().len()];
 
         fn get_bool_setting(key: &str) -> bool {
             UserSettings::get(key)
@@ -108,30 +107,36 @@ impl SolveGui {
 
     fn detect_any_errors(&self) -> bool {
         let picture = self.canvas.document.try_solution().unwrap();
-        for (x, row) in picture.grid.iter().enumerate() {
-            for (y, color) in row.iter().enumerate() {
-                if *color != self.intended_solution.grid[x][y] && *color != crate::puzzle::UNSOLVED
-                {
-                    return true;
-                }
+        for (cell, intended) in picture.cells().iter().zip(self.intended_solution.cells()) {
+            if *cell != *intended && *cell != crate::puzzle::UNSOLVED {
+                return true;
             }
         }
         false
     }
 
     fn is_correctly_solved(&self) -> bool {
-        self.canvas.document.try_solution().unwrap().grid == self.intended_solution.grid
+        self.canvas.document.try_solution().unwrap().cells() == self.intended_solution.cells()
     }
 
     fn infer_background(&mut self) {
-        let picture = self.canvas.document.solution_mut();
+        let Some(picture) = self.canvas.document.square_solution_mut() else {
+            return; // Solving a triddler in the GUI isn't wired up yet.
+        };
         let mut grid = picture.to_partial();
 
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
-            for ((y, x), cell) in grid.indexed_iter() {
-                let current_color = picture.grid[x][y];
+            let picture = self.canvas.document.try_solution().unwrap();
+            for (index, cell) in grid.iter().enumerate() {
+                let current_color = picture.cells()[index];
                 if cell.is_known() && cell.known_or() != Some(current_color) {
+                    let (x, y) = match picture {
+                        crate::puzzle::DynSolution::Square(s) => {
+                            (index % s.x_size(), index / s.x_size())
+                        }
+                        crate::puzzle::DynSolution::Tri(_) => continue,
+                    };
                     changes.insert((x, y), cell.known_or().unwrap());
                 }
             }
@@ -162,10 +167,13 @@ impl SolveGui {
 
             if let Some((x, y)) = self.hovered_cell {
                 let picture = self.canvas.document.try_solution().unwrap();
-                let (up, down, left, right) = picture.count_contiguous(x, y);
+                let Some(square) = picture.as_square() else {
+                    return; // The hexagonal version of this widget is still to come.
+                };
+                let (up, down, left, right) = square.count_contiguous(x, y);
 
-                let color = picture.grid[x][y];
-                let rgb = picture.palette[&color].rgb;
+                let color = square[(x, y)];
+                let rgb = square.palette[&color].rgb;
 
                 let (resp, painter) =
                     ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
@@ -361,7 +369,7 @@ fn draw_string_in_box(
 
 fn draw_clues<C: crate::puzzle::Clue>(
     ui: &mut egui::Ui,
-    puzzle: &crate::puzzle::Puzzle<C>,
+    puzzle: &crate::puzzle::Puzzle<C, crate::geometry::Square>,
     scale: f32,
     orientation: Orientation,
     line_analysis: Option<&[LineStatus]>,
@@ -373,15 +381,15 @@ fn draw_clues<C: crate::puzzle::Clue>(
     let box_margin = (scale - box_side) / 2.0;
 
     let clues_vec = match orientation {
-        Orientation::Horizontal => &puzzle.rows,
-        Orientation::Vertical => &puzzle.cols,
+        Orientation::Horizontal => puzzle.row_clues(),
+        Orientation::Vertical => puzzle.col_clues(),
     };
 
     let mut max_size: f32 = 0.0;
     for line_clues in clues_vec {
         let mut this_size = 0.0;
         for clue in line_clues {
-            this_size += box_side * (clue.express(puzzle).len() as f32) + between_clues;
+            this_size += box_side * (clue.express(&puzzle.palette).len() as f32) + between_clues;
         }
         max_size = max_size.max(this_size);
     }
@@ -389,8 +397,8 @@ fn draw_clues<C: crate::puzzle::Clue>(
 
     let (response, painter) = ui.allocate_painter(
         match orientation {
-            Orientation::Horizontal => Vec2::new(max_size, scale * puzzle.rows.len() as f32),
-            Orientation::Vertical => Vec2::new(scale * puzzle.cols.len() as f32, max_size),
+            Orientation::Horizontal => Vec2::new(max_size, scale * puzzle.row_clues().len() as f32),
+            Orientation::Vertical => Vec2::new(scale * puzzle.col_clues().len() as f32, max_size),
         } + Vec2::new(2.0, 2.0),
         egui::Sense::empty(),
     );
@@ -459,7 +467,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
         };
 
         for clue in line_clues.iter().rev() {
-            let expressed_clues = clue.express(puzzle);
+            let expressed_clues = clue.express(&puzzle.palette);
 
             for (color_info, len) in expressed_clues.into_iter().rev() {
                 let (r, g, b) = color_info.rgb;
@@ -519,26 +527,15 @@ pub fn draw_dyn_clues(
     line_analysis: Option<&[LineStatus]>,
     is_stale: bool,
 ) {
+    // Clue gutters are still laid out as two axis-aligned rectangles, so only square puzzles
+    // can be drawn. `Geometry::gutters` has the per-lane anchors a six-way version needs.
     match puzzle {
-        DynPuzzle::Nono(puzzle) => {
-            draw_clues::<crate::puzzle::Nono>(
-                ui,
-                puzzle,
-                scale,
-                orientation,
-                line_analysis,
-                is_stale,
-            );
+        DynPuzzle::SquareNono(puzzle) => {
+            draw_clues(ui, puzzle, scale, orientation, line_analysis, is_stale);
         }
-        DynPuzzle::Triano(puzzle) => {
-            draw_clues::<crate::puzzle::Triano>(
-                ui,
-                puzzle,
-                scale,
-                orientation,
-                line_analysis,
-                is_stale,
-            );
+        DynPuzzle::SquareTriano(puzzle) => {
+            draw_clues(ui, puzzle, scale, orientation, line_analysis, is_stale);
         }
+        DynPuzzle::TriNono(_) => {}
     }
 }

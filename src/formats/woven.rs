@@ -1,4 +1,5 @@
-use crate::puzzle::{ClueStyle, Color, ColorInfo, Document, DynPuzzle, Nono, Solution, Triano};
+use crate::geometry::{GridKind, Shape, Square, Tri};
+use crate::puzzle::{ClueStyle, Color, ColorInfo, Document, DynSolution, Solution};
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
 use std::io::prelude::*;
@@ -18,22 +19,10 @@ pub struct SerializableDocument {
 pub struct SerializableSolution {
     pub clue_style: ClueStyle,
     pub palette: Vec<ColorInfo>,
-    pub grid: Vec<Vec<Color>>,
-}
-
-// Not currently used; doesn't work for ambiguous works-in-progress
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
-pub enum SerializablePuzzle {
-    Nono {
-        palette: Vec<ColorInfo>,
-        rows: Vec<Vec<Nono>>,
-        cols: Vec<Vec<Nono>>,
-    },
-    Triano {
-        palette: Vec<ColorInfo>,
-        rows: Vec<Vec<Triano>>,
-        cols: Vec<Vec<Triano>>,
-    },
+    /// Square dimensions, or a triddler outline.
+    pub shape: Shape,
+    /// One colour per cell, in the dense order the shape implies.
+    pub cells: Vec<Color>,
 }
 
 impl From<&mut Document> for SerializableDocument {
@@ -131,17 +120,17 @@ mod tests {
             },
         );
 
-        let puzzle = DynPuzzle::Nono(Puzzle {
+        let puzzle = DynPuzzle::SquareNono(Puzzle::square(
             palette,
-            rows: vec![vec![Nono {
+            vec![vec![Nono {
                 color: Color(1),
                 count: 1,
             }]],
-            cols: vec![vec![Nono {
+            vec![vec![Nono {
                 color: Color(1),
                 count: 1,
             }]],
-        });
+        ));
 
         let mut doc = Document::new(
             Some(puzzle),
@@ -190,15 +179,15 @@ mod tests {
             },
         );
 
-        let solution = crate::puzzle::Solution {
-            clue_style: crate::puzzle::ClueStyle::Nono,
+        let solution = crate::puzzle::Solution::from_columns(
+            crate::puzzle::ClueStyle::Nono,
             palette,
-            grid: vec![vec![Color(1)]],
-        };
+            vec![vec![Color(1)]],
+        );
 
         let mut doc = Document::new(
             None,
-            Some(solution),
+            Some(DynSolution::Square(solution)),
             "test.webpbn".to_string(),
             Some("Test Title".to_string()),
             Some("Test Description".to_string()),
@@ -243,17 +232,17 @@ mod tests {
             },
         );
 
-        let puzzle = DynPuzzle::Nono(Puzzle {
+        let puzzle = DynPuzzle::SquareNono(Puzzle::square(
             palette,
-            rows: vec![vec![Nono {
+            vec![vec![Nono {
                 color: Color(1),
                 count: 1,
             }]],
-            cols: vec![vec![Nono {
+            vec![vec![Nono {
                 color: Color(1),
                 count: 1,
             }]],
-        });
+        ));
 
         let mut doc = Document::new(
             Some(puzzle),
@@ -294,68 +283,147 @@ impl From<SerializableDocument> for Document {
     }
 }
 
-impl From<&SerializablePuzzle> for DynPuzzle {
-    fn from(s_puzzle: &SerializablePuzzle) -> Self {
-        match s_puzzle {
-            SerializablePuzzle::Nono {
-                palette,
-                rows,
-                cols,
-            } => DynPuzzle::Nono(crate::puzzle::Puzzle {
-                palette: palette.iter().map(|ci| (ci.color, ci.clone())).collect(),
-                rows: rows.clone(),
-                cols: cols.clone(),
-            }),
-            SerializablePuzzle::Triano {
-                palette,
-                rows,
-                cols,
-            } => DynPuzzle::Triano(crate::puzzle::Puzzle {
-                palette: palette.iter().map(|ci| (ci.color, ci.clone())).collect(),
-                rows: rows.clone(),
-                cols: cols.clone(),
-            }),
-        }
-    }
-}
-
-impl From<&DynPuzzle> for SerializablePuzzle {
-    fn from(puzzle: &DynPuzzle) -> Self {
-        match puzzle {
-            DynPuzzle::Nono(p) => SerializablePuzzle::Nono {
-                palette: p.palette.values().cloned().collect(),
-                rows: p.rows.clone(),
-                cols: p.cols.clone(),
-            },
-            DynPuzzle::Triano(p) => SerializablePuzzle::Triano {
-                palette: p.palette.values().cloned().collect(),
-                rows: p.rows.clone(),
-                cols: p.cols.clone(),
-            },
-        }
-    }
-}
-
-impl From<&Solution> for SerializableSolution {
-    fn from(solution: &Solution) -> Self {
+impl<K: GridKind> From<&Solution<K>> for SerializableSolution {
+    fn from(solution: &Solution<K>) -> Self {
         SerializableSolution {
             clue_style: solution.clue_style,
             palette: solution.palette.values().cloned().collect(),
-            grid: solution.grid.clone(),
+            shape: solution.geometry.shape(),
+            cells: solution.cells.clone(),
         }
     }
 }
 
-impl From<&SerializableSolution> for Solution {
+impl From<&DynSolution> for SerializableSolution {
+    fn from(solution: &DynSolution) -> Self {
+        match solution {
+            DynSolution::Square(s) => s.into(),
+            DynSolution::Tri(s) => s.into(),
+        }
+    }
+}
+
+impl From<&SerializableSolution> for DynSolution {
     fn from(s_solution: &SerializableSolution) -> Self {
-        Solution {
-            clue_style: s_solution.clue_style,
-            palette: s_solution
-                .palette
-                .iter()
-                .map(|ci| (ci.color, ci.clone()))
-                .collect(),
-            grid: s_solution.grid.clone(),
+        let palette = s_solution
+            .palette
+            .iter()
+            .map(|ci| (ci.color, ci.clone()))
+            .collect();
+        // The shape is the one place a stored puzzle is narrowed back to a static kind.
+        match &s_solution.shape {
+            Shape::Square { width, height } => DynSolution::Square(Solution::new(
+                s_solution.clue_style,
+                palette,
+                crate::geometry::Geometry::<Square>::new(crate::geometry::Rect {
+                    width: *width,
+                    height: *height,
+                }),
+                s_solution.cells.clone(),
+            )),
+            Shape::Triangular(outline) => DynSolution::Tri(Solution::new(
+                s_solution.clue_style,
+                palette,
+                crate::geometry::Geometry::<Tri>::new(*outline),
+                s_solution.cells.clone(),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod triangular_tests {
+    use super::*;
+    use crate::geometry::Outline;
+    use crate::puzzle::{BACKGROUND, PuzzleDynOps, UNSOLVED};
+
+    fn palette_with_unsolved() -> std::collections::HashMap<Color, ColorInfo> {
+        let mut palette = crate::import::bw_palette();
+        palette.insert(
+            UNSOLVED,
+            ColorInfo {
+                ch: '?',
+                name: "unsolved".to_string(),
+                rgb: (128, 128, 128),
+                color: UNSOLVED,
+                corner: None,
+            },
+        );
+        palette
+    }
+
+    /// The point of giving `Solution` a geometry: a triddler that is still being worked on, with
+    /// some cells not yet decided, must survive being saved and loaded.
+    #[test]
+    fn an_ambiguous_triddler_round_trips() {
+        let geometry = crate::geometry::Geometry::<Tri>::new(Outline::hexagon(2));
+        let cells: Vec<Color> = (0..geometry.cell_count())
+            .map(|i| match i % 3 {
+                0 => BACKGROUND,
+                1 => Color(1),
+                _ => UNSOLVED, // still undecided
+            })
+            .collect();
+
+        let solution = Solution::new(
+            ClueStyle::Nono,
+            palette_with_unsolved(),
+            geometry.clone(),
+            cells.clone(),
+        );
+        let mut doc = Document::from_solution(DynSolution::Tri(solution), "wip.woven".to_string());
+
+        let share_string = to_woven(&mut doc).unwrap();
+        let mut reloaded = from_woven(&share_string).unwrap();
+        let reloaded_solution = reloaded.solution().unwrap();
+
+        assert_eq!(reloaded_solution.shape(), geometry.shape());
+        assert_eq!(reloaded_solution.cells(), cells);
+        assert!(
+            reloaded_solution.cells().contains(&UNSOLVED),
+            "the undecided cells must still be undecided"
+        );
+        assert!(!reloaded.has_complete_solution().unwrap());
+    }
+
+    #[test]
+    fn a_square_solution_still_round_trips_with_its_shape() {
+        let solution = Solution::blank_bw(4, 3);
+        let mut doc =
+            Document::from_solution(DynSolution::Square(solution), "sq.woven".to_string());
+        let mut reloaded = from_woven(&to_woven(&mut doc).unwrap()).unwrap();
+        let reloaded = reloaded
+            .solution()
+            .unwrap()
+            .as_square()
+            .expect("still square");
+        assert_eq!(reloaded.x_size(), 4);
+        assert_eq!(reloaded.y_size(), 3);
+    }
+
+    /// A finished triangular picture must yield clues that solve back to it.
+    #[test]
+    fn a_triangular_solution_becomes_a_solvable_puzzle() {
+        let geometry = crate::geometry::Geometry::<Tri>::new(Outline::hexagon(2));
+        // A ring: everything except the two middle rows' interiors.
+        let cells: Vec<Color> = (0..geometry.cell_count())
+            .map(|i| if i % 4 == 0 { BACKGROUND } else { Color(1) })
+            .collect();
+
+        let solution = Solution::new(
+            ClueStyle::Nono,
+            crate::import::bw_palette(),
+            geometry,
+            cells.clone(),
+        );
+
+        let report = solution.to_puzzle().plain_solve().unwrap();
+        // Whatever it manages to pin down must agree with the picture we started from.
+        for (solved, truth) in report.solution.cells().iter().zip(&cells) {
+            assert!(
+                *solved == *truth || *solved == UNSOLVED,
+                "solver contradicted the source picture"
+            );
         }
     }
 }

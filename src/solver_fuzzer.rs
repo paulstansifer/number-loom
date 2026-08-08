@@ -3,6 +3,7 @@ mod tests {
     use std::collections::HashSet;
 
     use ndarray::Array1;
+    use number_loom::geometry::Square;
     use number_loom::import::{solution_to_puzzle, solution_to_triano_puzzle};
     use number_loom::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
     use number_loom::puzzle::{
@@ -84,7 +85,7 @@ mod tests {
 
     fn validate_solver<C: Clue, F>(case: usize, line: Vec<Color>, partial: Array1<Cell>, f: F)
     where
-        F: FnOnce(&Solution) -> Puzzle<C>,
+        F: FnOnce(&Solution<Square>) -> Puzzle<C, Square>,
     {
         let mut available_colors = HashSet::<Color>::new();
         // Create a dummy Solution struct to use solution_to_puzzle
@@ -94,14 +95,14 @@ mod tests {
             available_colors.insert(*color);
         }
 
-        let dummy_solution = Solution {
-            clue_style: ClueStyle::Nono,
-            palette: available_colors.into_iter().map(dummy_color).collect(),
+        let dummy_solution = Solution::from_columns(
+            ClueStyle::Nono,
+            available_colors.into_iter().map(dummy_color).collect(),
             grid,
-        };
+        );
 
         let puzzle = f(&dummy_solution);
-        let clues = &puzzle.rows[0]; // Get clues for the generated line
+        let clues = &puzzle.row_clues()[0]; // Get clues for the generated line
 
         let mut sc_partial_solution = partial.clone();
         let mut sk_partial_solution = partial.clone();

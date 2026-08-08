@@ -1,12 +1,13 @@
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::Parser;
 use colored::Colorize;
 use number_loom::import;
 use number_loom::puzzle::Document;
 use number_loom::puzzle::NonogramFormat;
 use number_loom::puzzle::PuzzleDynOps;
-use number_loom::puzzle::Solution;
+use number_loom::puzzle::{DynSolution, Solution};
 use number_loom::{export, grid_solve, gui};
 
 #[derive(clap::Parser, Debug)]
@@ -39,14 +40,14 @@ struct Args {
     disambiguate: bool,
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let input_path = match args.input_path {
         Some(ip) => ip,
         None => {
             gui::edit_image(Document::from_solution(
-                Solution::blank_bw(20, 20),
+                DynSolution::Square(Solution::blank_bw(20, 20)),
                 "blank.xml".to_string(),
             ));
             return Ok(());
@@ -85,10 +86,8 @@ fn main() -> std::io::Result<()> {
         };
 
         let mut best_result = f32::MAX;
-        for row in &disambig {
-            for cell in row {
-                best_result = best_result.min(cell.1);
-            }
+        for cell in &disambig {
+            best_result = best_result.min(cell.1);
         }
 
         let display_threshold = 1.0 - (1.0 - best_result) * 0.75;
@@ -106,11 +105,17 @@ fn main() -> std::io::Result<()> {
             display_threshold
         };
 
+        // Disambiguation output is a picture, so it only makes sense laid out in rows and
+        // columns; a triddler would need the `/ABCDE\` form instead.
+        let solution = solution
+            .as_square()
+            .context("--disambiguate can only print square puzzles")?;
         for y in 0..solution.y_size() {
             for x in 0..solution.x_size() {
-                let ci = &solution.palette[&solution.grid[x][y]];
-                if disambig[x][y].1 <= display_threshold {
-                    let new_ch = &solution.palette[&disambig[x][y].0].ch;
+                let index = solution.geometry.cell((x, y)).unwrap() as usize;
+                let ci = &solution.palette[&solution.cells[index]];
+                if disambig[index].1 <= display_threshold {
+                    let new_ch = &solution.palette[&disambig[index].0].ch;
                     let new_ch = if *new_ch == ' ' { '☒' } else { *new_ch };
 
                     print!("{}", new_ch.to_string().red())
@@ -127,7 +132,7 @@ fn main() -> std::io::Result<()> {
 
     match args.output_path {
         Some(path) => {
-            export::save(&mut document, &path, args.output_format).unwrap();
+            export::save(&mut document, &path, args.output_format)?;
         }
 
         None => {

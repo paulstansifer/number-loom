@@ -67,7 +67,10 @@ impl StatusCell {
     }
 
     pub fn get(&self) -> Option<StatusMessage> {
-        self.inner.borrow().as_ref().map(|(message, _)| message.clone())
+        self.inner
+            .borrow()
+            .as_ref()
+            .map(|(message, _)| message.clone())
     }
 
     // Called when something dirties the editor (or otherwise makes the current message stale);
@@ -94,11 +97,16 @@ use crate::{
     gui_solver::{RenderStyle, SolveGui},
     import,
     puzzle::{
-        BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, PuzzleDynOps, Solution, UNSOLVED,
+        BACKGROUND, ClueStyle, Color, ColorInfo, Corner, Document, DynSolution, PuzzleDynOps,
+        Solution, UNSOLVED,
     },
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, TextStyle, Vec2, Visuals};
+
+/// The editor still only understands rows and columns. Rather than panicking deep inside a
+/// drawing routine, every entry point that needs a square picture says so here.
+const TRIDDLER_UNSUPPORTED: &str = "the editor can't edit triddlers yet";
 use egui_material_icons::icons;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -255,7 +263,8 @@ pub struct CanvasGui {
     pub redo_stack: Vec<Action>,
     pub current_tool: Tool,
     pub line_tool_state: Option<(usize, usize)>,
-    pub solved_mask: Staleable<(String, Vec<Vec<bool>>)>,
+    /// Indexed by dense cell index, like `Solution::cells`.
+    pub solved_mask: Staleable<(String, Vec<bool>)>,
     pub disambiguator: Staleable<Disambiguator>,
     pub id: Staleable<String>,
     pub status: SharedStatus,
@@ -307,7 +316,12 @@ impl CanvasGui {
             Action::ChangeColor { changes } => Action::ChangeColor {
                 changes: changes
                     .keys()
-                    .map(|(x, y)| ((*x, *y), self.document.try_solution().unwrap().grid[*x][*y]))
+                    .map(|(x, y)| {
+                        (
+                            (*x, *y),
+                            self.document.try_solution().unwrap().as_square().unwrap()[(*x, *y)],
+                        )
+                    })
                     .collect::<HashMap<_, _>>(),
             },
             Action::ReplaceDocument { document: _ } => Action::ReplaceDocument {
@@ -329,14 +343,17 @@ impl CanvasGui {
                         changes: new_changes,
                     },
                 ) => {
-                    let picture = self.document.solution_mut();
+                    let Some(picture) = self.document.square_solution_mut() else {
+                        self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
+                        return Default::default();
+                    };
                     if mood == ReplaceAction {
                         for ((x, y), _) in new_changes {
-                            changes.entry((*x, *y)).or_insert(picture.grid[*x][*y]);
+                            changes.entry((*x, *y)).or_insert(picture[(*x, *y)]);
                         }
                         changes.retain(|(x, y), old_col| {
                             if !new_changes.contains_key(&(*x, *y)) {
-                                picture.grid[*x][*y] = *old_col;
+                                picture[(*x, *y)] = *old_col;
                                 self.version += 1;
                                 false
                             } else {
@@ -344,8 +361,8 @@ impl CanvasGui {
                             }
                         });
                         for ((x, y), col) in new_changes {
-                            if picture.grid[*x][*y] != *col {
-                                picture.grid[*x][*y] = *col;
+                            if picture[(*x, *y)] != *col {
+                                picture[(*x, *y)] = *col;
                                 self.version += 1;
                             }
                         }
@@ -353,11 +370,11 @@ impl CanvasGui {
                     } else {
                         for ((x, y), col) in new_changes {
                             if !changes.contains_key(&(*x, *y)) {
-                                changes.insert((*x, *y), picture.grid[*x][*y]);
+                                changes.insert((*x, *y), picture[(*x, *y)]);
                                 // Crucially, this only fires on a new cell!
                                 // Otherwise, we'd be flipping cells back and forth as long as we
                                 // were in them!
-                                picture.grid[*x][*y] = *col;
+                                picture[(*x, *y)] = *col;
                                 self.version += 1;
                             }
                         }
@@ -375,10 +392,13 @@ impl CanvasGui {
         let version_before = self.version;
         match action {
             Action::ChangeColor { changes } => {
-                let picture = self.document.solution_mut();
+                let Some(picture) = self.document.square_solution_mut() else {
+                    self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
+                    return Default::default();
+                };
                 for ((x, y), new_color) in changes {
-                    if picture.grid[x][y] != new_color {
-                        picture.grid[x][y] = new_color;
+                    if picture[(x, y)] != new_color {
+                        picture[(x, y)] = new_color;
                         self.version += 1;
                     }
                 }
@@ -478,8 +498,11 @@ impl CanvasGui {
     }
 
     fn flood_fill(&mut self, x: usize, y: usize) {
-        let picture = self.document.solution_mut();
-        let target_color = picture.grid[x][y];
+        let Some(picture) = self.document.square_solution_mut() else {
+            self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
+            return Default::default();
+        };
+        let target_color = picture[(x, y)];
         if target_color == self.current_color {
             return; // Nothing to do
         }
@@ -491,8 +514,8 @@ impl CanvasGui {
         let mut visited = std::collections::HashSet::new();
         visited.insert((x, y));
 
-        let x_size = picture.grid.len();
-        let y_size = picture.grid.first().unwrap().len();
+        let x_size = picture.x_size();
+        let y_size = picture.y_size();
 
         while let Some((px, py)) = q.pop_front() {
             changes.insert((px, py), self.current_color);
@@ -505,7 +528,7 @@ impl CanvasGui {
             ];
 
             for (nx, ny) in neighbors {
-                if nx < x_size && ny < y_size && picture.grid[nx][ny] == target_color {
+                if nx < x_size && ny < y_size && picture[(nx, ny)] == target_color {
                     if visited.insert((nx, ny)) {
                         q.push_back((nx, ny));
                     }
@@ -524,9 +547,12 @@ impl CanvasGui {
         scale: f32,
         render_style: RenderStyle,
     ) -> Option<(usize, usize)> {
-        let picture = self.document.solution_mut();
-        let x_size = picture.grid.len();
-        let y_size = picture.grid.first().unwrap().len();
+        let Some(picture) = self.document.square_solution_mut() else {
+            self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
+            return Default::default();
+        };
+        let x_size = picture.x_size();
+        let y_size = picture.y_size();
 
         let (mut response, painter) = ui.allocate_painter(
             Vec2::new(scale * x_size as f32, scale * y_size as f32) + Vec2::new(2.0, 2.0), // for the border
@@ -559,14 +585,19 @@ impl CanvasGui {
             if (0..x_size).contains(&x) && (0..y_size).contains(&y) {
                 let pointer = &ui.input(|i| i.pointer.clone());
                 let paint_color = if pointer.middle_down() {
-                    if self.document.solution_mut().palette.contains_key(&UNSOLVED) {
+                    if self
+                        .document
+                        .solution_mut()
+                        .palette()
+                        .contains_key(&UNSOLVED)
+                    {
                         UNSOLVED
                     } else {
                         BACKGROUND
                     }
                 } else if pointer.secondary_down() {
                     BACKGROUND
-                } else if picture.grid[x][y] != self.current_color {
+                } else if picture[(x, y)] != self.current_color {
                     self.current_color
                 } else {
                     BACKGROUND
@@ -643,21 +674,21 @@ impl CanvasGui {
         let disambiguator = self.disambiguator.get_if_fresh(self.version);
         let disambig_report = disambiguator.as_ref().and_then(|d| d.report.as_ref());
 
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.try_solution().unwrap().as_square().unwrap();
         for y in 0..y_size {
             for x in 0..x_size {
-                let cell = picture.grid[x][y];
-                let color_info = &picture.palette[&cell];
+                let index = picture.geometry.cell((x, y)).unwrap() as usize;
+                let color_info = &picture.palette[&picture.cells[index]];
                 let solved = self
                     .solved_mask
                     .get_if_fresh(self.version)
-                    .map_or(true, |sm| sm.1[x][y])
+                    .map_or(true, |sm| sm.1[index])
                     || disambig_report.is_some()
                     || disambiguator.map_or(false, |d| d.progress > 0.0 && d.progress < 1.0);
                 let mut dr = (&picture.palette[&BACKGROUND], 1.0);
 
                 if let Some(disambig_report) = disambig_report.as_ref() {
-                    let (c, score) = disambig_report[x][y];
+                    let (c, score) = disambig_report[index];
                     dr = (&picture.palette[&c], score);
                 }
                 for shape in cell_shape(color_info, solved, dr, x, y, &to_screen, render_style) {
@@ -706,7 +737,7 @@ impl CanvasGui {
         for (color, color_info) in self
             .document
             .solution_mut()
-            .palette
+            .palette_mut()
             .iter_mut()
             .sorted_by_key(|(color, _)| *color)
         {
@@ -767,14 +798,12 @@ impl CanvasGui {
         if let Some(removed_color) = removed_color {
             let mut new_document = self.document.clone();
             let new_picture = new_document.solution_mut();
-            for row in new_picture.grid.iter_mut() {
-                for cell in row.iter_mut() {
-                    if *cell == removed_color {
-                        *cell = self.current_color;
-                    }
+            for cell in new_picture.cells_mut().iter_mut() {
+                if *cell == removed_color {
+                    *cell = self.current_color;
                 }
             }
-            new_picture.palette.remove(&removed_color);
+            new_picture.palette_mut().remove(&removed_color);
             self.perform(
                 Action::ReplaceDocument {
                     document: new_document,
@@ -784,7 +813,10 @@ impl CanvasGui {
         }
         if add_color {
             let mut new_document = self.document.clone();
-            let new_picture = new_document.solution_mut();
+            let Some(new_picture) = new_document.square_solution_mut() else {
+                self.status.set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
+                return;
+            };
             let next_color = Color(new_picture.palette.keys().map(|k| k.0).max().unwrap() + 1);
             new_picture.palette.insert(
                 next_color,
@@ -932,10 +964,10 @@ impl NonogramGui {
     pub fn new(mut document: Document) -> Self {
         // (Public for testing)
         let picture = document.try_solution().unwrap();
-        let solved_mask = vec![vec![true; picture.grid[0].len()]; picture.grid.len()];
+        let solved_mask = vec![true; picture.cells().len()];
 
         let mut current_color = BACKGROUND;
-        if picture.palette.contains_key(&Color(1)) {
+        if picture.palette().contains_key(&Color(1)) {
             current_color = Color(1);
         }
 
@@ -989,8 +1021,16 @@ impl NonogramGui {
     }
 
     fn resize(&mut self, top: Option<bool>, left: Option<bool>, add: bool) {
-        let picture = self.editor_gui.document.solution_mut();
-        let mut g = picture.grid.clone();
+        // This resizer is inherently square: it adds and removes whole rows and columns.
+        // Triangular puzzles resize by nudging one of six bounds instead (see
+        // `Outline::resized` and `Geometry::resized`), which needs its own UI.
+        let Some(picture) = self.editor_gui.document.square_solution_mut() else {
+            self.editor_gui
+                .status
+                .set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
+            return;
+        };
+        let mut g = picture.to_columns();
         let lines = match self.lines_to_affect_string.parse::<usize>() {
             Ok(lines) => lines,
             Err(_) => {
@@ -1029,7 +1069,14 @@ impl NonogramGui {
         }
 
         let mut new_doc = self.editor_gui.document.clone();
-        new_doc.solution_mut().grid = g;
+        {
+            let solution = new_doc.solution_mut();
+            *solution = DynSolution::Square(Solution::from_columns(
+                solution.clue_style(),
+                solution.palette().clone(),
+                g,
+            ));
+        }
         self.editor_gui.perform(
             Action::ReplaceDocument { document: new_doc },
             ActionMood::Normal,
@@ -1037,12 +1084,8 @@ impl NonogramGui {
     }
 
     fn resizer(&mut self, ui: &mut egui::Ui) {
-        let picture = self.editor_gui.document.try_solution().unwrap();
-        ui.label(format!(
-            "Canvas size: {}x{}",
-            picture.x_size(),
-            picture.y_size(),
-        ));
+        let (width, height) = self.editor_gui.document.dimensions();
+        ui.label(format!("Canvas size: {}x{}", width, height));
 
         egui::Grid::new("resizer").show(ui, |ui| {
             ui.label("");
@@ -1166,7 +1209,12 @@ impl NonogramGui {
             self.editor_gui
                 .disambiguator
                 .get_or_refresh(self.editor_gui.version, Disambiguator::new)
-                .disambig_widget(&picture, &self.editor_gui.status, &self.editor_gui.progress, ui);
+                .disambig_widget(
+                    &picture,
+                    &self.editor_gui.status,
+                    &self.editor_gui.progress,
+                    ui,
+                );
 
             ui.separator();
 
@@ -1268,12 +1316,12 @@ impl NonogramGui {
             {
                 self.scale = (self.scale - 2.0).max(1.0);
             }
-            let picture = self.editor_gui.document.solution_mut();
             if ui.button("New").clicked() {
+                let (x_size, y_size) = self.editor_gui.document.dimensions();
                 self.new_dialog = Some(NewPuzzleDialog {
-                    clue_style: picture.clue_style,
-                    x_size: picture.x_size(),
-                    y_size: picture.y_size(),
+                    clue_style: self.editor_gui.document.solution_mut().clue_style(),
+                    x_size,
+                    y_size,
                 });
             }
             let mut new_document = None;
@@ -1300,16 +1348,20 @@ impl NonogramGui {
                         "Trianogram",
                     );
                     if ui.button("Ok").clicked() {
-                        let new_solution = Solution {
-                            grid: vec![vec![BACKGROUND; dialog.y_size]; dialog.x_size],
-                            palette: match dialog.clue_style {
+                        let new_solution = Solution::new(
+                            dialog.clue_style,
+                            match dialog.clue_style {
                                 ClueStyle::Nono => import::bw_palette(),
                                 ClueStyle::Triano => import::triano_palette(),
                             },
-                            clue_style: dialog.clue_style,
-                        };
+                            crate::geometry::Geometry::new(crate::geometry::Rect {
+                                width: dialog.x_size,
+                                height: dialog.y_size,
+                            }),
+                            vec![BACKGROUND; dialog.x_size * dialog.y_size],
+                        );
                         new_document = Some(Document::from_solution(
-                            new_solution,
+                            DynSolution::Square(new_solution),
                             "blank.xml".to_owned(),
                         ));
                         self.solve_mode = false;
@@ -1626,7 +1678,8 @@ impl eframe::App for NonogramGui {
 }
 
 pub struct Disambiguator {
-    report: Option<Vec<Vec<(Color, f32)>>>,
+    /// Indexed by dense cell index, like `Solution::cells`.
+    report: Option<Vec<(Color, f32)>>,
     pub terminate_s: mpsc::Sender<()>,
     progress_r: mpsc::Receiver<f32>,
     progress: f32,
@@ -1653,7 +1706,7 @@ impl Disambiguator {
 
     pub fn disambig_widget(
         &mut self,
-        picture: &Solution,
+        picture: &DynSolution,
         status: &SharedStatus,
         progress: &SharedProgress,
         ui: &mut egui::Ui,
