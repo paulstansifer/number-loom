@@ -75,6 +75,7 @@ impl SolveGui {
                 redo_stack: vec![],
                 current_tool: Tool::LineAlongLane,
                 line_tool_state: None,
+                selection: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
                     version: 0,
@@ -150,7 +151,7 @@ impl SolveGui {
                 ui.label(format!("by {}", &self.canvas.document.author));
             }
 
-            self.canvas.common_sidebar_items(ui, true);
+            self.canvas.common_sidebar_items(ui, true, false);
 
             ui.separator();
             let scale = 20.0;

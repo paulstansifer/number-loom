@@ -810,6 +810,18 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     /// Which cell contains this point, if any. O(1).
     fn cell_at(dims: &Self::Dims, lookup: &Self::Lookup, p: Point) -> Option<Self::Coord>;
 
+    /// Snap an abstract-unit displacement to the nearest translation that carries cells onto
+    /// cells *of the same shape*, expressed as counts of the two lattice basis vectors.
+    ///
+    /// Not every displacement will do: sliding a triddler by one row would land every ▲ on a ▼.
+    /// The basis vectors are the shortest displacements that don't, so the region being moved
+    /// comes out congruent to what was picked up, whatever the grid.
+    fn snap_translation(v: Vec2) -> (i32, i32);
+    /// Apply lattice steps from [`Self::snap_translation`] to a coordinate. The result may be
+    /// outside the puzzle, or not a coordinate at all for a shape with unsigned axes; callers
+    /// that need a cell go on through `cell_of`.
+    fn translate(coord: Self::Coord, steps: (i32, i32)) -> Option<Self::Coord>;
+
     /// Unit vectors toward each neighbouring lane direction — 4 for a square, 6 for a triangle.
     /// Used to lay out the solver's contiguous-run widget.
     fn arm_directions() -> &'static [Vec2];
@@ -951,6 +963,17 @@ impl GridKind for Square {
         }
         let (x, y) = (p.x as usize, p.y as usize);
         (x < dims.width && y < dims.height).then_some((x, y))
+    }
+
+    /// A square grid's lattice is just the grid: one cell right, one cell down.
+    fn snap_translation(v: Vec2) -> (i32, i32) {
+        (v.x.round() as i32, v.y.round() as i32)
+    }
+
+    fn translate((x, y): (usize, usize), (u, v): (i32, i32)) -> Option<(usize, usize)> {
+        let x = usize::try_from(x as i64 + u as i64).ok()?;
+        let y = usize::try_from(y as i64 + v as i64).ok()?;
+        Some((x, y))
     }
 
     fn arm_directions() -> &'static [Vec2] {
@@ -1247,6 +1270,21 @@ impl GridKind for Tri {
         Tri::cell_of(outline, lookup, coord).map(|_| coord)
     }
 
+    /// The triangular lattice: `(1, 0)` — one full base to the right — and `(0.5,
+    /// TRI_ROW_HEIGHT)` — down one row and half a base right. Anything shorter (a bare row, or a
+    /// single half-base) flips ▲ and ▼, so those aren't translations of the grid at all.
+    fn snap_translation(v: Vec2) -> (i32, i32) {
+        let down = (v.y / TRI_ROW_HEIGHT).round();
+        let right = (v.x - down * TRI_HALF_BASE).round();
+        (right as i32, down as i32)
+    }
+
+    /// The two basis vectors are the `TriCoord` deltas `(0, +1, +1)` and `(+1, +1, 0)`. Both
+    /// leave `a - b + c` alone, so `points_up` — and hence the cell's shape — survives.
+    fn translate(TriCoord { a, b, c }: TriCoord, (u, v): (i32, i32)) -> Option<TriCoord> {
+        Some(TriCoord::new(a + v, b + u + v, c + u))
+    }
+
     fn arm_directions() -> &'static [Vec2] {
         // 0 degrees, plus or minus 60, and their opposites: the six directions a triangular lane
         // can leave a cell in, ordered (back, forward) per family to match `runs_at_cell`, which
@@ -1412,6 +1450,16 @@ impl<K: GridKind> Geometry<K> {
     /// Which cell contains this point, in abstract units. O(1).
     pub fn cell_at(&self, p: Point) -> Option<K::Coord> {
         K::cell_at(&self.dims, &self.lookup, p)
+    }
+
+    /// The nearest whole-grid translation to a displacement, in lattice steps.
+    pub fn snap_translation(&self, v: Vec2) -> (i32, i32) {
+        K::snap_translation(v)
+    }
+
+    /// Where `cell` lands under a translation, or `None` if that's off the grid.
+    pub fn translate_cell(&self, cell: u32, steps: (i32, i32)) -> Option<u32> {
+        K::translate(self.coord(cell), steps).and_then(|c| self.cell(c))
     }
 
     /// Lane indices in the given clue set, in the order webpbn lists them.
@@ -2442,5 +2490,76 @@ mod typed_tests {
             height: 3,
         });
         assert_eq!(geo.guides().len(), 7 + 2);
+    }
+
+    /// The whole point of the lattice: a translated cell must have the *same shape* and sit
+    /// exactly the snapped displacement away. If either failed, moving a lasso selection would
+    /// deform the picture — for a triddler, by landing every ▲ on a ▼.
+    #[test]
+    fn translation_is_rigid() {
+        fn check<K: GridKind>(geo: &Geometry<K>, steps: (i32, i32), by: Vec2) {
+            for cell in 0..geo.cell_count() as u32 {
+                let Some(moved) = geo.translate_cell(cell, steps) else {
+                    continue; // Off the grid; the caller drops these.
+                };
+                assert_eq!(
+                    geo.cell_shape(cell),
+                    geo.cell_shape(moved),
+                    "{cell} {steps:?}"
+                );
+                let (from, to) = (geo.cell_origin(cell), geo.cell_origin(moved));
+                assert!(
+                    (to.x - from.x - by.x).abs() < 1e-4 && (to.y - from.y - by.y).abs() < 1e-4,
+                    "{cell} moved by ({}, {}), wanted ({}, {})",
+                    to.x - from.x,
+                    to.y - from.y,
+                    by.x,
+                    by.y
+                );
+            }
+        }
+
+        for dims in square_shapes() {
+            let geo = Geometry::<Square>::new(dims);
+            for u in -2..=2 {
+                for v in -2..=2 {
+                    let by = Vec2::new(u as f32, v as f32);
+                    assert_eq!(geo.snap_translation(by), (u, v));
+                    check(&geo, (u, v), by);
+                }
+            }
+        }
+
+        for dims in tri_shapes() {
+            let geo = Geometry::<Tri>::new(dims);
+            for u in -2..=2 {
+                for v in -2..=2 {
+                    let by = Vec2::new(
+                        u as f32 + v as f32 * TRI_HALF_BASE,
+                        v as f32 * TRI_ROW_HEIGHT,
+                    );
+                    assert_eq!(geo.snap_translation(by), (u, v));
+                    check(&geo, (u, v), by);
+                }
+            }
+        }
+    }
+
+    /// A displacement between lattice points snaps to the nearest one, so a drag that ends
+    /// part-way across a cell still lands somewhere legal.
+    #[test]
+    fn translation_snaps_to_the_nearest_lattice_point() {
+        let square = Geometry::<Square>::new(Rect {
+            width: 4,
+            height: 4,
+        });
+        assert_eq!(square.snap_translation(Vec2::new(2.4, -0.6)), (2, -1));
+
+        let tri = Geometry::<Tri>::new(Outline::hexagon(3));
+        // Just past one row down: the nearest lattice point is down-and-right by half a base.
+        let nudge = Vec2::new(0.55, TRI_ROW_HEIGHT * 0.9);
+        assert_eq!(tri.snap_translation(nudge), (0, 1));
+        // A pure sideways drag of nearly one base rounds to exactly one base, not to a row.
+        assert_eq!(tri.snap_translation(Vec2::new(0.9, 0.05)), (1, 0));
     }
 }

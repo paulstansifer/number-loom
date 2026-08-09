@@ -629,6 +629,21 @@ impl DynSolution {
         with_solution!(self, |s| s.geometry.cell_shape(cell))
     }
 
+    /// The top-left of this cell's bounding box, in abstract units.
+    pub fn cell_origin(&self, cell: u32) -> crate::layout::Point {
+        with_solution!(self, |s| s.geometry.cell_origin(cell))
+    }
+
+    /// The nearest displacement that carries cells onto same-shaped cells, in lattice steps.
+    pub fn snap_translation(&self, v: crate::layout::Vec2) -> (i32, i32) {
+        with_solution!(self, |s| s.geometry.snap_translation(v))
+    }
+
+    /// Where `cell` lands under a translation, or `None` if that's off the grid.
+    pub fn translate_cell(&self, cell: u32, steps: (i32, i32)) -> Option<u32> {
+        with_solution!(self, |s| s.geometry.translate_cell(cell, steps))
+    }
+
     /// Unit vectors toward each neighbouring lane direction, as `(backward, forward)` pairs per
     /// family — matching what `runs_at_cell` returns.
     pub fn arm_directions(&self) -> &'static [crate::layout::Vec2] {

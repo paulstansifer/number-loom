@@ -353,4 +353,39 @@ mod tests {
             "clicking a fresh triddler should paint a triangle"
         );
     }
+
+    /// The lasso is an editing tool: the editor's sidebar offers it, the solver's must not, since
+    /// rearranging the picture is exactly what solving isn't.
+    #[test]
+    fn test_lasso_tool_is_editor_only() {
+        // The material icon the lasso button is labelled with.
+        const LASSO: &str = "\u{eb03}";
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let nonogram_gui = NonogramGui::new(doc);
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui| {
+                CentralPanel::default().show(ctx, |ui| {
+                    nonogram_gui.main_ui(ctx, ui);
+                });
+            },
+            nonogram_gui,
+        );
+        harness.run();
+
+        assert_eq!(
+            harness.query_all_by_label(LASSO).count(),
+            1,
+            "the editor should offer the lasso"
+        );
+
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+        assert!(harness.state().solve_mode);
+        assert_eq!(
+            harness.query_all_by_label(LASSO).count(),
+            0,
+            "the solver should not offer the lasso"
+        );
+    }
 }

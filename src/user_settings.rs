@@ -17,7 +17,6 @@ pub mod consts {
     pub const EDITOR_AUTHOR_NAME: &str = "editor.author_name";
 }
 
-
 #[cfg(not(target_arch = "wasm32"))]
 const APP_INFO: AppInfo = AppInfo {
     name: "number-loom",
@@ -34,7 +33,8 @@ impl UserSettings {
     pub fn get(key: &str) -> Option<String> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let map = match preferences::PreferencesMap::<String>::load(&APP_INFO, "user_settings") {
+            let map = match preferences::PreferencesMap::<String>::load(&APP_INFO, "user_settings")
+            {
                 Ok(map) => map,
                 // If loading fails (e.g., file not found), return None.
                 Err(_) => return None,
@@ -68,8 +68,7 @@ impl UserSettings {
 
         #[cfg(target_arch = "wasm32")]
         {
-            LocalStorage::set(key, value)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))
+            LocalStorage::set(key, value).map_err(|e| anyhow::anyhow!(e.to_string()))
         }
     }
 }
