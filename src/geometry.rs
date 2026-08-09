@@ -1809,10 +1809,16 @@ fn build_gutters<K: GridKind>(
             // The midpoint of the edge the lane exits through — *not* the centroid pushed
             // outward. A ▲ and a ▼ have centroids at different heights, so using those would
             // bunch adjacent rows' clues together; their exit edges are properly spaced.
-            let anchor = {
+            //
+            // That same edge's own direction is *not* `outward`: a triangular cell's outward-
+            // facing edge belongs to one of the *other* two families (60° from this lane's own
+            // direction, not 90°), and which one depends on whether the terminal cell is a ▲ or
+            // a ▼. `edge_dir` records it so clue boxes can be drawn flush against it.
+            let (anchor, edge_dir) = {
                 let shape = K::cell_shape(coord);
                 let (points, n) = shape.vertices(origin);
                 let mut best = center;
+                let mut best_edge_dir = Vec2::new(-outward.y, outward.x);
                 let mut best_dot = f32::MIN;
                 for i in 0..n {
                     let (a, b) = (points[i], points[(i + 1) % n]);
@@ -1821,9 +1827,16 @@ fn build_gutters<K: GridKind>(
                     if dot > best_dot {
                         best_dot = dot;
                         best = mid;
+                        let d = Vec2::new(b.x - a.x, b.y - a.y);
+                        let len = (d.x * d.x + d.y * d.y).sqrt();
+                        best_edge_dir = if len > 0.0 {
+                            Vec2::new(d.x / len, d.y / len)
+                        } else {
+                            best_edge_dir
+                        };
                     }
                 }
-                best
+                (best, best_edge_dir)
             };
 
             let entry = res.iter_mut().find(|(cs, _)| *cs == clue_set);
@@ -1838,6 +1851,7 @@ fn build_gutters<K: GridKind>(
                 lane,
                 anchor,
                 outward,
+                edge_dir,
                 reversed: at_last,
             });
         }
@@ -2367,9 +2381,36 @@ mod typed_tests {
 
     /// The layout check I can't do by eye: real clue boxes for a real puzzle must sit outside the
     /// grid and must not pile up on each other.
+    /// Whether two convex polygons overlap, by the separating axis theorem (each edge's normal
+    /// is a candidate separating axis; touching within `eps` doesn't count as overlap).
+    fn polygons_overlap(a: &[Point], b: &[Point], eps: f32) -> bool {
+        let axes = |poly: &[Point]| -> Vec<(f32, f32)> {
+            (0..poly.len())
+                .map(|i| {
+                    let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+                    (-(q.y - p.y), q.x - p.x)
+                })
+                .collect()
+        };
+        let project = |poly: &[Point], axis: (f32, f32)| -> (f32, f32) {
+            poly.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+                let d = p.x * axis.0 + p.y * axis.1;
+                (lo.min(d), hi.max(d))
+            })
+        };
+        for axis in axes(a).into_iter().chain(axes(b)) {
+            let (alo, ahi) = project(a, axis);
+            let (blo, bhi) = project(b, axis);
+            if ahi < blo - eps || bhi < alo - eps {
+                return false;
+            }
+        }
+        true
+    }
+
     #[test]
     fn clue_boxes_clear_the_grid_and_each_other() {
-        use crate::layout::{CLUE_BOX, GutterLane};
+        use crate::layout::{CLUE_BOX, CLUE_BOX_SHORT, GutterLane, tri_clue_rhombus};
 
         let outline = Outline::hexagon(3);
         let geo = Geometry::<Tri>::new(outline);
@@ -2393,18 +2434,23 @@ mod typed_tests {
             })
             .collect();
 
-        let mut boxes: Vec<(usize, usize, Point)> = vec![];
+        // (lane, index along the gutter, centre, the box's actual four corners)
+        let mut boxes: Vec<(usize, usize, Point, [Point; 4])> = vec![];
         for (_, gutter) in geo.gutters() {
             for g in gutter {
+                let family = geo.lane(g.lane).family;
                 for i in 0..clue_counts[g.lane] {
-                    boxes.push((g.lane, i, g.clue_box_center(i)));
+                    let c = g.clue_box_center(i);
+                    let corners =
+                        tri_clue_rhombus(c, family, g.edge_dir, CLUE_BOX, CLUE_BOX_SHORT);
+                    boxes.push((g.lane, i, c, corners));
                 }
             }
         }
         assert!(boxes.len() > 40, "expected a decent number of clues");
 
         // No clue box centre may land on a cell.
-        for (lane, i, c) in &boxes {
+        for (lane, i, c, _) in &boxes {
             for cell in 0..geo.cell_count() as u32 {
                 assert!(
                     !geo.cell_shape(cell).contains(geo.cell_origin(cell), *c),
@@ -2413,18 +2459,17 @@ mod typed_tests {
             }
         }
 
-        // Nor may two clue boxes overlap.
-        for (i, (la, ia, a)) in boxes.iter().enumerate() {
-            for (lb, ib, b) in &boxes[i + 1..] {
-                let (dx, dy) = ((a.x - b.x).abs(), (a.y - b.y).abs());
+        // Nor may two clue boxes' actual rhombi overlap.
+        for (i, (la, ia, _, poly_a)) in boxes.iter().enumerate() {
+            for (lb, ib, _, poly_b) in &boxes[i + 1..] {
                 assert!(
-                    dx >= CLUE_BOX - 1e-3 || dy >= CLUE_BOX - 1e-3,
-                    "clue {ia} of lane {la} overlaps clue {ib} of lane {lb} ({a:?} vs {b:?})"
+                    !polygons_overlap(poly_a, poly_b, 1e-3),
+                    "clue {ia} of lane {la} overlaps clue {ib} of lane {lb}"
                 );
             }
         }
 
-        // And the reserved margin must actually contain them.
+        // And the reserved margin must actually contain every corner of every box.
         let extent = geo.extent();
         let (mut lo, mut hi) = (Point::new(0.0, 0.0), Point::new(extent.x, extent.y));
         for (_, gutter) in geo.gutters() {
@@ -2434,21 +2479,25 @@ mod typed_tests {
                     g.anchor.x + g.outward.x * len,
                     g.anchor.y + g.outward.y * len,
                 );
-                lo.x = lo.x.min(tip.x - CLUE_BOX);
-                lo.y = lo.y.min(tip.y - CLUE_BOX);
-                hi.x = hi.x.max(tip.x + CLUE_BOX);
-                hi.y = hi.y.max(tip.y + CLUE_BOX);
+                // The last box's far corners reach half a box-length beyond its centre, in
+                // either the long or short direction depending on the lane's angle.
+                let pad = CLUE_BOX.max(CLUE_BOX_SHORT);
+                lo.x = lo.x.min(tip.x - pad);
+                lo.y = lo.y.min(tip.y - pad);
+                hi.x = hi.x.max(tip.x + pad);
+                hi.y = hi.y.max(tip.y + pad);
             }
         }
-        for (lane, i, c) in &boxes {
-            let half = CLUE_BOX / 2.0;
-            assert!(
-                c.x - half >= lo.x - 1e-3
-                    && c.y - half >= lo.y - 1e-3
-                    && c.x + half <= hi.x + 1e-3
-                    && c.y + half <= hi.y + 1e-3,
-                "clue {i} of lane {lane} at {c:?} escapes the reserved area {lo:?}..{hi:?}"
-            );
+        for (lane, i, _, poly) in &boxes {
+            for corner in poly {
+                assert!(
+                    corner.x >= lo.x - 1e-3
+                        && corner.y >= lo.y - 1e-3
+                        && corner.x <= hi.x + 1e-3
+                        && corner.y <= hi.y + 1e-3,
+                    "clue {i} of lane {lane} at {corner:?} escapes the reserved area {lo:?}..{hi:?}"
+                );
+            }
         }
     }
 

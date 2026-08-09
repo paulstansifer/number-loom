@@ -210,10 +210,39 @@ impl SolveGui {
                                 continue;
                             }
                             let arm_center = true_center + Vec2::new(dir.x, dir.y) * arm_distance;
+                            // The arm's short side should sit flush against this cell's real
+                            // edge for the *other* family it borders — "near" (leading to the
+                            // previous cell) for the back arm, "far" for the forward arm, per
+                            // `CellShape::triangle_edge_is_near`.
+                            let others: Vec<usize> = (0..3).filter(|&f| f != family).collect();
+                            let edge_family = if cell_shape.triangle_edge_is_near(others[0]) == (i == 0)
+                            {
+                                others[0]
+                            } else {
+                                others[1]
+                            };
+                            let (ea, eb) = cell_shape.family_edge(
+                                crate::layout::Point::new(0.0, 0.0),
+                                edge_family,
+                                true,
+                            );
+                            let (edx, edy) = (eb.x - ea.x, eb.y - ea.y);
+                            let elen = (edx * edx + edy * edy).sqrt();
+                            let edge_dir = if elen > 0.0 {
+                                crate::layout::Vec2::new(edx / elen, edy / elen)
+                            } else {
+                                crate::layout::Vec2::new(0.0, 1.0)
+                            };
+                            // Same long/short proportion as a real clue box, so this preview
+                            // actually looks like the gutter boxes it's previewing.
+                            let arm_short = arm_size
+                                * (crate::layout::CLUE_BOX_SHORT / crate::layout::CLUE_BOX);
                             let points: Vec<Pos2> = crate::layout::tri_clue_rhombus(
                                 crate::layout::Point::new(arm_center.x, arm_center.y),
                                 family,
+                                edge_dir,
                                 arm_size,
+                                arm_short,
                             )
                             .iter()
                             .map(|p| Pos2::new(p.x, p.y))
@@ -449,8 +478,9 @@ fn draw_string_at(
     clue_txt: &str,
     scale: f32,
     (r, g, b): (u8, u8, u8),
+    font_scale: f32,
 ) {
-    let base_font = egui::FontId::monospace(scale * 0.7);
+    let base_font = egui::FontId::monospace(scale * font_scale);
     let text_width = |fonts: &Fonts, t: &str| {
         fonts
             .layout_no_wrap(t.to_string(), base_font.clone(), Color32::BLACK)
@@ -465,15 +495,15 @@ fn draw_string_at(
 
     let (width_2, width_3) = ui.fonts(|f| {
         (
-            f32::max(text_width(f, "00") / (scale * 0.7), 1.0),
-            f32::max(text_width(f, "000") / (scale * 0.7), 1.0),
+            f32::max(text_width(f, "00") / (scale * font_scale), 1.0),
+            f32::max(text_width(f, "000") / (scale * font_scale), 1.0),
         )
     });
     let fonts_by_digit = vec![
         base_font.clone(),
         base_font,
-        egui::FontId::monospace(scale * 0.7 / width_2),
-        egui::FontId::monospace(scale * 0.7 / width_3),
+        egui::FontId::monospace(scale * font_scale / width_2),
+        egui::FontId::monospace(scale * font_scale / width_3),
     ];
 
     let clue_font = fonts_by_digit[clue_txt.len().min(fonts_by_digit.len() - 1)].clone();
@@ -496,7 +526,7 @@ pub(crate) fn draw_string_in_box(
     rgb: (u8, u8, u8),
 ) {
     painter.rect_filled(rect, 0.0, Color32::from_rgb(rgb.0, rgb.1, rgb.2));
-    draw_string_at(ui, painter, rect.center(), clue_txt, scale, rgb);
+    draw_string_at(ui, painter, rect.center(), clue_txt, scale, rgb, 0.7);
 }
 
 /// The mean of a convex polygon's vertices: the true centre for a parallelogram, and a triangle's
@@ -525,12 +555,20 @@ pub(crate) fn draw_string_in_polygon(
     rgb: (u8, u8, u8),
 ) {
     fill_polygon(painter, points, rgb);
-    draw_string_at(ui, painter, polygon_centroid(points), clue_txt, scale, rgb);
+    draw_string_at(
+        ui,
+        painter,
+        polygon_centroid(points),
+        clue_txt,
+        scale,
+        rgb,
+        0.7,
+    );
 }
 
-/// As `draw_string_in_polygon`, but for a rhombus clue box specifically: the label is nudged down
-/// by about a third of its own height, since centring it exactly on the rhombus's geometric
-/// middle reads as sitting slightly too high.
+/// As `draw_string_in_polygon`, but for a rhombus clue box specifically: the label is smaller
+/// than a square box's (the rhombus is narrower top-to-bottom than it is wide) and nudged up a
+/// bit from the geometric middle, since the rhombus's mass sits toward its bottom half.
 pub(crate) fn draw_string_in_rhombus(
     ui: &egui::Ui,
     painter: &egui::Painter,
@@ -540,9 +578,10 @@ pub(crate) fn draw_string_in_rhombus(
     rgb: (u8, u8, u8),
 ) {
     fill_polygon(painter, points, rgb);
-    let text_height = scale * 0.7;
-    let center = polygon_centroid(points) + Vec2::new(0.0, text_height / 3.0);
-    draw_string_at(ui, painter, center, clue_txt, scale, rgb);
+    const FONT_SCALE: f32 = 0.5;
+    let text_height = scale * FONT_SCALE;
+    let center = polygon_centroid(points) - Vec2::new(0.0, text_height / 6.0);
+    draw_string_at(ui, painter, center, clue_txt, scale, rgb, FONT_SCALE);
 }
 
 fn draw_clues<C: crate::puzzle::Clue>(

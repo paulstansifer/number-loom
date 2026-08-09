@@ -1206,9 +1206,14 @@ impl CanvasGui {
                     let family = lane_families[g.lane];
                     for (i, (color_info, count)) in expressed.iter().enumerate() {
                         let c = g.clue_box_center(i);
-                        let points =
-                            crate::layout::tri_clue_rhombus(c, family, crate::layout::CLUE_BOX)
-                                .map(|p| to_screen * Pos2::new(p.x, p.y));
+                        let points = crate::layout::tri_clue_rhombus(
+                            c,
+                            family,
+                            g.edge_dir,
+                            crate::layout::CLUE_BOX,
+                            crate::layout::CLUE_BOX_SHORT,
+                        )
+                        .map(|p| to_screen * Pos2::new(p.x, p.y));
                         let text = match count {
                             Some(n) => n.to_string(),
                             None => color_info.ch.to_string(),

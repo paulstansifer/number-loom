@@ -213,17 +213,24 @@ pub struct Guide {
     pub emphasis: bool,
 }
 
-/// A clue box's side, in abstract units (one cell edge = 1.0).
+/// A clue box's long side (the extent along its own lane), in abstract units (one cell edge =
+/// 1.0).
 ///
 /// Adjacent parallel lanes are `TRI_ROW_HEIGHT` apart, but the boxes are axis-aligned while a
 /// diagonal gutter is not: that 0.866 of separation splits into (0.75, 0.43), so the box has to
 /// fit inside the *larger* component or neighbouring lanes' clues would still overlap on screen.
 pub const CLUE_BOX: f32 = 0.7;
+/// A clue box's short side (the extent across the lane, flush against the puzzle edge it's lined
+/// up against). Just under one full cell edge, so a chain of boxes reads as an extension of the
+/// grid without touching its neighbouring gutter's boxes.
+pub const CLUE_BOX_SHORT: f32 = 0.95;
 /// The gap between one clue box and the next along a gutter. Chosen so that consecutive boxes on
 /// a diagonal gutter clear each other too.
 pub const CLUE_GAP: f32 = 0.18;
-/// Breathing room between the grid and the nearest clue.
-pub const CLUE_PAD: f32 = 0.35;
+/// Breathing room between the grid and the nearest clue. Wide enough for the solve view's
+/// per-line analysis mark (skim dot, scrub diamond, error cross — radius `0.2 * scale`, so up to
+/// 0.4 units across) to sit at its midpoint without touching the grid or the first clue box.
+pub const CLUE_PAD: f32 = 0.6;
 
 /// Unit vectors along each triangular family's own lane direction: rows, `/` lines, `\` lines.
 const TRI_LANE_DIR: [Vec2; 3] = [
@@ -238,19 +245,23 @@ const TRI_LANE_DIR: [Vec2; 3] = [
     },
 ];
 
-/// √3, for the ratio between a 60°/120° rhombus's two diagonals.
-const SQRT_3: f32 = 1.732_050_8;
-
-/// A clue box shaped like a rhombus pointing along the lane: its long diagonal runs along the
-/// lane's own direction (i.e. along `outward`) and its short diagonal crosses it, so a chain of
-/// clues reads as beads strung along the gutter rather than a stack of fat diamonds poking into
-/// their neighbours. `size` is the box's extent along the lane's own direction.
-pub fn tri_clue_rhombus(center: Point, family: usize, size: f32) -> [Point; 4] {
+/// A clue box shaped like a rhombus pointing along the lane: its long *side* runs along the
+/// lane's own direction (i.e. along `outward`), and its short side runs along `edge_dir` — the
+/// puzzle boundary edge the box is lined up against — so a chain of clues reads as beads strung
+/// along the gutter, each one flush against the grid, rather than a stack of boxes poking into
+/// their neighbours at the wrong angle. `size` is the box's extent along the lane's own
+/// direction; `short` is its extent across the lane; `edge_dir` need not be perpendicular to
+/// `size`'s direction (for a triangular grid it's 60° off).
+pub fn tri_clue_rhombus(
+    center: Point,
+    family: usize,
+    edge_dir: Vec2,
+    size: f32,
+    short: f32,
+) -> [Point; 4] {
     let dir = TRI_LANE_DIR[family];
-    let perp = Vec2::new(-dir.y, dir.x);
     let (ax, ay) = (dir.x * size / 2.0, dir.y * size / 2.0);
-    let across = size / SQRT_3;
-    let (bx, by) = (perp.x * across / 2.0, perp.y * across / 2.0);
+    let (bx, by) = (edge_dir.x * short / 2.0, edge_dir.y * short / 2.0);
     [
         Point::new(center.x + ax + bx, center.y + ay + by),
         Point::new(center.x - ax + bx, center.y - ay + by),
@@ -268,6 +279,11 @@ pub struct GutterLane {
     pub anchor: Point,
     /// The unit vector clue boxes march along, pointing away from the grid.
     pub outward: Vec2,
+    /// The direction of the puzzle boundary edge the clue chain is lined up against — the short
+    /// side of `tri_clue_rhombus`'s boxes runs along this. For a square grid it's perpendicular
+    /// to `outward`; for a triangular grid it's 60° off, since that's the only angle a triangle's
+    /// edges come in.
+    pub edge_dir: Vec2,
     /// Whether the lane's stored clue list must be reversed to read in display order.
     pub reversed: bool,
 }
