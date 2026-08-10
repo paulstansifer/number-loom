@@ -233,7 +233,7 @@ pub const CLUE_GAP: f32 = 0.18;
 pub const CLUE_PAD: f32 = 0.6;
 
 /// Unit vectors along each triangular family's own lane direction: rows, `/` lines, `\` lines.
-const TRI_LANE_DIR: [Vec2; 3] = [
+pub(crate) const TRI_LANE_DIR: [Vec2; 3] = [
     Vec2 { x: 1.0, y: 0.0 },
     Vec2 {
         x: 0.5,

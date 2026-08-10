@@ -160,22 +160,86 @@ impl Outline {
         res
     }
 
-    /// Grow (`delta > 0`) or shrink the given side. Returns `None` if the puzzle would be empty.
+    /// Whether the single boundary slice at `side`'s current extreme (e.g. row `a.0` for `Top`)
+    /// contains at least one real cell. A box can be non-empty in every coordinate yet still
+    /// have an empty slice at one edge, once another bound has pinched that edge to a point —
+    /// e.g. `b.0 == b.1` means only one `b` value exists at all, so a new row only has cells if
+    /// that row actually reaches it.
+    fn frontier_nonempty(&self, side: Side) -> bool {
+        match side {
+            Side::Top => (self.b.0..=self.b.1)
+                .any(|b| (self.c.0..=self.c.1).any(|c| TriCoord::new(self.a.0, b, c).is_valid())),
+            Side::Bottom => (self.b.0..=self.b.1)
+                .any(|b| (self.c.0..=self.c.1).any(|c| TriCoord::new(self.a.1, b, c).is_valid())),
+            Side::UpperLeft => (self.a.0..=self.a.1)
+                .any(|a| (self.c.0..=self.c.1).any(|c| TriCoord::new(a, self.b.0, c).is_valid())),
+            Side::LowerRight => (self.a.0..=self.a.1)
+                .any(|a| (self.c.0..=self.c.1).any(|c| TriCoord::new(a, self.b.1, c).is_valid())),
+            Side::LowerLeft => (self.a.0..=self.a.1)
+                .any(|a| (self.b.0..=self.b.1).any(|b| TriCoord::new(a, b, self.c.0).is_valid())),
+            Side::UpperRight => (self.a.0..=self.a.1)
+                .any(|a| (self.b.0..=self.b.1).any(|b| TriCoord::new(a, b, self.c.1).is_valid())),
+        }
+    }
+
+    /// Whether growing `side` by one step would add any real cell at all. Used both by
+    /// `resized` (to clamp growth that would otherwise wander past real cells) and by the editor
+    /// (to grey out a "+" button that would have no effect whatsoever).
+    pub fn can_grow(&self, side: Side) -> bool {
+        let mut candidate = *self;
+        match side {
+            Side::Top => candidate.a.0 -= 1,
+            Side::Bottom => candidate.a.1 += 1,
+            Side::UpperLeft => candidate.b.0 -= 1,
+            Side::LowerRight => candidate.b.1 += 1,
+            Side::LowerLeft => candidate.c.0 -= 1,
+            Side::UpperRight => candidate.c.1 += 1,
+        }
+        candidate.frontier_nonempty(side)
+    }
+
+    /// Grow (`delta > 0`) or shrink (`delta < 0`) the given side. Returns `None` if it would
+    /// have no effect at all — either because shrinking would empty the puzzle, or because
+    /// growing can't add a single real cell (see `can_grow`).
+    ///
+    /// Growing is clamped one step at a time rather than jumping straight to `delta`: another
+    /// bound can pinch this side to a point partway through (see `frontier_nonempty`), and
+    /// blindly moving the bound the full `delta` in that case would grow the outline's *number*
+    /// without adding any cell — leaving a bound that looks grown but adds nothing, so shrinking
+    /// back would silently do nothing for a step or more. Clamping keeps every bound "tight":
+    /// it always sits exactly at real cells, so a later shrink is never a silent no-op.
     pub fn resized(&self, side: Side, delta: i32) -> Option<Outline> {
         let mut res = *self;
-        match side {
-            Side::Top => res.a.0 -= delta,
-            Side::Bottom => res.a.1 += delta,
-            Side::UpperLeft => res.b.0 -= delta,
-            Side::LowerRight => res.b.1 += delta,
-            Side::LowerLeft => res.c.0 -= delta,
-            Side::UpperRight => res.c.1 += delta,
+        if delta > 0 {
+            for _ in 0..delta {
+                if !res.can_grow(side) {
+                    break;
+                }
+                match side {
+                    Side::Top => res.a.0 -= 1,
+                    Side::Bottom => res.a.1 += 1,
+                    Side::UpperLeft => res.b.0 -= 1,
+                    Side::LowerRight => res.b.1 += 1,
+                    Side::LowerLeft => res.c.0 -= 1,
+                    Side::UpperRight => res.c.1 += 1,
+                }
+            }
+        } else {
+            match side {
+                Side::Top => res.a.0 -= delta,
+                Side::Bottom => res.a.1 += delta,
+                Side::UpperLeft => res.b.0 -= delta,
+                Side::LowerRight => res.b.1 += delta,
+                Side::LowerLeft => res.c.0 -= delta,
+                Side::UpperRight => res.c.1 += delta,
+            }
+            if res.a.0 > res.a.1 || res.b.0 > res.b.1 || res.c.0 > res.c.1 {
+                return None;
+            }
         }
-        if res.a.0 > res.a.1 || res.b.0 > res.b.1 || res.c.0 > res.c.1 {
-            return None;
-        }
-        // A box can be non-empty in every coordinate yet still contain no valid cell.
-        if res.cells().is_empty() {
+        // A box can be non-empty in every coordinate yet still contain no valid cell; and if
+        // growth was clamped all the way back to nothing, `res` is just `self` again.
+        if res == *self || res.cells().is_empty() {
             None
         } else {
             Some(res)
@@ -266,6 +330,30 @@ impl Side {
             Side::LowerLeft,
             Side::UpperLeft,
         ]
+    }
+
+    /// The outward-facing normal of this bound's hexagon edge, and the direction parallel to
+    /// that edge (i.e. the family's own lane direction — `layout::TRI_LANE_DIR[0/1/2]` for
+    /// rows/`/`/`\`) — for laying resize-control buttons flush against each side.
+    ///
+    /// Each side caps one end of one family's range (`Top`/`Bottom` bound `a`, `UpperLeft`/
+    /// `LowerRight` bound `b`, `LowerLeft`/`UpperRight` bound `c` — see `Outline::resized`), so
+    /// its edge runs parallel to that family's lane direction; `outward` is whichever of the two
+    /// perpendicular directions points away from the outline, pinned to which end of the bound
+    /// (`.0` vs `.1`) `Outline::resized` actually grows. Not just eyeballed: see
+    /// `outward_points_toward_growth` for a check against the real renderer.
+    pub fn outward_and_edge_dir(self) -> (Vec2, Vec2) {
+        let row = crate::layout::TRI_LANE_DIR[0];
+        let slash = crate::layout::TRI_LANE_DIR[1];
+        let backslash = crate::layout::TRI_LANE_DIR[2];
+        match self {
+            Side::Top => (Vec2::new(0.0, -1.0), row),
+            Side::Bottom => (Vec2::new(0.0, 1.0), row),
+            Side::UpperLeft => (Vec2::new(-TRI_ROW_HEIGHT, -0.5), slash),
+            Side::LowerRight => (Vec2::new(TRI_ROW_HEIGHT, 0.5), slash),
+            Side::LowerLeft => (Vec2::new(-TRI_ROW_HEIGHT, 0.5), backslash),
+            Side::UpperRight => (Vec2::new(TRI_ROW_HEIGHT, -0.5), backslash),
+        }
     }
 }
 
@@ -535,6 +623,48 @@ mod tests {
         assert!(refused);
     }
 
+    /// `b` pinned to a single point (0), `c` ranging -2..=2: growing `Bottom` (`a`) marches the
+    /// row that actually has cells (`c` must be `-a` or `-a-1`) out of `c`'s range after two
+    /// steps, so a request for more growth than that must clamp rather than silently moving `a`
+    /// past where any cell exists — and once clamped, growing further, or shrinking back, must
+    /// both have an immediate, real effect.
+    #[test]
+    fn growth_past_a_pinch_point_clamps_instead_of_going_empty() {
+        let outline = Outline {
+            a: (0, 0),
+            b: (0, 0),
+            c: (-2, 2),
+        };
+        assert_eq!(outline.cells().len(), 2, "sanity check on the hand-picked outline");
+
+        assert!(outline.can_grow(Side::Bottom), "row 1 should still have cells");
+        let grown = outline.resized(Side::Bottom, 5).expect("some growth is possible");
+        assert_eq!(
+            grown.a,
+            (0, 2),
+            "growth should clamp at a=2 (row 3 is empty), not jump to the requested a=5"
+        );
+        assert!(
+            !grown.can_grow(Side::Bottom),
+            "row 3 is empty, so no further growth should be possible"
+        );
+        assert_eq!(
+            grown.resized(Side::Bottom, 1),
+            None,
+            "resized should agree with can_grow and refuse a step that adds nothing"
+        );
+
+        // Shrinking back from the clamped state must immediately remove real cells, not spend a
+        // step undoing a growth that never happened.
+        let shrunk = grown
+            .resized(Side::Bottom, -1)
+            .expect("shrinking from a tight bound always has an effect");
+        assert!(
+            shrunk.cells().len() < grown.cells().len(),
+            "the first shrink after a clamped growth must remove at least one real cell"
+        );
+    }
+
     #[test]
     fn recovers_the_doc_example_outline_from_its_clue_counts() {
         // Exactly the six numbers webpbn's worked example implies.
@@ -790,6 +920,12 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     /// The single place a runtime shape is narrowed back to a static kind.
     fn of_shape(shape: &Shape) -> Option<Self::Dims>;
 
+    /// A short, shape-appropriate size label for editor/gallery display. Deliberately not a
+    /// fixed `(width, height)` pair: a square puzzle has a coherent width and height, but a
+    /// triddler has three independently resizable families and no single "width" — forcing it
+    /// through a two-number tuple is what used to silently drop its third family's count.
+    fn dims_label(dims: &Self::Dims, lanes: &LaneMap) -> String;
+
     fn resized(dims: &Self::Dims, side: Self::Side, delta: i32) -> Option<Self::Dims>;
 
     /// `None` when the coordinate is outside the puzzle.
@@ -905,6 +1041,10 @@ impl GridKind for Square {
             }),
             Shape::Triangular(_) => None,
         }
+    }
+
+    fn dims_label(dims: &Rect, _lanes: &LaneMap) -> String {
+        format!("{}x{}", dims.width, dims.height)
     }
 
     fn resized(dims: &Rect, side: SquareSide, delta: i32) -> Option<Rect> {
@@ -1165,6 +1305,15 @@ impl GridKind for Tri {
         }
     }
 
+    /// Rows / `/` lines / `\` lines, in that order — a triddler's three independent extents,
+    /// where a square puzzle only has two.
+    fn dims_label(_dims: &Outline, lanes: &LaneMap) -> String {
+        (0..lanes.family_count())
+            .map(|f| lanes.family(f).len().to_string())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
     fn resized(dims: &Outline, side: Side, delta: i32) -> Option<Outline> {
         dims.resized(side, delta)
     }
@@ -1365,6 +1514,11 @@ impl<K: GridKind> Geometry<K> {
 
     pub fn shape(&self) -> Shape {
         K::to_shape(&self.dims)
+    }
+
+    /// A short, shape-appropriate size label — see `GridKind::dims_label`.
+    pub fn dims_label(&self) -> String {
+        K::dims_label(&self.dims, &self.lanes)
     }
 
     /// The lane structure — all the solver needs.
@@ -2186,6 +2340,79 @@ mod typed_tests {
                         "growing {side:?} lost {coord:?} from {dims:?}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn outward_and_edge_dir_are_orthonormal() {
+        let len = |v: Vec2| (v.x * v.x + v.y * v.y).sqrt();
+        for side in Side::all() {
+            let (outward, edge_dir) = side.outward_and_edge_dir();
+            assert!(
+                (len(outward) - 1.0).abs() < 1e-4,
+                "{side:?} outward isn't unit length: {outward:?}"
+            );
+            assert!(
+                (len(edge_dir) - 1.0).abs() < 1e-4,
+                "{side:?} edge_dir isn't unit length: {edge_dir:?}"
+            );
+            let dot = outward.x * edge_dir.x + outward.y * edge_dir.y;
+            assert!(
+                dot.abs() < 1e-4,
+                "{side:?} outward and edge_dir aren't perpendicular: dot={dot}"
+            );
+        }
+    }
+
+    /// `Side::outward_and_edge_dir`'s signs are pinned to `Outline::resized`'s bound math by
+    /// hand, in a doc comment — this checks that reasoning against the actual renderer instead of
+    /// trusting it blindly: growing a side should visibly add cells on that side, not some other
+    /// one.
+    #[test]
+    fn outward_points_toward_where_growth_actually_lands() {
+        use std::collections::HashSet;
+
+        for dims in tri_shapes() {
+            let geo = Geometry::<Tri>::new(dims);
+            let old_coords: HashSet<TriCoord> =
+                (0..geo.cell_count() as u32).map(|c| geo.coord(c)).collect();
+            for side in Side::all() {
+                let Some(bigger) = geo.resized(side, 1) else {
+                    continue;
+                };
+                let (outward, _) = side.outward_and_edge_dir();
+
+                // Centroids of the old and newly-added cells, both measured in `bigger`'s own
+                // coordinate frame (resizing can shift where the abstract origin falls, so
+                // mixing positions from `geo` and `bigger` directly would be meaningless).
+                let (mut old_sum, mut old_n) = (Vec2::new(0.0, 0.0), 0u32);
+                let (mut new_sum, mut new_n) = (Vec2::new(0.0, 0.0), 0u32);
+                for cell in 0..bigger.cell_count() as u32 {
+                    let center = bigger.cell_shape(cell).center(bigger.cell_origin(cell));
+                    let sum = if old_coords.contains(&bigger.coord(cell)) {
+                        old_n += 1;
+                        &mut old_sum
+                    } else {
+                        new_n += 1;
+                        &mut new_sum
+                    };
+                    sum.x += center.x;
+                    sum.y += center.y;
+                }
+                assert!(new_n > 0, "growing {side:?} added no cells to {dims:?}");
+                let old_centroid = Vec2::new(old_sum.x / old_n as f32, old_sum.y / old_n as f32);
+                let new_centroid = Vec2::new(new_sum.x / new_n as f32, new_sum.y / new_n as f32);
+                let delta = Vec2::new(
+                    new_centroid.x - old_centroid.x,
+                    new_centroid.y - old_centroid.y,
+                );
+                let dot = delta.x * outward.x + delta.y * outward.y;
+                assert!(
+                    dot > 0.0,
+                    "growing {side:?} on {dims:?}: new cells aren't in the outward direction \
+                     {outward:?} (dot={dot})"
+                );
             }
         }
     }

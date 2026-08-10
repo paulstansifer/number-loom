@@ -41,7 +41,7 @@ pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Respon
         .get_or_make_up_title()
         .unwrap_or_else(|_| "Untitled".to_string());
 
-    let (width, height) = doc.dimensions();
+    let dims_label = doc.dims_label();
 
     let puzzle_type = match (doc.try_solution(), doc.try_puzzle()) {
         (Some(s), _) => match (s.shape(), s.clue_style()) {
@@ -69,7 +69,7 @@ pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Respon
                 palette_bar(ui, rect, doc);
 
                 ui.horizontal(|ui| {
-                    ui.small(format!("{}x{}", width, height));
+                    ui.small(dims_label);
                     ui.small(puzzle_type);
                 });
             });

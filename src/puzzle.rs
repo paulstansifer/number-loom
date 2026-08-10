@@ -265,6 +265,29 @@ impl<K: GridKind> Solution<K> {
             })
             .collect()
     }
+
+    /// Grows or shrinks one side of the puzzle (see `Geometry::resized`), carrying existing cell
+    /// colours over by coordinate — not by index. Resizing most sides shifts dense indices
+    /// (`Outline::cells()` sorts by (a,b,c), so growing anything but the last side inserts new
+    /// cells before existing ones), so a coordinate-keyed rebuild is required; a plain index
+    /// copy or append would silently scramble the picture. Cells that fall outside the new
+    /// bounds are dropped; newly added cells start out as background. `None` if the resize would
+    /// leave the puzzle empty.
+    pub fn resized(&self, side: K::Side, delta: i32) -> Option<Solution<K>> {
+        let new_geometry = self.geometry.resized(side, delta)?;
+        let mut cells = vec![BACKGROUND; new_geometry.cell_count()];
+        for old_cell in 0..self.geometry.cell_count() as u32 {
+            if let Some(new_cell) = new_geometry.cell(self.geometry.coord(old_cell)) {
+                cells[new_cell as usize] = self.cells[old_cell as usize];
+            }
+        }
+        Some(Solution {
+            clue_style: self.clue_style,
+            palette: self.palette.clone(),
+            geometry: new_geometry,
+            cells,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -526,6 +549,10 @@ impl DynPuzzle {
         with_puzzle!(self, |p| p.geometry.shape())
     }
 
+    pub fn dims_label(&self) -> String {
+        with_puzzle!(self, |p| p.geometry.dims_label())
+    }
+
     pub fn clue_lines(&self) -> usize {
         with_puzzle!(self, |p| p.lines.len())
     }
@@ -575,6 +602,10 @@ impl DynSolution {
 
     pub fn shape(&self) -> Shape {
         with_solution!(self, |s| s.geometry.shape())
+    }
+
+    pub fn dims_label(&self) -> String {
+        with_solution!(self, |s| s.geometry.dims_label())
     }
 
     pub fn lane_map(&self) -> &crate::geometry::LaneMap {
@@ -686,6 +717,13 @@ impl DynSolution {
         match self {
             DynSolution::Square(s) => Some(s),
             DynSolution::Tri(_) => None,
+        }
+    }
+
+    pub fn as_tri(&self) -> Option<&Solution<Tri>> {
+        match self {
+            DynSolution::Tri(s) => Some(s),
+            DynSolution::Square(_) => None,
         }
     }
 }
@@ -1047,23 +1085,15 @@ impl Document {
         Ok(true)
     }
 
-    /// A rough width and height, for labels and thumbnails. A triddler has neither, so it
-    /// reports the sizes of its first two clue families instead.
-    pub fn dimensions(&self) -> (usize, usize) {
-        if let Some(DynSolution::Square(s)) = &self.s {
-            return (s.x_size(), s.y_size());
+    /// A short, shape-appropriate size label for labels and thumbnails — "8x8" for a square
+    /// puzzle, three numbers for a triddler (see `GridKind::dims_label`), rather than forcing
+    /// every shape through the same fixed-arity pair.
+    pub fn dims_label(&self) -> String {
+        match (&self.s, &self.p) {
+            (Some(s), _) => s.dims_label(),
+            (_, Some(p)) => p.dims_label(),
+            _ => String::new(),
         }
-        let counts = match (&self.s, &self.p) {
-            (Some(s), _) => {
-                let lanes = s.lane_map();
-                (0..lanes.family_count())
-                    .map(|f| lanes.family(f).len())
-                    .collect()
-            }
-            (_, Some(p)) => p.family_lane_counts(),
-            _ => vec![0, 0],
-        };
-        (counts[1], counts[0])
     }
 
     pub fn puzzle(&mut self) -> &DynPuzzle {
@@ -1129,5 +1159,92 @@ impl Document {
             id: "".to_string(),
             license: "".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+    use crate::geometry::Side;
+
+    fn blank_tri(side_len: i32) -> Solution<Tri> {
+        let geometry = Geometry::new(Outline::hexagon(side_len));
+        let cell_count = geometry.cell_count();
+        Solution::new(
+            ClueStyle::Nono,
+            HashMap::from([
+                (BACKGROUND, ColorInfo::default_bg()),
+                (Color(1), ColorInfo::default_fg(Color(1))),
+            ]),
+            geometry,
+            vec![BACKGROUND; cell_count],
+        )
+    }
+
+    #[test]
+    fn resizing_carries_colours_over_by_coordinate() {
+        let mut sol = blank_tri(2);
+        // Paint one interior cell a distinguishing colour and remember its coordinate.
+        let coord = sol.geometry.coord(0);
+        sol.cells[0] = Color(1);
+
+        for side in Side::all() {
+            let bigger = sol
+                .resized(side, 1)
+                .expect("growing a small hexagon should never empty it");
+
+            // The painted cell's colour survives at its own coordinate...
+            assert_eq!(
+                bigger.get(coord),
+                Some(Color(1)),
+                "growing {side:?} lost the painted cell's colour"
+            );
+
+            // ...and every newly added cell starts out background.
+            let old_coords: std::collections::HashSet<TriCoord> = (0..sol.geometry.cell_count()
+                as u32)
+                .map(|c| sol.geometry.coord(c))
+                .collect();
+            let mut saw_new_cell = false;
+            for cell in 0..bigger.geometry.cell_count() as u32 {
+                if !old_coords.contains(&bigger.geometry.coord(cell)) {
+                    saw_new_cell = true;
+                    assert_eq!(
+                        bigger.cells[cell as usize],
+                        BACKGROUND,
+                        "growing {side:?} should start new cells as background"
+                    );
+                }
+            }
+            assert!(saw_new_cell, "growing {side:?} added no cells");
+        }
+    }
+
+    #[test]
+    fn shrinking_drops_out_of_bounds_cells_without_panicking() {
+        let sol = blank_tri(3);
+        for side in Side::all() {
+            if let Some(smaller) = sol.resized(side, -1) {
+                assert!(smaller.cells.len() < sol.cells.len());
+            }
+        }
+    }
+
+    #[test]
+    fn shrinking_to_nothing_is_refused() {
+        let mut sol = blank_tri(1);
+        // Keep shrinking the same side; eventually the model must refuse rather than crash or
+        // silently produce an empty puzzle.
+        let mut refused = false;
+        for _ in 0..10 {
+            match sol.resized(Side::Top, -1) {
+                Some(next) => sol = next,
+                None => {
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        assert!(refused, "shrinking never refused");
     }
 }
