@@ -1267,10 +1267,9 @@ impl CanvasGui {
 
         if let Some(selection) = &self.selection {
             if let Some(path) = &selection.drawing {
-                // The loop as it's being drawn, closed so the player can see what they'll get.
+                // The loop as it's being drawn (open)
                 let points: Vec<Pos2> = path
                     .iter()
-                    .chain(path.first())
                     .map(|p| to_screen * Pos2::new(p.x, p.y))
                     .collect();
                 shapes.push(egui::Shape::line(
