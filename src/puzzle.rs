@@ -21,6 +21,9 @@ pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash + Send {
 
     fn color_at(&self, idx: usize) -> Color;
 
+    // Ranges of contiguous cells sharing a color.
+    fn color_ranges(&self) -> Vec<(Color, std::ops::Range<usize>)>;
+
     // Summary string (for display while solving)
     fn to_string(&self, palette: &Palette) -> String;
 
@@ -58,6 +61,10 @@ impl Clue for Nono {
     }
     fn color_at(&self, _: usize) -> Color {
         self.color
+    }
+
+    fn color_ranges(&self) -> Vec<(Color, std::ops::Range<usize>)> {
+        vec![(self.color, 0..self.count as usize)]
     }
 
     fn to_string(&self, palette: &Palette) -> String {
@@ -106,6 +113,30 @@ impl Clue for Triano {
     fn must_be_separated_from(&self, next: &Self) -> bool {
         // TODO: check the semantics with the book!
         self.body_color == next.body_color && self.back_cap.is_none() && next.front_cap.is_none()
+    }
+
+    fn color_ranges(&self) -> Vec<(Color, std::ops::Range<usize>)> {
+        let mut segments = vec![];
+        if let Some(front_cap) = self.front_cap {
+            segments.push((front_cap, 1));
+        }
+        if self.body_len > 0 {
+            segments.push((self.body_color, self.body_len as usize));
+        }
+        if let Some(back_cap) = self.back_cap {
+            segments.push((back_cap, 1));
+        }
+
+        let mut res: Vec<(Color, std::ops::Range<usize>)> = vec![];
+        let mut idx = 0;
+        for (color, len) in segments {
+            match res.last_mut() {
+                Some((last_color, range)) if *last_color == color => range.end += len,
+                _ => res.push((color, idx..idx + len)),
+            }
+            idx += len;
+        }
+        res
     }
 
     fn to_string(&self, palette: &Palette) -> String {
