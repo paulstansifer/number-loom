@@ -1596,7 +1596,10 @@ fn marching_ants(
 ) -> Vec<Shape> {
     let loops = outline_loops(outline);
     let mut shapes = Vec::with_capacity(loops.len() * 2);
-    let offset = -(elapsed * ANT_SPEED) % (ANT_DASH * 2.0);
+    // `dashed_line_with_offset` walks the offset forward from each path's start and assumes it's
+    // non-negative; a negative one makes it extrapolate the first dash backward past the start
+    // point, flashing a stray segment there. `%` alone can return negative, so use `rem_euclid`.
+    let offset = (-(elapsed * ANT_SPEED)).rem_euclid(ANT_DASH * 2.0);
 
     for loop_points in loops {
         let points: Vec<Pos2> = loop_points
