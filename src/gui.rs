@@ -1496,6 +1496,45 @@ fn selection_outline(picture: &DynSolution, cells: &[u32]) -> Vec<(Point, Point)
         .collect()
 }
 
+/// Stitch a boundary's unordered edges into closed loops, each a list of points ending back where
+/// it started. A cell's edges are wound consistently, and that winding survives cancellation, so
+/// each vertex is the tail of exactly one surviving edge: following tail-to-head therefore always
+/// closes a loop.
+///
+/// Loops matter (rather than the raw edge list) so the marching ants can be drawn as one dashed
+/// path per loop: dashing a whole path keeps the dash phase continuous across corners, where
+/// dashing each edge in isolation would restart the pattern at every corner.
+fn outline_loops(outline: &[(Point, Point)]) -> Vec<Vec<Point>> {
+    type Vertex = (i32, i32);
+    let key =
+        |p: Point| -> Vertex { ((p.x * 4096.0).round() as i32, (p.y * 4096.0).round() as i32) };
+
+    let mut next: HashMap<Vertex, (Point, Point)> = HashMap::new();
+    for &(a, b) in outline {
+        next.insert(key(a), (a, b));
+    }
+
+    let mut loops = Vec::new();
+    let mut visited: std::collections::HashSet<Vertex> = std::collections::HashSet::new();
+    for &(start, _) in outline {
+        let start_key = key(start);
+        if !visited.insert(start_key) {
+            continue;
+        }
+        let mut loop_points = vec![start];
+        let mut cur = start_key;
+        while let Some(&(_, b)) = next.get(&cur) {
+            loop_points.push(b);
+            cur = key(b);
+            if cur == start_key || !visited.insert(cur) {
+                break;
+            }
+        }
+        loops.push(loop_points);
+    }
+    loops
+}
+
 /// Dash length and gap for the marching ants, in points, and how fast the dashes crawl.
 const ANT_DASH: f32 = 4.0;
 const ANT_SPEED: f32 = 12.0;
@@ -1507,16 +1546,17 @@ fn marching_ants(
     to_screen: &egui::emath::RectTransform,
     elapsed: f32,
 ) -> Vec<Shape> {
-    let mut shapes = Vec::with_capacity(outline.len() * 2);
+    let loops = outline_loops(outline);
+    let mut shapes = Vec::with_capacity(loops.len() * 2);
     let offset = -(elapsed * ANT_SPEED) % (ANT_DASH * 2.0);
 
-    for (a, b) in outline {
-        let points = [
-            to_screen * Pos2::new(a.x, a.y),
-            to_screen * Pos2::new(b.x, b.y),
-        ];
-        shapes.push(Shape::line_segment(
-            points,
+    for loop_points in loops {
+        let points: Vec<Pos2> = loop_points
+            .iter()
+            .map(|p| to_screen * Pos2::new(p.x, p.y))
+            .collect();
+        shapes.push(Shape::line(
+            points.clone(),
             egui::Stroke::new(1.5, Color32::from_white_alpha(220)),
         ));
         shapes.extend(Shape::dashed_line_with_offset(
