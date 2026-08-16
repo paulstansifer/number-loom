@@ -91,7 +91,7 @@ fn count_colors(doc: &Document) -> HashMap<(u8, u8, u8), usize> {
         count_colors_from_solution(solution)
     } else {
         // Every family covers the whole picture, so counting one is enough. `Clue::express`
-        // flattens both clue styles into (colour, count) pairs, which is what makes this one loop
+        // flattens both clue styles into (color, count) pairs, which is what makes this one loop
         // rather than one per clue type.
         let mut counts = HashMap::new();
         let puzzle = doc.try_puzzle().unwrap();

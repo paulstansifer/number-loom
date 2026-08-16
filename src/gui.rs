@@ -665,11 +665,9 @@ impl CanvasGui {
     }
 
     /// Stamp the floating layer back into the picture at wherever it has been dragged to, and
-    /// re-base the selection there. The selection itself survives — only its floating-ness ends.
+    /// re-base the selection there. It remains selected, though.
     ///
-    /// Only non-background cells are stamped, so a moved shape composites over what's already
-    /// there instead of punching a background-coloured hole around itself. Cells that have been
-    /// dragged off the grid are dropped here — this is the point of no return for them.
+    /// Only non-background cells are stamped. Cells dragged off the grid are dropped.
     pub fn flatten_selection(&mut self) {
         let Some(selection) = &mut self.selection else {
             return;
@@ -1151,8 +1149,7 @@ impl CanvasGui {
             && let Some(floating) = &selection.floating
         {
             for (cell, color) in floating {
-                // Background cells move transparently: the shape composites over whatever it's
-                // dropped onto instead of carrying a background-coloured box with it.
+                // Background cells don't move.
                 if *color == BACKGROUND {
                     continue;
                 }
@@ -1652,8 +1649,8 @@ fn cell_shape(
         )
     };
 
-    // A `Corner` colour is a half-square used by trianogram clues, which is a different thing
-    // from a triangular *cell* and only ever appears on a square grid.
+    // A `Corner` color is a half-square used by trianogram clues, and appears only on a square grid. It's a different thing
+    // from a triangular *cell*.
     let mut res = vec![match ci.corner {
         None => polygon(shape.vertices(origin), color),
         Some(corner) => {
@@ -3008,8 +3005,7 @@ mod lasso_tests {
         assert_eq!(lit, want);
     }
 
-    /// Only non-background cells are stamped, so a moved shape composites over what's already
-    /// there rather than carrying a background-coloured box along with it.
+    /// Only non-background cells are stamped.
     #[test]
     fn a_move_does_not_erase_at_the_destination() {
         let mut gui = canvas_with_a_block();

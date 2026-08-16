@@ -21,7 +21,7 @@ pub struct SerializableSolution {
     pub palette: Vec<ColorInfo>,
     /// Square dimensions, or a triddler outline.
     pub shape: Shape,
-    /// One colour per cell, in the dense order the shape implies.
+    /// One color per cell, in the dense order the shape implies.
     pub cells: Vec<Color>,
 }
 

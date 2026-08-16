@@ -433,7 +433,7 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
 
             // `#t`/`#T` only declares that this is a triddler; the palette (if any) is still
             // introduced by a separate `#d`, and comments may sit between the two. A triddler
-            // with no colours has no `#d` at all.
+            // with no colors has no `#d` at all.
             if palette_ch.starts_with("t") {
                 triddler = true;
             } else if palette_ch.starts_with("d") {
@@ -789,7 +789,7 @@ pub fn solution_to_triano_puzzle(solution: &Solution<Square>) -> Puzzle<Triano, 
     Puzzle::square(solution.palette.clone(), rows, cols)
 }
 
-/// Read off the clues for one lane: maximal runs of a single non-background colour.
+/// Read off nonogram clues for one lane: maximal runs of a single non-background color.
 fn clues_along_lane<K: GridKind>(solution: &Solution<K>, cells: &[u32]) -> Vec<Nono> {
     let mut clues = Vec::<Nono>::new();
 

@@ -214,7 +214,7 @@ mod triddler_tests {
             reloaded.as_tri_nono().unwrap().geometry,
             "same shape, including position (outlines are canonicalized)"
         );
-        // Olsak renumbers colour indices on the way through, so compare by RGB (the existing
+        // Olsak renumbers color indices on the way through, so compare by RGB (the existing
         // square round-trip test does the same).
         let as_rgb =
             |p: &crate::puzzle::Puzzle<crate::puzzle::Nono, Tri>| -> Vec<Vec<(u16, (u8, u8, u8))>> {

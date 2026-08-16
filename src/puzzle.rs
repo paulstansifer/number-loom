@@ -9,7 +9,7 @@ use crate::{
     import::{solution_to_puzzle, solution_to_tri_puzzle, solution_to_triano_puzzle},
 };
 use serde::{Deserialize, Serialize};
-/// A puzzle's colours, always including the background.
+/// All colors, including `BACKGROUND`.
 pub type Palette = HashMap<Color, ColorInfo>;
 
 pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash + Send {
@@ -244,15 +244,14 @@ impl ColorInfo {
     }
 }
 
-/// A picture: one colour per cell. Cells may be `UNSOLVED`, so this also represents a puzzle
-/// part-way through being solved, or an ambiguous one still under development.
+/// A picture. May use `UNSOLVED` to represent an in-progress solution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Solution<K: GridKind> {
     pub clue_style: ClueStyle,
     pub palette: HashMap<Color, ColorInfo>, // should include the background!
     pub geometry: Geometry<K>,
     /// One entry per cell, in the dense order `geometry` defines. For square puzzles that is
-    /// `y * width + x`. Use `at`/`set` when you have `(x, y)` coordinates in hand.
+    /// `y * width + x`.
     pub cells: Vec<Color>,
 }
 
@@ -279,7 +278,7 @@ impl<K: GridKind> Solution<K> {
         }
     }
 
-    /// The colour at a coordinate, or `None` if it is outside the puzzle.
+    /// The color at a coordinate, or `None` if it is outside the puzzle.
     pub fn get(&self, coord: K::Coord) -> Option<Color> {
         self.geometry.cell(coord).map(|c| self.cells[c as usize])
     }
@@ -297,13 +296,8 @@ impl<K: GridKind> Solution<K> {
             .collect()
     }
 
-    /// Grows or shrinks one side of the puzzle (see `Geometry::resized`), carrying existing cell
-    /// colours over by coordinate — not by index. Resizing most sides shifts dense indices
-    /// (`Outline::cells()` sorts by (a,b,c), so growing anything but the last side inserts new
-    /// cells before existing ones), so a coordinate-keyed rebuild is required; a plain index
-    /// copy or append would silently scramble the picture. Cells that fall outside the new
-    /// bounds are dropped; newly added cells start out as background. `None` if the resize would
-    /// leave the puzzle empty.
+    /// Grows or shrinks one side of the puzzle (see `Geometry::resized`) nodestructively. Newly
+    /// added cells start out as background. `None` if the resize would leave the puzzle empty.
     pub fn resized(&self, side: K::Side, delta: i32) -> Option<Solution<K>> {
         let new_geometry = self.geometry.resized(side, delta)?;
         let mut cells = vec![BACKGROUND; new_geometry.cell_count()];
@@ -727,7 +721,7 @@ impl DynSolution {
         with_solution!(self, |s| s.geometry.guides())
     }
 
-    /// How far a run of the same colour extends from a cell along each clue family.
+    /// How far a run of the same color extends from a cell along each clue family.
     pub fn runs_at_cell(&self, cell: u32) -> Vec<(usize, usize)> {
         with_solution!(self, |s| {
             let target = s.cells[cell as usize];
@@ -735,8 +729,7 @@ impl DynSolution {
         })
     }
 
-    /// The square picture, or `None` for a triddler. The one place code that only understands
-    /// rows and columns is allowed to narrow.
+    /// The square picture, or `None` for a triddler.
     pub fn as_square(&self) -> Option<&Solution<Square>> {
         match self {
             DynSolution::Square(s) => Some(s),
@@ -908,7 +901,7 @@ impl<K: GridKind> Solution<K> {
         problems
     }
 
-    /// How far a run of the same colour extends from `coord` along each clue family, as
+    /// How far a run of the same color extends from `coord` along each clue family, as
     /// `(backward, forward)` counts not including the cell itself.
     pub fn runs_at(&self, coord: K::Coord) -> Vec<(usize, usize)> {
         let Some(cell) = self.geometry.cell(coord) else {
@@ -1213,9 +1206,9 @@ mod resize_tests {
     }
 
     #[test]
-    fn resizing_carries_colours_over_by_coordinate() {
+    fn resizing_carries_colors_over_by_coordinate() {
         let mut sol = blank_tri(2);
-        // Paint one interior cell a distinguishing colour and remember its coordinate.
+        // Paint one interior cell a distinguishing color and remember its coordinate.
         let coord = sol.geometry.coord(0);
         sol.cells[0] = Color(1);
 
@@ -1224,11 +1217,11 @@ mod resize_tests {
                 .resized(side, 1)
                 .expect("growing a small hexagon should never empty it");
 
-            // The painted cell's colour survives at its own coordinate...
+            // The painted cell's color survives at its own coordinate...
             assert_eq!(
                 bigger.get(coord),
                 Some(Color(1)),
-                "growing {side:?} lost the painted cell's colour"
+                "growing {side:?} lost the painted cell's color"
             );
 
             // ...and every newly added cell starts out background.

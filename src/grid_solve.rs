@@ -801,7 +801,7 @@ mod tests {
             let truth = if *cell_filled { Color(1) } else { BACKGROUND };
             assert!(
                 cell.can_be(truth),
-                "solver ruled out the real colour of a cell"
+                "solver ruled out the real color of a cell"
             );
         }
         report.cells_left
