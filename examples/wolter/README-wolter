@@ -1,0 +1,10 @@
+This files in this directory are in a format designed to be used by the
+following programs:
+
+ * Jan Wolter's pbnsolve
+   http://webpbn.com/pbnsolve.html
+
+This is a very flexible XML format that supports multicolor puzzles and
+other variations like triddler.
+
+It is documented at: http://webpbn.com/pbn_fmt.html

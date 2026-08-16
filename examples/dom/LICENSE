@@ -1,0 +1,4 @@
+The files in this directory are variations on a puzzle by Josh Greifer that were used by Jan Wolter
+to evaluate backtracking nonogram solvers: https://webpbn.com/survey/dom.html.
+
+I believe that they are too simple to be copyrightable, despite being stress tests for computer solvers.
