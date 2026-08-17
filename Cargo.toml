@@ -2,6 +2,11 @@
 name = "number-loom"
 path = "src/bin/number-loom.rs"
 
+# Compares our solver against `pbnsolve`; see the module docs for how to point it at a binary.
+[[bin]]
+name = "bench-pbnsolve"
+path = "src/bin/bench-pbnsolve.rs"
+
 [package]
 name = "number-loom"
 description = "Multipurpose GUI and CLI tool for constructing nonograms"

@@ -16,7 +16,9 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     layout.rs - abstract drawing geometry (cell shapes, positions, grid lines, clue gutters)
     puzzle.rs - data structures
     solver_fuzzer.rs - stress test for solver correctness
+    bin/bench-pbnsolve.rs - speed comparison against `pbnsolve` (see below)
   benches/ - benchmarks (currently quite limited)
+    (see also src/bin/bench-pbnsolve.rs, below)
 
 # Shapes
 
@@ -30,6 +32,18 @@ for `K = Square` or `Tri`, used by the editor). That split is why `grid_solve.rs
 only known at runtime (a loaded file, the GUI's current document).
 
 See the doc comments in `geometry.rs` for the coordinate scheme and lane details.
+
+# Benchmarking against `pbnsolve`
+
+`pbnsolve` is Jan Wolter's solver, the reference implementation from his
+[Survey of Paint-by-Number Puzzle Solvers](http://webpbn.com/survey/). `examples/wolter/` is that
+survey's puzzle set, in the webpbn XML that `pbnsolve` reads natively — so the two solvers can be
+pointed at exactly the same puzzles. Build `pbnsolve` from source, then:
+
+```
+cargo run --release --bin bench-pbnsolve -- --pbnsolve /path/to/pbnsolve
+```
+
 
 # The `WOVEN` format
 
