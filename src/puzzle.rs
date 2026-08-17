@@ -206,21 +206,48 @@ pub static BACKGROUND: Color = Color(0);
 pub static UNSOLVED: Color = Color(255);
 
 // A triangle-shaped half of a square. `true` means solid in the given direction.
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub struct Corner {
     pub upper: bool,
     pub left: bool,
 }
 
-// Note that `rgb` is not necessarily unique!
-// But `ch` and `name` ought to be, along with `rgb` + `corner`.
-#[derive(PartialEq, Eq, Clone, Debug, Hash, Serialize, Deserialize)]
+// `rgb`+`corner` ought to be unique; so should `ch`, `name`, and `color`.
+// But none of that is enforced here. TODO: add a quality check for broken palettes.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct ColorInfo {
     pub ch: char,
     pub name: String,
     pub rgb: (u8, u8, u8),
     pub color: Color,
     pub corner: Option<Corner>,
+}
+
+impl Ord for ColorInfo {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let (sr, sg, sb) = self.rgb;
+        let (or, og, ob) = other.rgb;
+
+        // First, sort by cornerness
+        self.corner
+            .cmp(&other.corner)
+            // Second, sort by brightness
+            .then((sr as u16 + sg as u16 + sb as u16).cmp(&(or as u16 + og as u16 + ob as u16)))
+            // Fallback:
+            .then(self.rgb.cmp(&other.rgb))
+            .then(self.ch.cmp(&other.ch))
+            .then(self.name.cmp(&other.name))
+            .then(self.color.cmp(&other.color))
+            .then(sr.cmp(&or))
+            .then(sg.cmp(&og))
+            .then(sb.cmp(&ob))
+    }
+}
+
+impl PartialOrd for ColorInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl ColorInfo {
@@ -1234,8 +1261,7 @@ mod resize_tests {
                 if !old_coords.contains(&bigger.geometry.coord(cell)) {
                     saw_new_cell = true;
                     assert_eq!(
-                        bigger.cells[cell as usize],
-                        BACKGROUND,
+                        bigger.cells[cell as usize], BACKGROUND,
                         "growing {side:?} should start new cells as background"
                     );
                 }

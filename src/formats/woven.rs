@@ -1,11 +1,12 @@
 use crate::geometry::{GridKind, Shape, Square, Tri};
 use crate::puzzle::{ClueStyle, Color, ColorInfo, Document, DynSolution, Solution};
 use base64::{Engine as _, engine::general_purpose};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::io::prelude::*;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
-pub struct SerializableDocument {
+pub struct WovenVersion0 {
     pub file: String,
     pub title: String,
     pub description: String,
@@ -13,6 +14,13 @@ pub struct SerializableDocument {
     pub id: Option<String>,
     pub license: Option<String>,
     pub solution: SerializableSolution,
+}
+
+/// If we ever have to break backwards-compatibility,
+/// we can create a new version here.
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+pub enum WovenDocument {
+    V0(WovenVersion0),
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -25,9 +33,9 @@ pub struct SerializableSolution {
     pub cells: Vec<Color>,
 }
 
-impl From<&mut Document> for SerializableDocument {
+impl From<&mut Document> for WovenVersion0 {
     fn from(doc: &mut Document) -> Self {
-        SerializableDocument {
+        WovenVersion0 {
             file: doc.file.clone(),
             title: doc.title.clone(),
             description: doc.description.clone(),
@@ -51,7 +59,7 @@ impl From<&mut Document> for SerializableDocument {
 }
 
 pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
-    let s_doc: SerializableDocument = doc.into();
+    let s_doc: WovenDocument = WovenDocument::V0(doc.into());
     let buf = std::io::BufWriter::new(Vec::new());
     let mut encoder = brotli::CompressorWriter::new(buf, 4096, 11, 22);
     let bytes = serde_json::to_vec(&s_doc)?;
@@ -86,8 +94,10 @@ pub fn from_woven(s: &str) -> anyhow::Result<Document> {
     let mut bytes = Vec::new();
     decoder.read_to_end(&mut bytes)?;
 
-    let s_doc: SerializableDocument = serde_json::from_slice(&bytes)?;
-    Ok(s_doc.into())
+    let s_doc: WovenDocument = serde_json::from_slice(&bytes)?;
+    match s_doc {
+        WovenDocument::V0(s_doc_v0) => Ok(s_doc_v0.into()),
+    }
 }
 
 #[cfg(test)]
@@ -143,7 +153,7 @@ mod tests {
             Some("Test License".to_string()),
         );
 
-        let s_doc: SerializableDocument = (&mut doc).into();
+        let s_doc: WovenVersion0 = (&mut doc).into();
         let mut new_doc: Document = s_doc.into();
 
         assert_eq!(doc.file, new_doc.file);
@@ -196,7 +206,7 @@ mod tests {
             Some("Test License".to_string()),
         );
 
-        let s_doc: SerializableDocument = (&mut doc).into();
+        let s_doc: WovenVersion0 = (&mut doc).into();
         let mut new_doc: Document = s_doc.into();
 
         assert_eq!(doc.file, new_doc.file);
@@ -268,8 +278,8 @@ mod tests {
     }
 }
 
-impl From<SerializableDocument> for Document {
-    fn from(s_doc: SerializableDocument) -> Self {
+impl From<WovenVersion0> for Document {
+    fn from(s_doc: WovenVersion0) -> Self {
         Document::new(
             None,
             Some((&s_doc.solution).into()),
@@ -287,7 +297,7 @@ impl<K: GridKind> From<&Solution<K>> for SerializableSolution {
     fn from(solution: &Solution<K>) -> Self {
         SerializableSolution {
             clue_style: solution.clue_style,
-            palette: solution.palette.values().cloned().collect(),
+            palette: solution.palette.values().cloned().sorted().collect(),
             shape: solution.geometry.shape(),
             cells: solution.cells.clone(),
         }
