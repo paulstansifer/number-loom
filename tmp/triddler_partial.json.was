@@ -1,0 +1,74 @@
+{
+  "V0": {
+    "solution": {
+      "clue_style": "Nono",
+      "palette": [
+        {
+          "ch": "#",
+          "name": "black",
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "color": 1,
+          "corner": null
+        },
+        {
+          "ch": "?",
+          "name": "unsolved",
+          "rgb": [
+            128,
+            128,
+            128
+          ],
+          "color": 255,
+          "corner": null
+        },
+        {
+          "ch": " ",
+          "name": "white",
+          "rgb": [
+            255,
+            255,
+            255
+          ],
+          "color": 0,
+          "corner": null
+        }
+      ],
+      "shape": {
+        "Triangular": {
+          "a": [
+            0,
+            3
+          ],
+          "b": [
+            0,
+            2
+          ],
+          "c": [
+            -1,
+            1
+          ]
+        }
+      },
+      "cells": [
+        0,
+        1,
+        255,
+        0,
+        1,
+        255,
+        0,
+        1,
+        255,
+        0,
+        1,
+        255,
+        0,
+        1
+      ]
+    }
+  }
+}

@@ -220,6 +220,7 @@ pub struct ColorInfo {
     pub name: String,
     pub rgb: (u8, u8, u8),
     pub color: Color,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub corner: Option<Corner>,
 }
 

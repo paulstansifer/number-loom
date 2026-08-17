@@ -64,7 +64,7 @@ pub fn load(
         }
         NonogramFormat::Woven => {
             let woven_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
-            from_woven(&woven_string)?
+            from_woven(&woven_string, filename.to_string())?
         }
         NonogramFormat::Olsak => {
             let olsak_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;

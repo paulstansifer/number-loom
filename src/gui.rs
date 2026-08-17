@@ -1312,10 +1312,8 @@ impl CanvasGui {
 
         let start_center = center(start);
         let end_center = center(end);
-        let drag = crate::layout::Vec2::new(
-            end_center.x - start_center.x,
-            end_center.y - start_center.y,
-        );
+        let drag =
+            crate::layout::Vec2::new(end_center.x - start_center.x, end_center.y - start_center.y);
         let drag_len = (drag.x * drag.x + drag.y * drag.y).sqrt();
 
         // A lane's cells zigzag between ▲ and ▼ centroids on a triangular grid, so the step to
@@ -1362,7 +1360,8 @@ impl CanvasGui {
                 let signed_distance = (drag.x * span.x + drag.y * span.y) / span_len;
                 let delta = (signed_distance / avg_spacing).round() as isize;
 
-                let to_pos = (from_pos as isize + delta).clamp(0, lane.cells.len() as isize - 1) as usize;
+                let to_pos =
+                    (from_pos as isize + delta).clamp(0, lane.cells.len() as isize - 1) as usize;
                 let (from, to) = (from_pos.min(to_pos), from_pos.max(to_pos));
                 for cell in &lane.cells[from..=to] {
                     changes.insert(*cell, self.drag_start_color);
@@ -2041,7 +2040,10 @@ impl NonogramGui {
 
         let (probe_hex, probe_buttons) = layout(Pos2::ZERO);
         let mut bounds = Rect::from_center_size(Pos2::ZERO, EDIT_SIZE);
-        for p in probe_hex.iter().chain(probe_buttons.iter().flat_map(|b| b.5.iter())) {
+        for p in probe_hex
+            .iter()
+            .chain(probe_buttons.iter().flat_map(|b| b.5.iter()))
+        {
             bounds.extend_with(*p);
         }
         let canvas = bounds.size() + Vec2::splat(2.0 * PAD);
@@ -2553,7 +2555,10 @@ impl NonogramGui {
                         );
 
                         if ui.button("Load").clicked() {
-                            match crate::formats::woven::from_woven(&self.pasted_string) {
+                            match crate::formats::woven::from_woven(
+                                &self.pasted_string,
+                                "unknown.woven".to_string(),
+                            ) {
                                 Ok(doc) => {
                                     new_document = Some(doc);
                                     next_enter_solve_mode = true;
@@ -3205,7 +3210,8 @@ mod line_tool_tests {
                 let mut want = lane.cells.clone();
                 want.sort();
                 assert_eq!(
-                    got, want,
+                    got,
+                    want,
                     "family {family} lane {lane_idx} (len {}) didn't paint end to end",
                     lane.cells.len()
                 );

@@ -1,0 +1,107 @@
+{
+  "V0": {
+    "solution": {
+      "clue_style": "Triano",
+      "palette": [
+        {
+          "ch": "#",
+          "name": "black",
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "color": 1,
+          "corner": null
+        },
+        {
+          "ch": " ",
+          "name": "white",
+          "rgb": [
+            255,
+            255,
+            255
+          ],
+          "color": 0,
+          "corner": null
+        },
+        {
+          "ch": ".",
+          "name": "lower right",
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "color": 5,
+          "corner": {
+            "upper": false,
+            "left": false
+          }
+        },
+        {
+          "ch": ",",
+          "name": "lower left",
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "color": 4,
+          "corner": {
+            "upper": false,
+            "left": true
+          }
+        },
+        {
+          "ch": "'",
+          "name": "upper right",
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "color": 3,
+          "corner": {
+            "upper": true,
+            "left": false
+          }
+        },
+        {
+          "ch": "`",
+          "name": "upper left",
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "color": 2,
+          "corner": {
+            "upper": true,
+            "left": true
+          }
+        }
+      ],
+      "shape": {
+        "Square": {
+          "width": 4,
+          "height": 3
+        }
+      },
+      "cells": [
+        3,
+        1,
+        1,
+        2,
+        1,
+        1,
+        1,
+        1,
+        5,
+        1,
+        1,
+        4
+      ]
+    }
+  }
+}
