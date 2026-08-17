@@ -63,6 +63,7 @@ impl PerModeLaneState {
     }
 }
 
+#[derive(Clone)]
 pub struct LaneState<'a, C: Clue> {
     clues: &'a [C], // just convenience, since `lane` suffices to find it again
     /// Index into `LaneMap::lanes()`.
@@ -161,21 +162,19 @@ fn scatter(lanes: &LaneMap, lane: usize, buf: &[Cell], grid: &mut PartialSolutio
     }
 }
 
-fn find_best_lane<'a, 'b, C: Clue>(
-    lanes: &'b mut [LaneState<'a, C>],
-    mode: SolveMode,
-) -> Option<&'b mut LaneState<'a, C>> {
+/// Returns an index into `lanes`, which is parallel to `LaneMap::lanes()`.
+fn find_best_lane<C: Clue>(lanes: &[LaneState<'_, C>], mode: SolveMode) -> Option<usize> {
     let mut best_score = std::i32::MIN;
     let mut res = None;
 
-    for lane in lanes {
+    for (idx, lane) in lanes.iter().enumerate() {
         if lane.per_mode[mode].processed {
             continue;
         }
 
         if lane.effective_score(mode) > best_score {
             best_score = lane.effective_score(mode);
-            res = Some(lane);
+            res = Some(idx);
         }
     }
     res
@@ -217,12 +216,12 @@ fn dyn_solution<C: Clue, K: GridKind>(
     K::wrap_solution(grid_to_solution(grid, puzzle))
 }
 
-fn display_step<'a, C: Clue, K: GridKind>(
-    clue_lane: &'a LaneState<'a, C>,
+fn display_step<C: Clue, K: GridKind>(
+    clue_lane: &LaneState<'_, C>,
     orig_lane: Vec<Cell>,
     mode: SolveMode,
-    grid: &'a PartialSolution,
-    puzzle: &'a Puzzle<C, K>,
+    grid: &PartialSolution,
+    puzzle: &Puzzle<C, K>,
 ) {
     use std::fmt::Write;
     let mut clues = String::new();
@@ -275,9 +274,9 @@ fn display_step<'a, C: Clue, K: GridKind>(
 
 pub type LineCache<C> = std::collections::HashMap<(Vec<C>, Vec<u32>), (ScrubReport, Vec<Cell>)>;
 
-fn op_or_cache<'a, C: Clue, F>(
+fn op_or_cache<C: Clue, F>(
     f: F,
-    solve_lane: &LaneState<'a, C>,
+    clues: &[C],
     lane: &mut ArrayViewMut1<Cell>,
     cache: &mut Option<LineCache<C>>,
 ) -> anyhow::Result<ScrubReport>
@@ -286,7 +285,7 @@ where
 {
     if let Some(cache) = cache {
         let entry = cache.entry((
-            solve_lane.clues.to_vec(),
+            clues.to_vec(),
             lane.iter().map(|cell| cell.raw()).collect::<Vec<_>>(),
         ));
         match entry {
@@ -300,7 +299,7 @@ where
                 return Ok(report.clone());
             }
             std::collections::hash_map::Entry::Vacant(v) => {
-                let report = f(solve_lane.clues, lane)?;
+                let report = f(clues, lane)?;
                 let mut cells_to_cache = vec![];
 
                 for idx in &report.affected_cells {
@@ -312,7 +311,7 @@ where
             }
         }
     } else {
-        f(solve_lane.clues, lane)
+        f(clues, lane)
     }
 }
 
@@ -338,190 +337,361 @@ pub fn settle_solution<C: Clue, K: GridKind>(
     Ok(())
 }
 
-pub fn solve_grid<C: Clue, K: GridKind>(
-    puzzle: &Puzzle<C, K>,
-    line_cache: &mut Option<LineCache<C>>,
-    options: &SolveOptions,
-    grid: &mut PartialSolution,
-) -> anyhow::Result<Report> {
-    let lanes = puzzle.geometry.lane_map();
-    let mut solve_lanes = vec![];
-    // Reused across every gather, so the solve loop does no per-operation allocation.
-    let mut scratch: Vec<Cell> = vec![];
-    let mut buf: Vec<Cell> = vec![];
-    let mut stale: Vec<bool> = vec![];
+/// Buffers reused across a whole solve, so that no per-lane operation allocates (see the note on
+/// `gather_into`). Nothing in here carries meaning from one operation to the next, which is why
+/// it lives in the context rather than in `SolveState`: a branching search can share one of these
+/// across every branch it explores.
+#[derive(Default)]
+pub struct Scratch {
+    /// Gather buffer for scoring; live only within a single `rescore` call.
+    score: Vec<Cell>,
+    /// Working copy of the lane being solved: gathered out of the grid, mutated in place by the
+    /// line solver, then scattered back.
+    lane: Vec<Cell>,
+    /// Per-lane "needs another look" marks. Two lanes can share more than one cell, so this
+    /// dedupes: a lane gets rescored once per step however many affected cells it holds.
+    stale: Vec<bool>,
+}
 
-    // `solve_lanes` is parallel to `geometry.lanes()`, so a lane index indexes both.
-    for family in 0..lanes.family_count() {
-        for (index_in_family, lane) in lanes.family(family).enumerate() {
-            solve_lanes.push(LaneState::new(
-                &puzzle.lines[lane],
-                lanes,
-                lane,
-                index_in_family,
-                &grid,
-                &mut scratch,
-            ));
-        }
+/// Everything a solve needs that doesn't change as it progresses, plus the caches and buffers it
+/// reuses. A branching search builds one of these and shares it across every branch.
+pub struct SolveContext<'p, 'x, C: Clue, K: GridKind> {
+    pub puzzle: &'p Puzzle<C, K>,
+    pub options: &'x SolveOptions,
+    pub line_cache: &'x mut Option<LineCache<C>>,
+    pub scratch: Scratch,
+    progress: indicatif::ProgressBar,
+}
+
+impl<'p, C: Clue, K: GridKind> SolveContext<'p, '_, C, K> {
+    /// Borrowing the puzzle separately from everything else is what lets a `SolveState` hold
+    /// clue references (`'p`) that outlive any particular borrow of the line cache.
+    fn lane_map(&self) -> &'p LaneMap {
+        self.puzzle.geometry.lane_map()
     }
+}
 
-    let progress = indicatif::ProgressBar::new_spinner();
-    if options.trace_solve || !options.display_cli_progress {
-        progress.finish_and_clear();
-    }
-
-    let mut cells_left = grid.iter().filter(|c| !c.is_known()).count();
-    let mut solve_counts = ModeMap::new_uniform(0);
-
-    let initial_allowed_failures = ModeMap {
-        skim: 10,
-        scrub: 0, /*ignored */
-    };
-
-    let mut allowed_failures = initial_allowed_failures;
-
-    loop {
-        progress.tick();
-        let mut current_mode = options.max_effort;
-        for mode in SolveMode::all() {
-            if allowed_failures[*mode] > 0 {
-                current_mode = std::cmp::min(current_mode, *mode);
-                break;
-            }
-        }
-
-        let (report, solved_lane) = {
-            let best_clue_lane = match find_best_lane(&mut solve_lanes, current_mode) {
-                Some(lane) => lane,
-                None => {
-                    if current_mode >= options.max_effort {
-                        // Nothing left to try; can't solve.
-                        return Ok(Report {
-                            solve_counts,
-                            cells_left,
-                            solution: dyn_solution(&grid, puzzle),
-                            solved_mask: grid_to_solved_mask(&grid),
-                        });
-                    } else {
-                        allowed_failures[current_mode] = 0; // try the next mode
-                        continue;
-                    }
-                }
-            };
-
-            progress.set_message(format!(
-                "{solve_counts} cells left: {cells_left: >6}  {}ing {}",
-                current_mode.colorized_name(),
-                best_clue_lane.text_coord(),
-            ));
-
-            // Pull the lane out of the grid so the line solvers see a plain 1-D array.
-            gather_into(lanes, best_clue_lane.lane, grid, &mut buf);
-            let orig_version_of_line: Vec<Cell> = buf.clone();
-            let mut best_grid_lane: ArrayViewMut1<Cell> = ArrayViewMut1::from(&mut buf[..]);
-
-            solve_counts[current_mode] += 1;
-            let mut report = match current_mode {
-                SolveMode::Scrub => op_or_cache(
-                    exhaust_line,
-                    best_clue_lane,
-                    &mut best_grid_lane,
-                    line_cache,
-                )
-                .context(format!(
-                    "scrubbing {:?} with {:?}",
-                    best_clue_lane, orig_version_of_line
-                ))?,
-                SolveMode::Skim => {
-                    skim_line(best_clue_lane.clues, &mut best_grid_lane).context(format!(
-                        "skimming {:?} with {:?}",
-                        best_clue_lane, orig_version_of_line
-                    ))?
-                }
-            };
-            best_clue_lane.per_mode[current_mode].processed = true;
-
-            if let Some(color) = options.only_solve_color {
-                crate::line_solve::filter_report_by_color(
-                    &mut report,
-                    &orig_version_of_line,
-                    &mut best_grid_lane,
-                    color,
-                );
-            }
-
-            let known_before = orig_version_of_line.iter().filter(|c| c.is_known()).count();
-            let known_after = best_grid_lane.iter().filter(|c| c.is_known()).count();
-
-            scatter(lanes, best_clue_lane.lane, &buf, grid);
-            best_clue_lane.rescore(lanes, grid, /*was_processed=*/ true, &mut scratch);
-
-            cells_left -= known_after - known_before;
-
-            if options.trace_solve {
-                display_step(
-                    best_clue_lane,
-                    orig_version_of_line,
-                    current_mode,
-                    grid,
-                    puzzle,
-                );
-            }
-
-            (report, best_clue_lane.lane)
-        };
-
-        if cells_left == 0 {
+impl<'p, 'x, C: Clue, K: GridKind> SolveContext<'p, 'x, C, K> {
+    pub fn new(
+        puzzle: &'p Puzzle<C, K>,
+        line_cache: &'x mut Option<LineCache<C>>,
+        options: &'x SolveOptions,
+    ) -> SolveContext<'p, 'x, C, K> {
+        let progress = indicatif::ProgressBar::new_spinner();
+        if options.trace_solve || !options.display_cli_progress {
             progress.finish_and_clear();
-            return Ok(Report {
-                solve_counts,
-                cells_left,
-                solution: dyn_solution(&grid, puzzle),
-                solved_mask: grid_to_solved_mask(&grid),
-            });
         }
 
-        if current_mode != SolveMode::first() && !report.affected_cells.is_empty() {
-            // Made progress: reset and try easy stuff first again.
-            allowed_failures = initial_allowed_failures;
+        SolveContext {
+            puzzle,
+            options,
+            line_cache,
+            scratch: Scratch::default(),
+            progress,
         }
+    }
+}
 
-        if current_mode != options.max_effort {
-            if report.affected_cells.is_empty() {
-                allowed_failures[current_mode] -= 1;
-            } else {
-                allowed_failures[current_mode] =
-                    std::cmp::min(10, allowed_failures[current_mode] + 1);
+/// What one call to `SolveState::step` accomplished.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Step {
+    /// A lane was attempted; there may be more to do, so call `step` again.
+    Attempted,
+    /// Every cell is known.
+    Solved,
+    /// No mode has a lane left worth trying: line logic alone can't get any further. This is
+    /// where a backtracking search forks the state and `guess`es.
+    Stalled,
+}
+
+const INITIAL_ALLOWED_FAILURES: ModeMap<i32> = ModeMap {
+    skim: 10,
+    scrub: 0, /*ignored */
+};
+
+/// A solve in progress. Cloning one forks the search: hand the copy a `guess` and drive it with
+/// `step` without disturbing the original.
+#[derive(Clone)]
+pub struct SolveState<'p, C: Clue> {
+    pub grid: PartialSolution,
+    /// Parallel to `LaneMap::lanes()`, so a lane index indexes both this and the geometry.
+    lanes: Vec<LaneState<'p, C>>,
+    pub cells_left: usize,
+    pub solve_counts: ModeMap<usize>,
+    /// How many more fruitless attempts each below-`max_effort` mode gets before we stop trying
+    /// it and escalate. Reset whenever a harder mode does turn something up.
+    allowed_failures: ModeMap<i32>,
+}
+
+impl<'p, C: Clue> SolveState<'p, C> {
+    pub fn new<K: GridKind>(
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        grid: PartialSolution,
+    ) -> SolveState<'p, C> {
+        let puzzle = ctx.puzzle;
+        let lane_map = ctx.lane_map();
+        let scratch = &mut ctx.scratch;
+
+        let mut lanes = vec![];
+        // `lanes` is parallel to `geometry.lanes()`, so a lane index indexes both.
+        for family in 0..lane_map.family_count() {
+            for (index_in_family, lane) in lane_map.family(family).enumerate() {
+                lanes.push(LaneState::new(
+                    &puzzle.lines[lane],
+                    lane_map,
+                    lane,
+                    index_in_family,
+                    &grid,
+                    &mut scratch.score,
+                ));
             }
         }
 
-        // Affected intersecting lanes now may need to be re-examined.
-        //
+        SolveState {
+            cells_left: grid.iter().filter(|c| !c.is_known()).count(),
+            grid,
+            lanes,
+            solve_counts: ModeMap::new_uniform(0),
+            allowed_failures: INITIAL_ALLOWED_FAILURES,
+        }
+    }
+
+    /// Step until the puzzle is solved or line logic stalls.
+    pub fn run<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+    ) -> anyhow::Result<Step> {
+        loop {
+            match self.step(ctx)? {
+                Step::Attempted => (),
+                done => return Ok(done),
+            }
+        }
+    }
+
+    /// Pick the next lane to attempt, escalating to a more thorough mode once the cheap ones stop
+    /// paying off. `None` means every mode up to `max_effort` is exhausted.
+    fn choose_lane(&mut self, max_effort: SolveMode) -> Option<(usize, SolveMode)> {
+        loop {
+            let mut mode = max_effort;
+            for m in SolveMode::all() {
+                if self.allowed_failures[*m] > 0 {
+                    mode = std::cmp::min(mode, *m);
+                    break;
+                }
+            }
+
+            match find_best_lane(&self.lanes, mode) {
+                Some(lane) => return Some((lane, mode)),
+                // Nothing left to try; can't solve.
+                None if mode >= max_effort => return None,
+                // Nothing left for *this* mode; go around again and pick the next one up.
+                None => self.allowed_failures[mode] = 0,
+            }
+        }
+    }
+
+    /// Do one unit of work: pick the most promising lane, run a line solver over it, write what
+    /// it learned back into the grid, and mark every lane the changed cells cross.
+    pub fn step<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+    ) -> anyhow::Result<Step> {
+        let puzzle = ctx.puzzle;
+        let options = ctx.options;
+        let lane_map = ctx.lane_map();
+
+        ctx.progress.tick();
+
+        let Some((idx, mode)) = self.choose_lane(options.max_effort) else {
+            return Ok(Step::Stalled);
+        };
+        let solved_lane = self.lanes[idx].lane;
+
+        ctx.progress.set_message(format!(
+            "{} cells left: {: >6}  {}ing {}",
+            self.solve_counts,
+            self.cells_left,
+            mode.colorized_name(),
+            self.lanes[idx].text_coord(),
+        ));
+
+        // Pull the lane out of the grid so the line solvers see a plain 1-D array.
+        gather_into(lane_map, solved_lane, &self.grid, &mut ctx.scratch.lane);
+        let orig_version_of_line: Vec<Cell> = ctx.scratch.lane.clone();
+        let mut grid_lane: ArrayViewMut1<Cell> = ArrayViewMut1::from(&mut ctx.scratch.lane[..]);
+
+        self.solve_counts[mode] += 1;
+        let clues = self.lanes[idx].clues;
+        let mut report = match mode {
+            SolveMode::Scrub => op_or_cache(exhaust_line, clues, &mut grid_lane, ctx.line_cache)
+                .with_context(|| {
+                    format!(
+                        "scrubbing {:?} with {:?}",
+                        &self.lanes[idx], orig_version_of_line
+                    )
+                })?,
+            SolveMode::Skim => skim_line(clues, &mut grid_lane).with_context(|| {
+                format!(
+                    "skimming {:?} with {:?}",
+                    &self.lanes[idx], orig_version_of_line
+                )
+            })?,
+        };
+        self.lanes[idx].per_mode[mode].processed = true;
+
+        if let Some(color) = options.only_solve_color {
+            crate::line_solve::filter_report_by_color(
+                &mut report,
+                &orig_version_of_line,
+                &mut grid_lane,
+                color,
+            );
+        }
+
+        let known_before = orig_version_of_line.iter().filter(|c| c.is_known()).count();
+        let known_after = grid_lane.iter().filter(|c| c.is_known()).count();
+
+        scatter(lane_map, solved_lane, &ctx.scratch.lane, &mut self.grid);
+        self.lanes[idx].rescore(
+            lane_map,
+            &self.grid,
+            /*was_processed=*/ true,
+            &mut ctx.scratch.score,
+        );
+
+        self.cells_left -= known_after - known_before;
+
+        if options.trace_solve {
+            display_step(
+                &self.lanes[idx],
+                orig_version_of_line,
+                mode,
+                &self.grid,
+                puzzle,
+            );
+        }
+
+        if self.cells_left == 0 {
+            return Ok(Step::Solved);
+        }
+
+        if mode != SolveMode::first() && !report.affected_cells.is_empty() {
+            // Made progress: reset and try easy stuff first again.
+            self.allowed_failures = INITIAL_ALLOWED_FAILURES;
+        }
+
+        if mode != options.max_effort {
+            if report.affected_cells.is_empty() {
+                self.allowed_failures[mode] -= 1;
+            } else {
+                self.allowed_failures[mode] = std::cmp::min(10, self.allowed_failures[mode] + 1);
+            }
+        }
+
         // `report.affected_cells` holds positions *within the lane we just solved*, so translate
-        // them into cell indices and ask the geometry which other lanes hold those cells. On a
-        // square grid this is the same set as the old "column `i` meets row `j` at position `i`"
-        // shortcut, but that shortcut doesn't survive a third axis: lanes can meet at a position
-        // unrelated to their index, and two lanes can share more than one cell.
-        stale.clear();
-        stale.resize(solve_lanes.len(), false);
-        for position in &report.affected_cells {
-            let cell = lanes.lane(solved_lane).cells[*position];
-            for membership in lanes.memberships(cell) {
-                if membership.lane as usize != solved_lane {
-                    stale[membership.lane as usize] = true;
+        // them into cell indices before handing them to `invalidate`.
+        let affected = report
+            .affected_cells
+            .iter()
+            .map(|position| lane_map.lane(solved_lane).cells[*position]);
+        // The lane we just solved was rescored above and must stay `processed`, or we'd pick it
+        // straight back up.
+        self.invalidate(affected, Some(solved_lane), lane_map, &mut ctx.scratch);
+
+        Ok(Step::Attempted)
+    }
+
+    /// Assume `cell` is `color` and mark everything that assumption bears on, so that a `step`
+    /// after a `Stalled` picks up where the stall left off.
+    ///
+    /// Errors if the assumption contradicts what's already known, leaving the state partly
+    /// updated — guess on a clone, and throw the clone away if this fails.
+    pub fn guess<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        cell: u32,
+        color: Color,
+    ) -> anyhow::Result<()> {
+        let lane_map = ctx.lane_map();
+
+        if self.grid[cell as usize].learn(color)? {
+            self.cells_left -= 1;
+        }
+        self.invalidate(std::iter::once(cell), None, lane_map, &mut ctx.scratch);
+        // A guess is new information, so it's worth another cheap pass before escalating.
+        self.allowed_failures = INITIAL_ALLOWED_FAILURES;
+
+        Ok(())
+    }
+
+    /// Mark every lane through `cells` as worth re-examining: bring its scores up to date and
+    /// clear its `processed` flags so `choose_lane` will consider it again. `already_current`, if
+    /// given, is a lane that has just been rescored and should be left alone.
+    ///
+    /// We ask the geometry which lanes hold each cell rather than using the old "column `i` meets
+    /// row `j` at position `i`" shortcut: on a square grid the two agree, but that shortcut
+    /// doesn't survive a third axis, where lanes can meet at a position unrelated to their index
+    /// and two lanes can share more than one cell.
+    fn invalidate(
+        &mut self,
+        cells: impl Iterator<Item = u32>,
+        already_current: Option<usize>,
+        lane_map: &LaneMap,
+        scratch: &mut Scratch,
+    ) {
+        scratch.stale.clear();
+        scratch.stale.resize(self.lanes.len(), false);
+        for cell in cells {
+            for membership in lane_map.memberships(cell) {
+                if Some(membership.lane as usize) != already_current {
+                    scratch.stale[membership.lane as usize] = true;
                 }
             }
         }
 
-        for (other_lane, is_stale) in solve_lanes.iter_mut().zip(&stale) {
+        for (other_lane, is_stale) in self.lanes.iter_mut().zip(&scratch.stale) {
             if *is_stale {
-                other_lane.rescore(lanes, &grid, /*was_processed=*/ false, &mut scratch);
+                other_lane.rescore(
+                    lane_map,
+                    &self.grid,
+                    /*was_processed=*/ false,
+                    &mut scratch.score,
+                );
                 for mode in SolveMode::all() {
                     other_lane.per_mode[*mode].processed = false;
                 }
             }
         }
     }
+
+    /// Package the state up for the GUI and the CLI, which see a kind-erased solution.
+    pub fn report<K: GridKind>(&self, puzzle: &Puzzle<C, K>) -> Report {
+        Report {
+            solve_counts: self.solve_counts,
+            cells_left: self.cells_left,
+            solution: dyn_solution(&self.grid, puzzle),
+            solved_mask: grid_to_solved_mask(&self.grid),
+        }
+    }
+}
+
+pub fn solve_grid<C: Clue, K: GridKind>(
+    puzzle: &Puzzle<C, K>,
+    line_cache: &mut Option<LineCache<C>>,
+    options: &SolveOptions,
+    grid: &mut PartialSolution,
+) -> anyhow::Result<Report> {
+    let mut ctx = SolveContext::new(puzzle, line_cache, options);
+    let mut state = SolveState::new(&mut ctx, std::mem::take(grid));
+
+    let outcome = state.run(&mut ctx);
+    ctx.progress.finish_and_clear();
+
+    let report = outcome.map(|_| state.report(puzzle));
+    // Hand the caller's grid back even on failure, so it still sees how far we got.
+    *grid = std::mem::take(&mut state.grid);
+    report
 }
 
 fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
