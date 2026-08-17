@@ -513,14 +513,14 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
         partial: &mut PartialSolution,
         options: &crate::grid_solve::SolveOptions,
     ) -> anyhow::Result<crate::grid_solve::Report> {
-        grid_solve::solve_grid(self, &mut None, options, partial)
+        grid_solve::line_logic_solve(self, &mut None, options, partial)
     }
 
     fn solve(&self, options: &SolveOptions) -> anyhow::Result<crate::grid_solve::Report> {
         let mut partial =
             vec![crate::line_solve::Cell::new(&self.palette); self.geometry.cell_count()];
 
-        grid_solve::solve_grid(self, &mut None, options, &mut partial)
+        grid_solve::line_logic_solve(self, &mut None, options, &mut partial)
     }
 
     fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>> {

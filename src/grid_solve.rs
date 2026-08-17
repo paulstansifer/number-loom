@@ -315,13 +315,15 @@ where
     }
 }
 
+
 pub fn solve<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     line_cache: &mut Option<LineCache<C>>,
     options: &SolveOptions,
 ) -> anyhow::Result<Report> {
+    // TODO: merge this and `line_logic_solve`
     let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
-    solve_grid(puzzle, line_cache, options, &mut grid)
+    line_logic_solve(puzzle, line_cache, options, &mut grid)
 }
 
 pub fn settle_solution<C: Clue, K: GridKind>(
@@ -676,7 +678,8 @@ impl<'p, C: Clue> SolveState<'p, C> {
     }
 }
 
-pub fn solve_grid<C: Clue, K: GridKind>(
+/// Perform a complete line-logic solve
+pub fn line_logic_solve<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     line_cache: &mut Option<LineCache<C>>,
     options: &SolveOptions,
@@ -886,7 +889,7 @@ mod tests {
         let mut grid = vec![Cell::new_anything(); 7];
         grid[5] = Cell::from_color(Color(1));
 
-        let bkg_solved = solve_grid(
+        let bkg_solved = line_logic_solve(
             &puz,
             &mut None,
             &SolveOptions {
@@ -965,7 +968,7 @@ mod tests {
         let report = solve(&puzzle, &mut None, &SolveOptions::default()).unwrap();
 
         let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
-        solve_grid(&puzzle, &mut None, &SolveOptions::default(), &mut grid).unwrap();
+        line_logic_solve(&puzzle, &mut None, &SolveOptions::default(), &mut grid).unwrap();
 
         for (cell, cell_filled) in grid.iter().zip(filled) {
             let truth = if *cell_filled { Color(1) } else { BACKGROUND };

@@ -60,7 +60,7 @@ pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
     let compressed = encoder.into_inner().into_inner().unwrap();
     let encoded = format!(
         "WOVEN-{}-",
-        general_purpose::STANDARD_NO_PAD.encode(compressed)
+        general_purpose::STANDARD_NO_PAD.encode(compressed) // base-64
     );
 
     let mut result = String::new();
@@ -80,7 +80,7 @@ pub fn from_woven(s: &str) -> anyhow::Result<Document> {
         .strip_suffix("-")
         .ok_or_else(|| anyhow::anyhow!("Must end in a '-'"))?;
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    let compressed = general_purpose::STANDARD_NO_PAD.decode(s.as_bytes())?;
+    let compressed = general_purpose::STANDARD_NO_PAD.decode(s.as_bytes())?; // base-64
 
     let mut decoder = brotli::Decompressor::new(&compressed[..], 4096);
     let mut bytes = Vec::new();
