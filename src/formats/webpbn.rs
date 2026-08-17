@@ -31,18 +31,19 @@ fn get_children<'a, 'input>(
     Ok(res)
 }
 
-fn get_single_child<'a, 'input>(
+/// Like `get_single_child`, but tolerant of siblings with other tags, and of there being more than
+/// one match (it takes the first).
+///
+/// A `<puzzleset>` may carry its own metadata (`<source>`, `<title>`, ...) alongside the puzzles,
+/// and may hold several puzzles — which is why `get_children`'s strictness is wrong at that level,
+/// even though it's just right inside a `<puzzle>`.
+fn find_first_child<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
     tag: &str,
 ) -> anyhow::Result<roxmltree::Node<'a, 'input>> {
-    let mut res = get_children(node, tag)?;
-    if res.len() == 0 {
-        bail!("did not find the element {tag}");
-    }
-    if res.len() > 1 {
-        bail!("expected only one element named {tag}");
-    }
-    Ok(res.pop().unwrap())
+    node.children()
+        .find(|child| child.is_element() && child.tag_name().name() == tag)
+        .with_context(|| format!("did not find the element {tag}"))
 }
 
 /// Assemble a triangular puzzle from webpbn's six clue sets.
@@ -88,9 +89,19 @@ fn triddler_puzzle(
 }
 
 pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
-    let doc = roxmltree::Document::parse(webpbn).context("could not parse XML")?;
+    // Wolter's sample puzzles all declare `<!DOCTYPE pbn SYSTEM "http://webpbn.com/pbn-0.3.dtd">`,
+    // which roxmltree rejects unless asked otherwise. It still won't fetch external entities, so
+    // this only means "tolerate the declaration", not "go to the network".
+    let doc = roxmltree::Document::parse_with_options(
+        webpbn,
+        roxmltree::ParsingOptions {
+            allow_dtd: true,
+            ..Default::default()
+        },
+    )
+    .context("could not parse XML")?;
     let puzzleset = doc.root_element();
-    let puzzle_node = get_single_child(puzzleset, "puzzle")?;
+    let puzzle_node = find_first_child(puzzleset, "puzzle")?;
 
     let mut title = None;
     let mut description = None;
@@ -99,9 +110,12 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
     let mut id = None;
     let mut license = None;
 
-    let default_color = puzzle_node
-        .attribute("defaultcolor")
-        .context("expected a 'defaultcolor' attribute")?;
+    // webpbn keeps two separate notions here, and conflating them mis-reads most real files.
+    // `backgroundcolor` names the blank cell; `defaultcolor` names what a `<count>` means when it
+    // doesn't say. Both are optional, with the defaults below. Wolter's sample set, for instance,
+    // is almost entirely `defaultcolor="black"` with the background left implicit.
+    let background_color = puzzle_node.attribute("backgroundcolor").unwrap_or("white");
+    let default_clue_color = puzzle_node.attribute("defaultcolor").unwrap_or("black");
     let mut next_color_index = 1;
 
     let mut named_colors = HashMap::<String, Color>::new();
@@ -140,7 +154,7 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
             let color_name = puzzle_part
                 .attribute("name")
                 .context("color element missing 'name' attribute")?;
-            let color = if color_name == default_color {
+            let color = if color_name == background_color {
                 BACKGROUND
             } else {
                 Color(next_color_index)
@@ -203,9 +217,7 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
             for lane in get_children(puzzle_part, "line")? {
                 let mut clues = vec![];
                 for block in get_children(lane, "count")? {
-                    let color_name = block
-                        .attribute("color")
-                        .context("count element missing 'color' attribute")?;
+                    let color_name = block.attribute("color").unwrap_or(default_clue_color);
                     let color = *named_colors
                         .get(color_name)
                         .with_context(|| format!("undefined color: {color_name}"))?;
@@ -267,17 +279,30 @@ fn write_webpbn<K: GridKind>(document: &Document, puzzle: &Puzzle<Nono, K>) -> S
         Shape::Triangular(_) => "triddler",
     };
 
+    // Name the background explicitly rather than assuming it's called "white": a palette lifted
+    // from a PNG names its colors after their hex values, and a reader that guesses "white" would
+    // treat every one of them as foreground.
+    let background_name = &palette[&BACKGROUND].name;
+    // Every `<count>` we write names its own color, so `defaultcolor` is never actually consulted;
+    // it just has to name a real color for readers that validate it.
+    // Lowest color index rather than whatever the `HashMap` yields first, so the output is stable.
+    let default_clue_name = palette
+        .values()
+        .filter(|c| c.color != BACKGROUND)
+        .min_by_key(|c| c.color)
+        .map_or(background_name, |c| &c.name);
+
     let mut res = String::new();
     // If you add <!DOCTYPE pbn SYSTEM "https://webpbn.com/pbn-0.3.dtd">, `pbnsolve` emits a warning.
-    res.push_str(
-        &indoc! {r#"
+    res.push_str(&format!(
+        indoc! {r#"
         <?xml version="1.0"?>
         <puzzleset>
-        <puzzle type="{}" defaultcolor="white">
+        <puzzle type="{}" backgroundcolor="{}" defaultcolor="{}">
         <source>number-loom</source>
-        "#}
-        .replace("{}", puzzle_type),
-    );
+        "#},
+        puzzle_type, background_name, default_clue_name,
+    ));
     if !document.title.is_empty() {
         res.push_str(&format!("<title>{}</title>\n", &document.title));
     }
@@ -467,6 +492,88 @@ mod tests {
                 "reversing family {family_to_flip} should not also work"
             );
         }
+    }
+
+    /// Everything about a file from webpbn.com that the reader used to choke on, in one puzzle:
+    /// a `<!DOCTYPE>`, a `<source>` sitting beside `<puzzle>` inside the `<puzzleset>`,
+    /// `defaultcolor` naming the *foreground*, no `backgroundcolor` at all, and `<count>` elements
+    /// that leave their color implicit.
+    const WEBPBN_HOUSE_STYLE: &str = r#"<?xml version="1.0"?>
+        <!DOCTYPE pbn SYSTEM "http://webpbn.com/pbn-0.3.dtd">
+        <puzzleset>
+        <source>webpbn.com</source>
+        <puzzle type="grid" defaultcolor="black">
+        <title>Two by two</title>
+        <note>published</note>
+        <color name="white" char=".">FFFFFF</color>
+        <color name="black" char="X">000000</color>
+        <clues type="columns">
+        <line><count>2</count></line>
+        <line><count>1</count></line>
+        </clues>
+        <clues type="rows">
+        <line><count>2</count></line>
+        <line><count>1</count></line>
+        </clues>
+        </puzzle></puzzleset>"#;
+
+    #[test]
+    fn reads_a_file_in_webpbn_house_style() {
+        let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
+        assert_eq!(doc.title, "Two by two");
+
+        let puzzle = doc.puzzle().as_square_nono().unwrap();
+        // `defaultcolor="black"` must land on the clues, not on the background: the unqualified
+        // `<count>`s are black, and white — never mentioned as a default — is the blank cell.
+        assert_ne!(palette_color(&puzzle.palette, "black"), BACKGROUND);
+        assert_eq!(palette_color(&puzzle.palette, "white"), BACKGROUND);
+        for line in &puzzle.lines {
+            for clue in line {
+                assert_ne!(clue.color, BACKGROUND, "clues shouldn't be background");
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_in_webpbn_house_style_solves() {
+        let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
+        assert_eq!(doc.puzzle().plain_solve().unwrap().cells_left, 0);
+    }
+
+    fn palette_color(palette: &HashMap<Color, ColorInfo>, name: &str) -> Color {
+        palette
+            .values()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("no color named {name}"))
+            .color
+    }
+
+    /// A palette lifted from a PNG names its colors after their hex values, so nothing in it is
+    /// called "white". The background has to survive a round trip anyway.
+    #[test]
+    fn an_oddly_named_background_survives_a_round_trip() {
+        let solution = crate::import::char_grid_to_solution("##\n#.");
+        let mut document = crate::puzzle::Document::from_solution(
+            crate::puzzle::DynSolution::Square(solution),
+            "t.txt".to_string(),
+        );
+        let original_bg_name = document.puzzle().palette()[&BACKGROUND].name.clone();
+
+        let serialized = as_webpbn(&document);
+        assert!(
+            serialized.contains(&format!(r#"backgroundcolor="{original_bg_name}""#)),
+            "should name its background explicitly: {serialized}"
+        );
+
+        let mut reloaded = webpbn_to_document(&serialized).unwrap();
+        assert_eq!(
+            palette_color(reloaded.puzzle().palette(), &original_bg_name),
+            BACKGROUND
+        );
+        assert_eq!(
+            document.puzzle().as_square_nono().unwrap().lines,
+            reloaded.puzzle().as_square_nono().unwrap().lines
+        );
     }
 
     #[test]
