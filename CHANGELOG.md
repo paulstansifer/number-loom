@@ -1,11 +1,15 @@
 ## Changelog
 
-## 0.4.3 - future
+## 0.5.0 - future
 ### Added
+ - Added support for triddlers (triangles on a hex grid)
+ - Added lasso select-and-move
  - Added a status bar to the GUI
 ### Fixed
  - Loading an unsolveable puzzle would cause a crash.
  - Removed various panics on malformed input.
+### Internal improvements
+ - Improved solve speed by not generating error messages unless there's an error.
 
 ## 0.4.2 - 2025-12-18
 ### Fixed

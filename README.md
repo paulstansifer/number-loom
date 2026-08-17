@@ -1,6 +1,8 @@
 # `number-loom`
 
-`number-loom` is a powerful tool for constructing puzzles variously known as "Nonograms", "Paint By Numbers", "Griddlers" (and many other names).
+`number-loom` is a powerful tool for constructing puzzles variously known as "Nonograms", "Paint By Numbers", "Griddlers" (and many other names), plus a couple of related kinds of puzzles.
+
+You can also use it to test-solve your puzzles... or to solve puzzles for fun, if you like!
 
 ![Screenshot of a GUI editor](screenshot.png)
 
@@ -17,7 +19,10 @@ It's still pretty janky, but it's also the most powerful such tool I know of. In
   * `char-grid`, a plaintext grid of characters, which it attempts to infer a reasonable character-to-color mapping (extension: `.txt`)
   * `.woven`, a format designed for Number Loom, mostly to facilitate transmitting puzzles as short(ish) text strings.
   * HTML, for export only, as a printable puzzle (extension `.html`)
-* Has support for "Trianograms", a rare variation with triangular cells that may appear as caps to clues.
+* Supports various kinds of puzzles:
+  * Regular nonograms, in color or black-and-white
+  * Trianograms, in which triangles may appear as "caps" for clues: black-and-white only.
+  * Triddlers, in which cells are triangles on a hex grid, and clues appear on three axes: in color or black-and-white
 * An exhaustive line-logic solver that provides some difficulty information.
 * "Disambiguator": a tool that searches for one-cell edits that make puzzles closer to solveable.
 * A mode for test-solving, with a variety of toggleable assistance features:
@@ -35,9 +40,9 @@ Then run `cargo install number-loom`.
 
 To open the gui: `number-loom` or `number-loom examples/png/keys.png --gui`.
 
-To solve a puzzle from the command line, do `number-loom examples/png/hair_dryer.png`.  Adding `--disambiguate` will attempt to find disambiguations if it can't solve it.
+To have `number-loom` solve a puzzle from the command line, do `number-loom examples/png/hair_dryer.png`.  Adding `--disambiguate` will attempt to find disambiguations if it can't solve it.
 
-To convert a puzzle from the command line, do `number-loom examples/png/hair_dryer.png /tmp/hair_dryer.xml`.  Use `--input-format` or `--output-format` if you want to explicitly select a format: `webpbn`, `olsak`, `image`, `char-grid`, or `html`. (The image format is still inferred from the filename.)
+To convert a puzzle from the command line, do `number-loom examples/png/hair_dryer.png /tmp/hair_dryer.xml`.  Use `--input-format` or `--output-format` if you want to explicitly select a format: `webpbn`, `olsak`, `image`, `char-grid`, `woven`, or `html`. (The image format is still inferred from the filename.)
 
 ## Solver
 
@@ -47,7 +52,7 @@ Internally, it has two modes:
   * "skim", which shoves all clues in a line as far as possible to one side and then the other, and checks to see if any of the clues (or gaps) overlap themselves between the two positions.
   * "scrub", which determines all possible locations of each clue, and then observes what cells are fixed. This gets all information it is possible to get from a particular line.
 
-It stores progress by noting each possibly-remaining color in each cell. Even though a human solver typically only notes down known cells, in my experience this corresponds pretty well to the sort of ad-hoc logic that solvers perform on color nonograms when they glance at the both lines that contain a cell.
+It stores progress by noting each possibly-remaining color in each cell. Even though a human solver typically only writes down all-the-way-known cells, in my experience this corresponds pretty well to the sort of ad-hoc logic that solvers perform on color nonograms when they glance at the both lines that contain a cell.
 
 Looking at the number of scrubs and skims can tell you something about the difficulty of a puzzle. Unless you're aiming for an easy puzzle, the solver should have to do some scrubs. If the number of scrubs is higher than the width plus the length, or the number of skims is more than five times that, it's probably tedious relative to the size of the puzzle. This is a *very* rough guide: you should test-solve your puzzle to get an accurate view of the experience (click the "Puzzle" button!).
 
@@ -58,13 +63,14 @@ Looking at the number of scrubs and skims can tell you something about the diffi
 When editing a nonogram, you can:
 
 * Paint by dragging / draw orthographic lines / flood fill
+* Lasso-select and move a part of the image around
 * Adjust the size of the canvas from any side
 * Undo or redo with buttons or the "Z" and "Y" keys
 * Add, remove, or recolor palette entries
 * Solve the puzzle (it paints gray dots over unsolved cells), optionally automatically after each edit
 * Disambiguate
 * Switch to "Puzzle" mode to test-solve
-* Edit metadata: title, description, author and license. The title is intended to be displayed before the puzzle is solved, and the description is intended for display afterward.
+* Edit metadata: title, description, author and license. The "title" is intended to be displayed before the puzzle is solved (typically, a vague hint), and the "description" is intended for display afterward (typically, a straightforward description of the puzzle).
 
 #### Disambiguation
 
@@ -74,25 +80,29 @@ It works by simply re-solving the puzzle with every possible one-square change. 
 
 ### Puzzle mode
 
-In puzzle mode, primary click paints the currently-selected color, right-click paints blank squares, and middle-click paints "unsolved" (undo/redo also work). There's also a counter widget that helps you measure the contiguous region that you're in. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
+In puzzle mode, left-click paints the currently-selected color, right-click paints blank squares, and middle-click paints "unsolved" (undo/redo also work). There's also a counter widget (a "rosette") that helps you measure the contiguous region that you're in. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
 
 * Detection of errors
 * Inference of "obvious" background squares
 * Indicators on lines that can be progressed
 
-Note: indicators only appear if some cell on a line can be fully solved. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solveable puzzle to at some point have no line-progress indicators!
+Note: indicators only appear if some cell can be shown to have a particular color (including the background color) with line logic. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solveable puzzle to at some point have no line-progress indicators!
 
 ## Trianograms
 
 Trianograms are a rare variant. "Mindful Puzzle Books" publishes a book by that name. The Olšák solver also supports this variant, crediting the concept to "the journal Maľované krížovky, Silentium s.r.o, Bratislava", but I haven't been able to find out more. There are puzzles with triangles at [griddlers.net](http://griddlers.net/), but I think they are merely traditional nonograms with triangular colors.
 
-A Trianogram has black, white, and four additional "colors": triangles that divide the cell into half-black and half-white. The triangles always serve as "caps" to a clue; for example "◢2◤" denotes that the four cells "◢■■◤" will appear. They will be consecutive, despite the fact that the caps are different "colors". Two consecutive clues will only be guaranteed to be separated by a space if neither of them is capped on the facing sides (if there are multiple identical consecutive triangles, they will each get their own clue).
+A trianogram has black, white, and four additional "colors": triangles that divide the cell into half-black and half-white. The triangles always serve as "caps" to a clue; for example "◢2◤" denotes that the four cells "◢■■◤" will appear. They will be consecutive, despite the fact that the caps are different "colors". Two consecutive clues will only be guaranteed to be separated by a space if neither of them is capped on the facing sides (if there are multiple identical consecutive triangles, they will each get their own clue).
 
 The Olšák solver, I believe, supports multi-color trianograms, but `number-loom` does not yet.
 
-Only the `olsak` and `char-grid` formats can store trianograms.
+Only the `olsak`, `woven` and `char-grid` formats can store trianograms.
 
-The "webpbn" format supports "triangular colors", but it does not support "clue cap" notion from trianograms; it's a purely cosmetic variation. 
+The "webpbn" format supports "triangular colors", but it does not support "clue cap" notion from trianograms; it's a purely cosmetic variation that `number-loom` doesn't support.
+
+## Triddlers
+
+Triddlers are another variant in which the cells are triangles, arranged on a hexagonal grid, and there are *three* different axes of clues, rather than *two*. This provides more information, making triddlers, in a formal sense, easier to solve. However, counting out the triangular cells can be tricky, especially because each pair of lanes overlaps at *two* cells.
 
 ## Usage with other solvers
 
