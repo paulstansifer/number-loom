@@ -33,8 +33,71 @@ pub struct SerializableSolution {
     pub palette: Vec<ColorInfo>,
     /// Square dimensions, or a triddler outline.
     pub shape: Shape,
-    /// One color per cell, in the dense order the shape implies.
+    /// One color per cell, in the dense order the shape implies, spelled with each color's `ch`.
+    /// Exactly one of the two is present in any file we write.
+    #[serde(rename = "c", default, skip_serializing_if = "String::is_empty")]
+    pub cell_chars: String,
+    /// The same cells as numbers: how every file written before `c` existed stores them, and what
+    /// we still write when the palette has nothing to spell a cell with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cells: Vec<Color>,
+}
+
+/// What a duplicate `ch` may be replaced with: every printable ASCII character except space,
+/// which is skipped because it conventionally draws the background.
+const REPLACEMENT_CHS: std::ops::RangeInclusive<char> = '!'..='~';
+
+impl SerializableSolution {
+    /// The cells, from whichever of the two forms this file uses.
+    fn cell_colors(&self) -> Vec<Color> {
+        if self.cell_chars.is_empty() {
+            return self.cells.clone();
+        }
+
+        let by_ch: std::collections::HashMap<char, Color> =
+            self.palette.iter().map(|ci| (ci.ch, ci.color)).collect();
+        self.cell_chars
+            .chars()
+            .map(|ch| {
+                *by_ch
+                    .get(&ch)
+                    .unwrap_or_else(|| panic!("no color in the palette is drawn as {ch:?}"))
+            })
+            .collect()
+    }
+
+    /// Gives every palette entry a `ch` that no other entry uses, keeping the ones that are
+    /// already unambiguous; returns `false` if we run out of characters.
+    fn make_chs_unique(palette: &mut [ColorInfo]) -> bool {
+        let spoken_for: std::collections::HashSet<char> = palette.iter().map(|ci| ci.ch).collect();
+        let mut taken: std::collections::HashSet<char> =
+            std::collections::HashSet::with_capacity(palette.len());
+
+        for ci in palette.iter_mut() {
+            if taken.insert(ci.ch) {
+                continue;
+            }
+            let Some(free) = REPLACEMENT_CHS
+                .clone()
+                .find(|ch| !taken.contains(ch) && !spoken_for.contains(ch))
+            else {
+                return false;
+            };
+            ci.ch = free;
+            taken.insert(free);
+        }
+        true
+    }
+
+    /// The cells spelled with the `ch`s of `palette`, or `None` if some cell's color isn't in it.
+    fn spell_cells(cells: &[Color], palette: &[ColorInfo]) -> Option<String> {
+        let ch_of: std::collections::HashMap<Color, char> =
+            palette.iter().map(|ci| (ci.color, ci.ch)).collect();
+        cells
+            .iter()
+            .map(|color| ch_of.get(color).copied())
+            .collect()
+    }
 }
 
 impl From<&mut Document> for WovenVersion0 {
@@ -115,6 +178,194 @@ pub fn from_woven(s: &str, filename: String) -> anyhow::Result<Document> {
 
     doc.file = filename;
     Ok(doc)
+}
+
+/// The `c` field spells cells with each color's `ch`, which only works if the palette actually
+/// distinguishes them. The golden fixtures all have well-formed palettes, so these cover what
+/// happens when one doesn't — the cases where spelling cells naively would produce a file that
+/// reads back as a different picture.
+#[cfg(test)]
+mod cell_spelling_tests {
+    use super::*;
+    use crate::geometry::{Geometry, Rect};
+    use crate::puzzle::{BACKGROUND, Corner};
+    use std::collections::HashMap;
+
+    fn color(ch: char, name: &str, color: Color, corner: Option<Corner>) -> ColorInfo {
+        ColorInfo {
+            ch,
+            name: name.to_string(),
+            rgb: (color.0, color.0, color.0),
+            color,
+            corner,
+        }
+    }
+
+    fn solution_of(palette: Vec<ColorInfo>, cells: Vec<Color>) -> Solution<Square> {
+        let palette: HashMap<Color, ColorInfo> =
+            palette.into_iter().map(|ci| (ci.color, ci)).collect();
+        Solution::new(
+            ClueStyle::Nono,
+            palette,
+            Geometry::<Square>::new(Rect {
+                width: cells.len(),
+                height: 1,
+            }),
+            cells,
+        )
+    }
+
+    #[test]
+    fn a_well_formed_palette_spells_its_cells() {
+        let solution = solution_of(
+            vec![
+                color(' ', "white", BACKGROUND, None),
+                color('#', "black", Color(1), None),
+            ],
+            vec![BACKGROUND, Color(1), Color(1)],
+        );
+        let s_solution: SerializableSolution = (&solution).into();
+
+        assert_eq!(s_solution.cell_chars, " ##");
+        assert!(
+            s_solution.cells.is_empty(),
+            "the numeric form is redundant once the cells are spelled"
+        );
+        assert_eq!(s_solution.cell_colors(), solution.cells);
+    }
+
+    #[test]
+    fn a_repeated_ch_is_reassigned_before_writing() {
+        // Two colors drawn the same way: left alone, `#` would decode to whichever came first,
+        // quietly turning one color into the other.
+        let solution = solution_of(
+            vec![
+                color(' ', "white", BACKGROUND, None),
+                color('#', "black", Color(1), None),
+                color('#', "charcoal", Color(2), None),
+            ],
+            vec![BACKGROUND, Color(1), Color(2)],
+        );
+        let s_solution: SerializableSolution = (&solution).into();
+
+        assert!(
+            s_solution.palette.iter().map(|ci| ci.ch).all_unique(),
+            "the written palette must tell its colors apart: {:?}",
+            s_solution
+                .palette
+                .iter()
+                .map(|ci| ci.ch)
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            s_solution.cells.is_empty(),
+            "a repaired palette can spell its cells, so the numeric form is not needed"
+        );
+        // The repair is invisible from the outside: the cells still mean what they meant.
+        assert_eq!(s_solution.cell_colors(), solution.cells);
+    }
+
+    /// Only the entry that clashed gets a new `ch`; the rest keep what they had. A replacement
+    /// also has to dodge the `ch`s of entries it hasn't reached yet, or renaming one color would
+    /// force the next one to be renamed too.
+    #[test]
+    fn reassigning_a_ch_disturbs_nothing_else() {
+        let solution = solution_of(
+            vec![
+                color(' ', "white", BACKGROUND, None),
+                color('!', "black", Color(1), None),
+                color('!', "charcoal", Color(2), None),
+                color('"', "slate", Color(3), None),
+            ],
+            vec![BACKGROUND, Color(1), Color(2), Color(3)],
+        );
+        let s_solution: SerializableSolution = (&solution).into();
+
+        let ch_of = |name: &str| {
+            s_solution
+                .palette
+                .iter()
+                .find(|ci| ci.name == name)
+                .unwrap()
+                .ch
+        };
+        assert_eq!(ch_of("white"), ' ');
+        assert_eq!(ch_of("black"), '!', "the first claim on a `ch` keeps it");
+        assert_eq!(
+            ch_of("slate"),
+            '"',
+            "an entry further along keeps its `ch` too"
+        );
+        assert_eq!(
+            ch_of("charcoal"),
+            '#',
+            "the duplicate takes the first free character, skipping ones already spoken for"
+        );
+        assert_eq!(s_solution.cell_colors(), solution.cells);
+    }
+
+    /// Saving twice must not keep changing the file: the second save sees an unambiguous palette
+    /// and has nothing to repair.
+    ///
+    /// This is not just tidiness. `golden_tests` decides whether two recorded encodings mean the
+    /// same document by loading and re-saving each one; if saving moved every time, the encoding
+    /// written before a repair and the one written after could never be shown to agree, and the
+    /// fixture would be stuck failing with no way to fix it.
+    #[test]
+    fn repairing_a_palette_is_idempotent() {
+        // Same `rgb` and same `ch`, so `ColorInfo`'s ordering comes down to `name` — until the
+        // repair hands one of them a new `ch`, which is an earlier tiebreaker than `name`.
+        let solution = solution_of(
+            vec![
+                color('#', "black", Color(1), None),
+                color('#', "shadow", Color(2), None),
+            ],
+            vec![Color(1), Color(2)],
+        );
+
+        let once: SerializableSolution = (&solution).into();
+        let reloaded: DynSolution = (&once).into();
+        let twice: SerializableSolution = (&reloaded).into();
+
+        assert_eq!(
+            once.palette.iter().map(|ci| ci.ch).collect::<Vec<_>>(),
+            twice.palette.iter().map(|ci| ci.ch).collect::<Vec<_>>(),
+            "saving a repaired palette again reordered it"
+        );
+        assert_eq!(once, twice);
+        assert_eq!(twice.cell_colors(), solution.cells);
+    }
+
+    #[test]
+    fn a_cell_missing_from_the_palette_falls_back_to_numbers() {
+        let solution = solution_of(
+            vec![color(' ', "white", BACKGROUND, None)],
+            vec![BACKGROUND, Color(7)], // Color(7) has no entry, so it has no `ch`
+        );
+        let s_solution: SerializableSolution = (&solution).into();
+
+        assert!(s_solution.cell_chars.is_empty());
+        assert_eq!(s_solution.cell_colors(), solution.cells);
+    }
+
+    /// The point of keeping `cells`: a file written before `c` existed still has to load.
+    #[test]
+    fn the_numeric_form_still_reads() {
+        let before_c = r##"{"clue_style":"Nono","palette":[
+            {"ch":" ","name":"white","rgb":[255,255,255],"color":0,"corner":null},
+            {"ch":"#","name":"black","rgb":[0,0,0],"color":1,"corner":null}],
+            "shape":{"Square":{"width":3,"height":1}},"cells":[0,1,1]}"##;
+        let with_c = r##"{"clue_style":"Nono","palette":[
+            {"ch":" ","name":"white","rgb":[255,255,255],"color":0,"corner":null},
+            {"ch":"#","name":"black","rgb":[0,0,0],"color":1,"corner":null}],
+            "shape":{"Square":{"width":3,"height":1}},"c":" ##"}"##;
+
+        let old: SerializableSolution = serde_json::from_str(before_c).unwrap();
+        let new: SerializableSolution = serde_json::from_str(with_c).unwrap();
+
+        assert_eq!(old.cell_colors(), vec![BACKGROUND, Color(1), Color(1)]);
+        assert_eq!(old.cell_colors(), new.cell_colors());
+    }
 }
 
 #[cfg(test)]
@@ -313,11 +564,32 @@ impl From<WovenVersion0> for Document {
 
 impl<K: GridKind> From<&Solution<K>> for SerializableSolution {
     fn from(solution: &Solution<K>) -> Self {
+        let as_stored: Vec<ColorInfo> = solution.palette.values().cloned().sorted().collect();
+
+        // Spelling the cells needs a palette whose `ch`s tell the colors apart, so try to make
+        // one. Both this and the spelling can decline, and the repaired palette is only worth
+        // writing if the spelling it was made for succeeded — otherwise the file would carry
+        // renamed colors for no reason at all.
+        let mut repaired = as_stored.clone();
+        let spelled = SerializableSolution::make_chs_unique(&mut repaired)
+            .then(|| {
+                repaired.sort(); // see `make_chs_unique`: a new `ch` can change where an entry sorts
+                SerializableSolution::spell_cells(&solution.cells, &repaired)
+            })
+            .flatten();
+
+        // Only one of the two cell forms is ever written; the other stays empty and is skipped.
+        let (palette, cell_chars, cells) = match spelled {
+            Some(cell_chars) => (repaired, cell_chars, Vec::new()),
+            None => (as_stored, String::new(), solution.cells.clone()),
+        };
+
         SerializableSolution {
             clue_style: solution.clue_style,
-            palette: solution.palette.values().cloned().sorted().collect(),
             shape: solution.geometry.shape(),
-            cells: solution.cells.clone(),
+            palette,
+            cell_chars,
+            cells,
         }
     }
 }
@@ -338,6 +610,7 @@ impl From<&SerializableSolution> for DynSolution {
             .iter()
             .map(|ci| (ci.color, ci.clone()))
             .collect();
+        let cells = s_solution.cell_colors();
         // The shape is the one place a stored puzzle is narrowed back to a static kind.
         match &s_solution.shape {
             Shape::Square { width, height } => DynSolution::Square(Solution::new(
@@ -347,13 +620,13 @@ impl From<&SerializableSolution> for DynSolution {
                     width: *width,
                     height: *height,
                 }),
-                s_solution.cells.clone(),
+                cells,
             )),
             Shape::Triangular(outline) => DynSolution::Tri(Solution::new(
                 s_solution.clue_style,
                 palette,
                 crate::geometry::Geometry::<Tri>::new(*outline),
-                s_solution.cells.clone(),
+                cells,
             )),
         }
     }
