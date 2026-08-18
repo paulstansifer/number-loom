@@ -247,12 +247,15 @@ impl Cell {
     }
 }
 
-fn bg_squares<C: Clue>(cs: &[C], len: u16) -> u16 {
+/// How many of a lane's squares the clues leave over for background, or `None` if the clues are
+/// too long to fit in it at all. Callers must handle the `None`: an over-long clue list is an
+/// ordinary contradiction (it is what a bad guess looks like), not a caller bug.
+fn bg_squares<C: Clue>(cs: &[C], len: u16) -> Option<u16> {
     let mut remaining = len;
     for c in cs {
-        remaining -= c.len() as u16;
+        remaining = remaining.checked_sub(c.len() as u16)?;
     }
-    remaining
+    Some(remaining)
 }
 
 #[derive(Clone)]
@@ -771,7 +774,10 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
         return Ok(ScrubReport { affected_cells });
     }
 
-    let total_slack = bg_squares(cs, lane.len() as u16) as usize;
+    let Some(total_slack) = bg_squares(cs, lane.len() as u16) else {
+        bail!("clues are longer than the lane");
+    };
+    let total_slack = total_slack as usize;
 
     // We want to store all possible locations for all the clues.
     // As an optimization, to keep the table smaller, instead of storing an index into the lane,
@@ -1060,6 +1066,32 @@ mod tests {
             test_scrub(n("🟥2 ⬛2"), "🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜"),
             l("🟥⬜ 🟥 🟥⬛⬜ ⬛ ⬛⬜")
         );
+    }
+
+    /// Clues longer than the lane are a contradiction, not a caller bug: `bg_squares` used to
+    /// underflow here, panicking in debug and wrapping to a colossal slack in release.
+    #[test]
+    fn clues_too_long_for_the_lane_are_an_error() {
+        for init in ["🔳 🔳 🔳", "⬜ ⬛ 🔳", "⬛ ⬛ ⬛"] {
+            let mut lane = l(init);
+            assert!(
+                exhaust_line(&n("⬛4"), &mut lane).is_err(),
+                "exhaust_line accepted an over-long clue on {init}"
+            );
+
+            let mut lane = l(init);
+            assert!(
+                exhaust_line(&n("⬛2 ⬛3"), &mut lane).is_err(),
+                "exhaust_line accepted over-long clues on {init}"
+            );
+
+            // `skim_line` already rejected these; make sure it still does.
+            let mut lane = l(init);
+            assert!(skim_line(&n("⬛4"), &mut lane).is_err());
+        }
+
+        // Exactly filling the lane is fine, and leaves no slack at all.
+        assert_eq!(test_exhaust(n("⬛3"), "🔳 🔳 🔳"), l("⬛ ⬛ ⬛"));
     }
 
     #[test]
