@@ -2,7 +2,6 @@
 mod tests {
     use std::collections::HashSet;
 
-    use ndarray::Array1;
     use number_loom::geometry::{Geometry, Outline, Square, Tri};
     use number_loom::grid_solve::{SolveOptions, solve};
     use number_loom::import::{bw_palette, solution_to_puzzle, solution_to_triano_puzzle};
@@ -41,10 +40,7 @@ mod tests {
         line
     }
 
-    fn generate_consistent_partial_solution(
-        solution_line: &[Color],
-        num_colors: u8,
-    ) -> Array1<Cell> {
+    fn generate_consistent_partial_solution(solution_line: &[Color], num_colors: u8) -> Vec<Cell> {
         let mut rng = rand::thread_rng();
         let mut partial_solution = Vec::with_capacity(solution_line.len());
 
@@ -61,7 +57,7 @@ mod tests {
             }
             partial_solution.push(cell);
         }
-        Array1::from(partial_solution)
+        partial_solution
     }
 
     fn dummy_color(color: Color) -> (Color, ColorInfo) {
@@ -84,7 +80,7 @@ mod tests {
         )
     }
 
-    fn validate_solver<C: Clue, F>(case: usize, line: Vec<Color>, partial: Array1<Cell>, f: F)
+    fn validate_solver<C: Clue, F>(case: usize, line: Vec<Color>, partial: Vec<Cell>, f: F)
     where
         F: FnOnce(&Solution<Square>) -> Puzzle<C, Square>,
     {
@@ -108,7 +104,7 @@ mod tests {
         let mut sc_partial_solution = partial.clone();
         let mut sk_partial_solution = partial.clone();
 
-        match skim_line(clues, &mut sk_partial_solution.view_mut()) {
+        match skim_line(clues, &mut sk_partial_solution) {
             Ok(_) => {
                 for j in 0..line.len() {
                     if !sk_partial_solution[j].can_be(line[j]) {
@@ -127,7 +123,7 @@ mod tests {
             }
         }
 
-        match scrub_line(clues, &mut sk_partial_solution.view_mut()) {
+        match scrub_line(clues, &mut sk_partial_solution) {
             Ok(_) => {
                 for j in 0..line.len() {
                     if !sk_partial_solution[j].can_be(line[j]) {
@@ -146,7 +142,7 @@ mod tests {
             }
         }
 
-        match exhaust_line(clues, &mut sc_partial_solution.view_mut()) {
+        match exhaust_line(clues, &mut sc_partial_solution) {
             Ok(_) => {
                 for j in 0..line.len() {
                     if !sc_partial_solution[j].can_be(line[j]) {

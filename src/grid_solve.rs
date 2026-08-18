@@ -2,7 +2,6 @@ use std::{fmt::Debug, sync::mpsc, vec};
 
 use anyhow::Context;
 use colored::Colorize;
-use ndarray::{ArrayView1, ArrayViewMut1};
 
 use crate::{
     geometry::{GridKind, LaneMap},
@@ -117,7 +116,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
         scratch: &mut Vec<Cell>,
     ) {
         gather_into(lanes, self.lane, grid, scratch);
-        let lane = ArrayView1::from(&scratch[..]);
+        let lane: &[Cell] = scratch;
         if lane.iter().all(|cell| cell.is_known()) {
             for mode in SolveMode::all() {
                 self.per_mode[*mode].score = std::i32::MIN;
@@ -146,7 +145,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
 /// Copy a lane's cells out of the grid into a contiguous buffer, so that the geometry-agnostic
 /// line solvers in `line_solve` can work on it as a plain 1-D array.
 ///
-/// `buf` is reused across calls on purpose. It is tempting to return a fresh `Array1` instead, but
+/// `buf` is reused across calls on purpose. It is tempting to return a fresh `Vec` instead, but
 /// the copy itself is cheap and the *allocation* is not: skim-only puzzles do no scrubbing and
 /// keep no line cache, so this gather and the one in `rescore` are the only per-operation work of
 /// their size, and allocating for each one costs ~9% on such puzzles.
@@ -258,14 +257,13 @@ fn display_step<C: Clue, K: GridKind>(
     }
 
     // Hackish way of getting the original score...
-    let lane_arr: ndarray::Array1<Cell> = orig_lane.into();
     let (orig_score, new_score) = match mode {
         SolveMode::Scrub => (
-            scrub_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap()),
+            scrub_heuristic(clue_lane.clues, &orig_lane),
             clue_lane.per_mode[mode].score,
         ),
         SolveMode::Skim => (
-            skim_heuristic(clue_lane.clues, lane_arr.rows().into_iter().next().unwrap()),
+            skim_heuristic(clue_lane.clues, &orig_lane),
             clue_lane.per_mode[mode].score,
         ),
     };
@@ -277,11 +275,11 @@ pub type LineCache<C> = std::collections::HashMap<(Vec<C>, Vec<u32>), (ScrubRepo
 fn op_or_cache<C: Clue, F>(
     f: F,
     clues: &[C],
-    lane: &mut ArrayViewMut1<Cell>,
+    lane: &mut [Cell],
     cache: &mut Option<LineCache<C>>,
 ) -> anyhow::Result<ScrubReport>
 where
-    F: Fn(&[C], &mut ArrayViewMut1<Cell>) -> anyhow::Result<ScrubReport>,
+    F: Fn(&[C], &mut [Cell]) -> anyhow::Result<ScrubReport>,
 {
     if let Some(cache) = cache {
         let entry = cache.entry((
@@ -315,7 +313,6 @@ where
     }
 }
 
-
 pub fn solve<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     line_cache: &mut Option<LineCache<C>>,
@@ -333,7 +330,7 @@ pub fn settle_solution<C: Clue, K: GridKind>(
     let mut buf: Vec<Cell> = vec![];
     for (lane, clues) in puzzle.lines.iter().enumerate() {
         gather_into(puzzle.geometry.lane_map(), lane, grid, &mut buf);
-        crate::line_solve::settle_line(clues, &mut ArrayViewMut1::from(&mut buf[..]))?;
+        crate::line_solve::settle_line(clues, &mut buf)?;
         scatter(puzzle.geometry.lane_map(), lane, &buf, grid);
     }
     Ok(())
@@ -521,19 +518,19 @@ impl<'p, C: Clue> SolveState<'p, C> {
         // Pull the lane out of the grid so the line solvers see a plain 1-D array.
         gather_into(lane_map, solved_lane, &self.grid, &mut ctx.scratch.lane);
         let orig_version_of_line: Vec<Cell> = ctx.scratch.lane.clone();
-        let mut grid_lane: ArrayViewMut1<Cell> = ArrayViewMut1::from(&mut ctx.scratch.lane[..]);
+        let grid_lane: &mut [Cell] = &mut ctx.scratch.lane;
 
         self.solve_counts[mode] += 1;
         let clues = self.lanes[idx].clues;
         let mut report = match mode {
-            SolveMode::Scrub => op_or_cache(exhaust_line, clues, &mut grid_lane, ctx.line_cache)
+            SolveMode::Scrub => op_or_cache(exhaust_line, clues, grid_lane, ctx.line_cache)
                 .with_context(|| {
                     format!(
                         "scrubbing {:?} with {:?}",
                         &self.lanes[idx], orig_version_of_line
                     )
                 })?,
-            SolveMode::Skim => skim_line(clues, &mut grid_lane).with_context(|| {
+            SolveMode::Skim => skim_line(clues, grid_lane).with_context(|| {
                 format!(
                     "skimming {:?} with {:?}",
                     &self.lanes[idx], orig_version_of_line
@@ -546,7 +543,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
             crate::line_solve::filter_report_by_color(
                 &mut report,
                 &orig_version_of_line,
-                &mut grid_lane,
+                grid_lane,
                 color,
             );
         }
@@ -697,8 +694,8 @@ pub fn line_logic_solve<C: Clue, K: GridKind>(
     report
 }
 
-fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
-    let any_newly_known = |original_lane: ArrayView1<Cell>, new_lane: ArrayView1<Cell>| -> bool {
+fn analyze_line<C: Clue>(clues: &[C], lane: &[Cell]) -> LineStatus {
+    let any_newly_known = |original_lane: &[Cell], new_lane: &[Cell]| -> bool {
         original_lane
             .iter()
             .zip(new_lane.iter())
@@ -706,16 +703,16 @@ fn analyze_line<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> LineStatus {
     };
 
     // Try skimming
-    let mut skim_lane = lane.to_owned();
-    skim_line(clues, &mut skim_lane.view_mut())?;
-    if any_newly_known(lane, skim_lane.view()) {
+    let mut skim_lane = lane.to_vec();
+    skim_line(clues, &mut skim_lane)?;
+    if any_newly_known(lane, &skim_lane) {
         return Ok(Some(SolveMode::Skim));
     }
 
     // Try scrubbing
-    let mut scrub_lane = lane.to_owned();
-    exhaust_line(clues, &mut scrub_lane.view_mut())?;
-    if any_newly_known(lane, scrub_lane.view()) {
+    let mut scrub_lane = lane.to_vec();
+    exhaust_line(clues, &mut scrub_lane)?;
+    if any_newly_known(lane, &scrub_lane) {
         return Ok(Some(SolveMode::Scrub));
     }
 
@@ -734,7 +731,7 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
                 .map(|lane| {
                     let mut gathered = vec![];
                     gather_into(lanes, lane, grid, &mut gathered);
-                    analyze_line(&puzzle.lines[lane], ArrayView1::from(&gathered[..]))
+                    analyze_line(&puzzle.lines[lane], &gathered)
                 })
                 .collect::<Vec<_>>()
         })

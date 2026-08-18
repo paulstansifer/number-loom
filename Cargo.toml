@@ -22,7 +22,6 @@ repository = "https://github.com/paulstansifer/number-loom"
 image = "0.25"
 quick-xml = "0.37.1"
 indoc = "2"
-ndarray = "0.16.1"
 anyhow = "1.0.93"
 clap = { version = "4.5.21", features = ["derive"] }
 colorize = "0.1.0"

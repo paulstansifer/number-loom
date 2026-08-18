@@ -6,7 +6,6 @@ use std::{fmt::Debug, u32};
 use crate::puzzle::{BACKGROUND, Clue, Color};
 use anyhow::{Context, bail};
 use colored::{ColoredString, Colorize};
-use ndarray::{ArrayView1, ArrayViewMut1};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum SolveMode {
@@ -263,7 +262,7 @@ pub struct ScrubReport {
 
 fn learn_cell(
     color: Color,
-    lane: &mut ArrayViewMut1<Cell>,
+    lane: &mut [Cell],
     idx: usize,
     affected_cells: &mut Vec<usize>,
 ) -> anyhow::Result<()> {
@@ -275,7 +274,7 @@ fn learn_cell(
 
 fn learn_cell_intersect(
     possibilities: Cell,
-    lane: &mut ArrayViewMut1<Cell>,
+    lane: &mut [Cell],
     idx: usize,
     affected_cells: &mut Vec<usize>,
 ) -> anyhow::Result<()> {
@@ -287,7 +286,7 @@ fn learn_cell_intersect(
 
 fn learn_cell_not(
     color: Color,
-    lane: &mut ArrayViewMut1<Cell>,
+    lane: &mut [Cell],
     idx: usize,
     affected_cells: &mut Vec<usize>,
 ) -> anyhow::Result<()> {
@@ -329,7 +328,7 @@ impl<'a, C: Clue> Iterator for ClueAdjIterator<'a, C> {
 ///  .] .  .  .]  .  .]
 fn packed_extents<C: Clue + Copy>(
     clues: &[C],
-    lane: &ArrayViewMut1<Cell>,
+    lane: &[Cell],
     reversed: bool,
 ) -> anyhow::Result<Vec<usize>> {
     if clues.is_empty() {
@@ -457,10 +456,7 @@ fn packed_extents<C: Clue + Copy>(
 
 /// Packs all clues to their leftmost and rightmost possible locations. If any squares are
 /// guaranteed to be inside a clue, that's useful information!
-pub fn skim_line<C: Clue + Copy>(
-    clues: &[C],
-    lane: &mut ArrayViewMut1<Cell>,
-) -> anyhow::Result<ScrubReport> {
+pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
     let mut affected = Vec::<usize>::new();
     if clues.is_empty() {
         // Special case, so we can safely take the first and last clue.
@@ -485,8 +481,8 @@ pub fn skim_line<C: Clue + Copy>(
     }
 
     // Now slam the clues back and forth!
-    let left_packed_right_extents = packed_extents(clues, &lane, false)?;
-    let right_packed_left_extents = packed_extents(clues, &lane, true)?;
+    let left_packed_right_extents = packed_extents(clues, lane, false)?;
+    let right_packed_left_extents = packed_extents(clues, lane, true)?;
 
     for ((gap_before, clue, gap_after), (left_extent, right_extent)) in ClueAdjIterator::new(clues)
         .zip(
@@ -571,14 +567,11 @@ pub fn skim_line<C: Clue + Copy>(
     })
 }
 
-pub fn settle_line<C: Clue + Copy>(
-    clues: &[C],
-    lane: &mut ArrayViewMut1<Cell>,
-) -> anyhow::Result<ScrubReport> {
+pub fn settle_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
     let mut affected = Vec::<usize>::new();
 
-    let left_packed_right_extents = packed_extents(clues, &lane, false)?;
-    let right_packed_left_extents = packed_extents(clues, &lane, true)?;
+    let left_packed_right_extents = packed_extents(clues, lane, false)?;
+    let right_packed_left_extents = packed_extents(clues, lane, true)?;
 
     let mut prev_known_end = Some(0); // Left edge is known!
     for i in 0..clues.len() {
@@ -629,7 +622,7 @@ pub fn settle_line<C: Clue + Copy>(
     })
 }
 
-pub fn skim_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
+pub fn skim_heuristic<C: Clue>(clues: &[C], lane: &[Cell]) -> i32 {
     if clues.is_empty() {
         return 1000; // Can solve it right away!
     }
@@ -666,7 +659,7 @@ pub fn skim_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
 // This is the old "scrub"; we don't use it anymore
 pub fn scrub_line<C: Clue + Clone + Copy>(
     cs: &[C],
-    lane: &mut ArrayViewMut1<Cell>,
+    lane: &mut [Cell],
 ) -> anyhow::Result<ScrubReport> {
     let mut res = ScrubReport {
         affected_cells: vec![],
@@ -678,11 +671,11 @@ pub fn scrub_line<C: Clue + Clone + Copy>(
         }
 
         for color in lane[i].can_be_iter() {
-            let mut hypothetical_lane = lane.to_owned();
+            let mut hypothetical_lane = lane.to_vec();
 
             hypothetical_lane[i] = Cell::from_color(color);
 
-            match skim_line(cs, &mut hypothetical_lane.view_mut()) {
+            match skim_line(cs, &mut hypothetical_lane) {
                 Ok(_) => { /* no luck: no contradiction */ }
                 Err(err) => {
                     // `color` is impossible here; we've learned something!
@@ -697,7 +690,7 @@ pub fn scrub_line<C: Clue + Clone + Copy>(
     Ok(res)
 }
 
-pub fn scrub_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
+pub fn scrub_heuristic<C: Clue>(clues: &[C], lane: &[Cell]) -> i32 {
     let mut foreground_cells: i32 = 0;
     // If `space_taken == lane.len()`, the line is immediately solvable with no other knowledge.
     let mut space_taken: i32 = 0;
@@ -720,11 +713,11 @@ pub fn scrub_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
     let space_taken = space_taken;
 
     let known_background_cells = lane
-        .into_iter()
+        .iter()
         .filter(|cell| cell.is_known_to_be(BACKGROUND))
         .count() as i32;
 
-    let unknown_cells = lane.into_iter().filter(|cell| !cell.is_known()).count() as i32;
+    let unknown_cells = lane.iter().filter(|cell| !cell.is_known()).count() as i32;
 
     let known_foreground_cells = lane.len() as i32 - unknown_cells - known_background_cells;
 
@@ -761,7 +754,7 @@ pub fn scrub_heuristic<C: Clue>(clues: &[C], lane: ArrayView1<Cell>) -> i32 {
 // This is the new thing we call "scrub" (TODO: make names consistent!)
 pub fn exhaust_line<C: Clue + Clone + Copy>(
     cs: &[C],
-    lane: &mut ArrayViewMut1<Cell>,
+    lane: &mut [Cell],
 ) -> anyhow::Result<ScrubReport> {
     if cs.is_empty() {
         let mut affected_cells = vec![];
@@ -900,7 +893,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
 pub fn filter_report_by_color(
     report: &mut ScrubReport,
     orig_lane: &[Cell],
-    new_lane: &mut ArrayViewMut1<Cell>,
+    new_lane: &mut [Cell],
     color: Color,
 ) {
     let mut new_affected_cells = vec![];
@@ -989,7 +982,7 @@ mod tests {
         res
     }
 
-    fn l(spec: &str) -> ndarray::Array1<Cell> {
+    fn l(spec: &str) -> Vec<Cell> {
         let mut res = vec![];
         for cell_spec in spec.split_whitespace() {
             if cell_spec == "🔳" {
@@ -1006,46 +999,30 @@ mod tests {
             }
             res.push(cell);
         }
-        ndarray::arr1(&res)
+        res
     }
 
-    fn test_exhaust<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+    fn test_exhaust<C: Clue>(clues: Vec<C>, init: &str) -> Vec<Cell> {
         let mut working_line = l(init);
-        exhaust_line(
-            &clues,
-            &mut working_line.rows_mut().into_iter().next().unwrap(),
-        )
-        .unwrap();
+        exhaust_line(&clues, &mut working_line).unwrap();
         working_line
     }
 
-    fn test_scrub<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+    fn test_scrub<C: Clue>(clues: Vec<C>, init: &str) -> Vec<Cell> {
         let mut working_line = l(init);
-        scrub_line(
-            &clues,
-            &mut working_line.rows_mut().into_iter().next().unwrap(),
-        )
-        .unwrap();
+        scrub_line(&clues, &mut working_line).unwrap();
         working_line
     }
 
-    fn test_skim<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+    fn test_skim<C: Clue>(clues: Vec<C>, init: &str) -> Vec<Cell> {
         let mut working_line = l(init);
-        skim_line(
-            &clues,
-            &mut working_line.rows_mut().into_iter().next().unwrap(),
-        )
-        .unwrap();
+        skim_line(&clues, &mut working_line).unwrap();
         working_line
     }
 
-    fn test_settle<C: Clue>(clues: Vec<C>, init: &str) -> ndarray::Array1<Cell> {
+    fn test_settle<C: Clue>(clues: Vec<C>, init: &str) -> Vec<Cell> {
         let mut working_line = l(init);
-        settle_line(
-            &clues,
-            &mut working_line.rows_mut().into_iter().next().unwrap(),
-        )
-        .unwrap();
+        settle_line(&clues, &mut working_line).unwrap();
         working_line
     }
 
@@ -1201,12 +1178,9 @@ mod tests {
 
     macro_rules! heur {
     ([$($color:expr, $count:expr);*] $($state:expr),*) => {
-        {
-            let initial = ndarray::arr1(&[ $($state),* ]);
-            scrub_heuristic(
-                &vec![ $( crate::puzzle::Nono { color: $color.unwrap_color(), count: $count} ),* ],
-                initial.rows().into_iter().next().unwrap())
-        }
+        scrub_heuristic(
+            &vec![ $( crate::puzzle::Nono { color: $color.unwrap_color(), count: $count} ),* ],
+            &[ $($state),* ])
     };
 }
 
@@ -1247,12 +1221,7 @@ mod tests {
         };
         let orig = l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥 ⬛ ⬜");
         let mut solved = l("🟥 🟥⬛⬜ ⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜");
-        filter_report_by_color(
-            &mut rep,
-            &orig.iter().cloned().collect::<Vec<_>>(),
-            &mut solved.view_mut(),
-            BACKGROUND,
-        );
+        filter_report_by_color(&mut rep, &orig, &mut solved, BACKGROUND);
 
         assert_eq!(rep.affected_cells, vec![4]);
         assert_eq!(solved, l("🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ 🟥⬛⬜ ⬜ 🟥 ⬛ ⬜"));
