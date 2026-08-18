@@ -335,7 +335,7 @@ fn packed_extents<C: Clue + Copy>(
         return Ok(vec![]);
     }
 
-    let mut extents: Vec<usize> = vec![];
+    let mut extents: Vec<usize> = Vec::with_capacity(clues.len());
 
     let lane_at = |idx: usize| -> Cell {
         if reversed {
@@ -506,10 +506,12 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
                 clue_cell.actually_could_be(clue.color_at(idx - *left_extent + wiggle_idx));
             }
 
-            learn_cell_intersect(clue_cell, lane, idx, &mut affected).context(format!(
-                "overlap: clue {:?} at {}. {:?} -> {:?}",
-                clue, idx, lane[idx], clue_cell
-            ))?;
+            learn_cell_intersect(clue_cell, lane, idx, &mut affected).with_context(|| {
+                format!(
+                    "overlap: clue {:?} at {}. {:?} -> {:?}",
+                    clue, idx, lane[idx], clue_cell
+                )
+            })?;
         }
 
         // TODO: this seems to still be necessary, despite the background inference below!
@@ -517,11 +519,11 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
         if (*right_extent as i16 - *left_extent as i16) + 1 == clue.len() as i16 {
             if gap_before {
                 learn_cell(BACKGROUND, lane, left_extent - 1, &mut affected)
-                    .context(format!("gap before: {:?}", clue))?;
+                    .with_context(|| format!("gap before: {:?}", clue))?;
             }
             if gap_after {
                 learn_cell(BACKGROUND, lane, right_extent + 1, &mut affected)
-                    .context(format!("gap after: {:?}", clue))?;
+                    .with_context(|| format!("gap after: {:?}", clue))?;
             }
         }
     }
@@ -545,10 +547,12 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
             continue;
         }
         for idx in (right_extent_prev + 1)..=(left_extent - 1) {
-            learn_cell(BACKGROUND, lane, idx, &mut affected).context(format!(
-                "empty between skimmed clues: idx {}, clues: {:?}",
-                idx, clues
-            ))?;
+            learn_cell(BACKGROUND, lane, idx, &mut affected).with_context(|| {
+                format!(
+                    "empty between skimmed clues: idx {}, clues: {:?}",
+                    idx, clues
+                )
+            })?;
         }
     }
 
@@ -556,10 +560,11 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
     let rightmost = right_packed_left_extents.last().unwrap() + clues.last().unwrap().len();
 
     for i in 0..=leftmost {
-        learn_cell(BACKGROUND, lane, i as usize, &mut affected).context(format!("lopen: {}", i))?;
+        learn_cell(BACKGROUND, lane, i as usize, &mut affected)
+            .with_context(|| format!("lopen: {}", i))?;
     }
     for i in rightmost..lane.len() {
-        learn_cell(BACKGROUND, lane, i, &mut affected).context(format!("ropen: {}", i))?;
+        learn_cell(BACKGROUND, lane, i, &mut affected).with_context(|| format!("ropen: {}", i))?;
     }
 
     Ok(ScrubReport {
@@ -681,7 +686,7 @@ pub fn scrub_line<C: Clue + Clone + Copy>(
                     // `color` is impossible here; we've learned something!
                     // Note that this isn't an error!
                     learn_cell_not(color, lane, i, &mut res.affected_cells)
-                        .context(format!("scrub contradiction [{}] at {}", err, i))?;
+                        .with_context(|| format!("scrub contradiction [{}] at {}", err, i))?;
                 }
             }
         }
@@ -779,7 +784,10 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
     // Gap 1   -   | * | * | * | -
     // Gap 2   -   | - | * | * | *
 
-    let mut reachable = vec![vec![false; total_slack + 1]; cs.len()];
+    // One flat table rather than a `Vec` per clue: `reachable[clue_idx * gap_stride + gap]`.
+    // This is on the hot path, and a nested `Vec` costs an allocation per clue every call.
+    let gap_stride = total_slack + 1;
+    let mut reachable = vec![false; gap_stride * cs.len()];
 
     // Flood-fill left-reachability:
     let mut clue_len_so_far = 0;
@@ -791,7 +799,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
                 if pfx_gap != 0 {
                     continue; // The left edge is always at 0.
                 }
-            } else if !reachable[clue_idx - 1][pfx_gap] {
+            } else if !reachable[(clue_idx - 1) * gap_stride + pfx_gap] {
                 continue; // Previous clue can't be there
             }
             for new_gap in pfx_gap..=total_slack {
@@ -806,7 +814,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
                     || !cs[clue_idx - 1].must_be_separated_from(&cs[clue_idx])
                     || new_gap > pfx_gap;
                 if gap_placeable && color_placeable && consec_placeable {
-                    reachable[clue_idx][new_gap as usize] = true;
+                    reachable[clue_idx * gap_stride + new_gap] = true;
                 }
             }
         }
@@ -815,24 +823,26 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
 
     let mut superposition = vec![Cell::new_impossible(); lane.len()];
 
+    // Temporary, to be intersected with `reachable`. Allocated once and cleared per clue.
+    let mut both_reachable = vec![false; gap_stride];
+
     // Flood-fill right-reachability, intersected with existing reachability:
     // `clue_len_so_far` is correct; now we'll subtract it back to 0.
     for clue_idx in (0..cs.len()).rev() {
         let clue = &cs[clue_idx];
 
-        // Temporary, to be intersected with `reachable`
-        let mut both_reachable = vec![false; total_slack + 1];
+        both_reachable.fill(false);
 
         for gap_sfx in 0..=total_slack {
             if clue_idx == cs.len() - 1 {
                 if gap_sfx != total_slack {
                     continue; // The right edge is always after all the background squares.
                 }
-            } else if !reachable[clue_idx + 1][gap_sfx] {
+            } else if !reachable[(clue_idx + 1) * gap_stride + gap_sfx] {
                 continue; // Clue to the right couldn't be there
             }
             for new_gap in 0..=gap_sfx {
-                if !reachable[clue_idx][new_gap] {
+                if !reachable[clue_idx * gap_stride + new_gap] {
                     continue; // Spot not reachable from the LHS, so not worth reaching for.
                 }
                 // Try to place the clue color and the gap AFTER the clue.
@@ -864,7 +874,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
                         .actually_could_be(clue.color_at(clue_cell_idx));
                 }
             } else {
-                reachable[clue_idx][new_gap] = false;
+                reachable[clue_idx * gap_stride + new_gap] = false;
             }
         }
 
@@ -873,7 +883,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
 
     // We need to handle the first gap, since the RHS-to-LHS pass doesn't look at it.
     for first_gap in (0..=total_slack).rev() {
-        if reachable[0][first_gap] {
+        if reachable[first_gap] {
             for g_idx in 0..first_gap {
                 superposition[g_idx].actually_could_be(BACKGROUND);
             }

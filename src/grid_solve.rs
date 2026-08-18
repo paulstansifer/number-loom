@@ -360,6 +360,10 @@ pub struct SolveContext<'p, 'x, C: Clue, K: GridKind> {
     pub line_cache: &'x mut Option<LineCache<C>>,
     pub scratch: Scratch,
     progress: indicatif::ProgressBar,
+    /// Whether `progress` is actually on screen. `set_message` takes its argument by value, so
+    /// without this the per-step status line gets formatted (and thrown away) even when nothing
+    /// is displaying it — which is every non-interactive solve, including the benchmarks.
+    progress_live: bool,
 }
 
 impl<'p, C: Clue, K: GridKind> SolveContext<'p, '_, C, K> {
@@ -377,7 +381,8 @@ impl<'p, 'x, C: Clue, K: GridKind> SolveContext<'p, 'x, C, K> {
         options: &'x SolveOptions,
     ) -> SolveContext<'p, 'x, C, K> {
         let progress = indicatif::ProgressBar::new_spinner();
-        if options.trace_solve || !options.display_cli_progress {
+        let progress_live = !options.trace_solve && options.display_cli_progress;
+        if !progress_live {
             progress.finish_and_clear();
         }
 
@@ -387,6 +392,7 @@ impl<'p, 'x, C: Clue, K: GridKind> SolveContext<'p, 'x, C, K> {
             line_cache,
             scratch: Scratch::default(),
             progress,
+            progress_live,
         }
     }
 }
@@ -507,13 +513,15 @@ impl<'p, C: Clue> SolveState<'p, C> {
         };
         let solved_lane = self.lanes[idx].lane;
 
-        ctx.progress.set_message(format!(
-            "{} cells left: {: >6}  {}ing {}",
-            self.solve_counts,
-            self.cells_left,
-            mode.colorized_name(),
-            self.lanes[idx].text_coord(),
-        ));
+        if ctx.progress_live {
+            ctx.progress.set_message(format!(
+                "{} cells left: {: >6}  {}ing {}",
+                self.solve_counts,
+                self.cells_left,
+                mode.colorized_name(),
+                self.lanes[idx].text_coord(),
+            ));
+        }
 
         // Pull the lane out of the grid so the line solvers see a plain 1-D array.
         gather_into(lane_map, solved_lane, &self.grid, &mut ctx.scratch.lane);
