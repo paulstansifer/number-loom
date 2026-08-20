@@ -1,7 +1,4 @@
-// They're used in tests, but it can't see that.
-#![allow(unused_macros, dead_code)]
-
-use std::{fmt::Debug, u32};
+use std::fmt::Debug;
 
 use crate::puzzle::{BACKGROUND, Clue, Color};
 use anyhow::{Context, bail};
@@ -37,20 +34,6 @@ impl SolveMode {
         match self {
             SolveMode::Skim => '-',
             SolveMode::Scrub => '+',
-        }
-    }
-
-    pub fn prev(self) -> Option<SolveMode> {
-        match self {
-            SolveMode::Skim => None,
-            SolveMode::Scrub => Some(SolveMode::Skim),
-        }
-    }
-
-    pub fn next(self) -> Option<SolveMode> {
-        match self {
-            SolveMode::Skim => Some(SolveMode::Scrub),
-            SolveMode::Scrub => None,
         }
     }
 
@@ -151,14 +134,6 @@ impl Cell {
         }
     }
 
-    pub fn from_colors(colors: &[Color]) -> Cell {
-        let mut res = Self::new_impossible();
-        for c in colors {
-            res.actually_could_be(*c);
-        }
-        res
-    }
-
     pub fn from_color(color: Color) -> Cell {
         Cell {
             possible_color_mask: 1 << color.0,
@@ -177,15 +152,16 @@ impl Cell {
         (self.possible_color_mask & 1 << color.0) != 0
     }
 
-    // TODO: this could be a lot more efficient by using a bitmask as an iterator.
     pub fn can_be_iter(&self) -> impl Iterator<Item = Color> + use<> {
-        let mut res = vec![];
-        for i in 0..32 {
-            if self.possible_color_mask & (1 << i) != 0 {
-                res.push(Color(i));
+        let mut mask = self.possible_color_mask;
+        std::iter::from_fn(move || {
+            if mask == 0 {
+                return None;
             }
-        }
-        res.into_iter()
+            let color = Color(mask.trailing_zeros() as u8);
+            mask &= mask - 1; // clear the lowest set bit
+            Some(color)
+        })
     }
 
     pub fn known_or(&self) -> Option<Color> {
@@ -236,10 +212,6 @@ impl Cell {
     /// Doesn't make sense in the grid, but useful for scrubbing.
     pub fn actually_could_be(&mut self, color: Color) {
         self.possible_color_mask |= 1 << color.0;
-    }
-
-    pub fn contradictory(&self) -> bool {
-        self.possible_color_mask == 0
     }
 
     pub fn unwrap_color(&self) -> Color {
@@ -299,37 +271,25 @@ fn learn_cell_not(
     Ok(())
 }
 
-struct ClueAdjIterator<'a, C: Clue> {
-    clues: &'a [C],
-    i: usize,
-}
-impl<'a, C: Clue> ClueAdjIterator<'a, C> {
-    fn new(clues: &'a [C]) -> ClueAdjIterator<'a, C> {
-        ClueAdjIterator { clues, i: 0 }
-    }
+/// Whether clue `i` needs a background square before it (`.0`) and after it (`.1`).
+fn needs_gaps_around<C: Clue>(clues: &[C], i: usize) -> (bool, bool) {
+    (
+        i > 0 && clues[i - 1].must_be_separated_from(&clues[i]),
+        i + 1 < clues.len() && clues[i].must_be_separated_from(&clues[i + 1]),
+    )
 }
 
-impl<'a, C: Clue> Iterator for ClueAdjIterator<'a, C> {
-    type Item = (bool, &'a C, bool);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.i == self.clues.len() {
-            return None;
-        }
-        let res = (
-            self.i > 0 && self.clues[self.i - 1].must_be_separated_from(&self.clues[self.i]),
-            &self.clues[self.i],
-            self.i < self.clues.len() - 1
-                && self.clues[self.i].must_be_separated_from(&self.clues[self.i + 1]),
-        );
-        self.i += 1;
-        Some(res)
+/// Every square in the lane is background (only happens when there are no clues)
+fn learn_all_background(lane: &mut [Cell], affected: &mut Vec<usize>) -> anyhow::Result<()> {
+    for i in 0..lane.len() {
+        learn_cell(BACKGROUND, lane, i, affected)?;
     }
+    Ok(())
 }
 
 ///  For example, (1 2 1) with no other constraints gives
 ///  .] .  .  .]  .  .]
-fn packed_extents<C: Clue + Copy>(
+fn packed_extents<C: Clue>(
     clues: &[C],
     lane: &[Cell],
     reversed: bool,
@@ -369,14 +329,14 @@ fn packed_extents<C: Clue + Copy>(
     for clue_idx in 0..clues.len() {
         let clue = clue_at(clue_idx);
         if let Some(last_clue) = last_clue {
-            if !reversed {
-                if last_clue.must_be_separated_from(clue) {
-                    pos += 1;
-                }
+            // `must_be_separated_from` takes its arguments in lane order, so respect `reversed`.
+            let separated = if reversed {
+                clue.must_be_separated_from(&last_clue)
             } else {
-                if clue.must_be_separated_from(&last_clue) {
-                    pos += 1;
-                }
+                last_clue.must_be_separated_from(clue)
+            };
+            if separated {
+                pos += 1;
             }
         }
 
@@ -459,13 +419,11 @@ fn packed_extents<C: Clue + Copy>(
 
 /// Packs all clues to their leftmost and rightmost possible locations. If any squares are
 /// guaranteed to be inside a clue, that's useful information!
-pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
+pub fn skim_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
     let mut affected = Vec::<usize>::new();
     if clues.is_empty() {
         // Special case, so we can safely take the first and last clue.
-        for i in 0..lane.len() {
-            learn_cell(BACKGROUND, lane, i, &mut affected).context("Empty clue line")?;
-        }
+        learn_all_background(lane, &mut affected).context("Empty clue line")?;
         return Ok(ScrubReport {
             affected_cells: affected,
         });
@@ -497,26 +455,24 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
     let left_packed_right_extents = packed_extents(clues, lane, false)?;
     let right_packed_left_extents = packed_extents(clues, lane, true)?;
 
-    for ((gap_before, clue, gap_after), (left_extent, right_extent)) in ClueAdjIterator::new(clues)
-        .zip(
-            right_packed_left_extents
-                .iter()
-                .zip(left_packed_right_extents.iter()),
-        )
-    {
+    for (clue_idx, clue) in clues.iter().enumerate() {
+        let left_extent = right_packed_left_extents[clue_idx];
+        let right_extent = left_packed_right_extents[clue_idx];
+
         if left_extent > right_extent {
             continue; // No overlap
         }
-        if (*right_extent - *left_extent + 1) > clue.len() {
+        let overlap = right_extent - left_extent + 1;
+        if overlap > clue.len() {
             bail!("clue is insufficiently long");
         }
 
-        let clue_wiggle_room = clue.len() - 1 - (*right_extent - *left_extent);
+        let clue_wiggle_room = clue.len() - overlap;
 
-        for idx in (*left_extent)..=(*right_extent) {
+        for idx in left_extent..=right_extent {
             let mut clue_cell = Cell::new_impossible();
             for wiggle_idx in 0..=clue_wiggle_room {
-                clue_cell.actually_could_be(clue.color_at(idx - *left_extent + wiggle_idx));
+                clue_cell.actually_could_be(clue.color_at(idx - left_extent + wiggle_idx));
             }
 
             learn_cell_intersect(clue_cell, lane, idx, &mut affected).with_context(|| {
@@ -529,7 +485,8 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
 
         // TODO: this seems to still be necessary, despite the background inference below!
         // Figure out why.
-        if (*right_extent as i16 - *left_extent as i16) + 1 == clue.len() as i16 {
+        if overlap == clue.len() {
+            let (gap_before, gap_after) = needs_gaps_around(clues, clue_idx);
             if gap_before {
                 learn_cell(BACKGROUND, lane, left_extent - 1, &mut affected)
                     .with_context(|| format!("gap before: {:?}", clue))?;
@@ -569,12 +526,12 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
         }
     }
 
-    let leftmost = left_packed_right_extents[0] as i16 - clues[0].len() as i16;
+    // Nothing can reach past the outermost clues' outermost possible positions.
+    let leftmost = left_packed_right_extents[0] + 1 - clues[0].len();
     let rightmost = right_packed_left_extents.last().unwrap() + clues.last().unwrap().len();
 
-    for i in 0..=leftmost {
-        learn_cell(BACKGROUND, lane, i as usize, &mut affected)
-            .with_context(|| format!("lopen: {}", i))?;
+    for i in 0..leftmost {
+        learn_cell(BACKGROUND, lane, i, &mut affected).with_context(|| format!("lopen: {}", i))?;
     }
     for i in rightmost..lane.len() {
         learn_cell(BACKGROUND, lane, i, &mut affected).with_context(|| format!("ropen: {}", i))?;
@@ -585,7 +542,7 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
     })
 }
 
-pub fn settle_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
+pub fn settle_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
     let mut affected = Vec::<usize>::new();
 
     let left_packed_right_extents = packed_extents(clues, lane, false)?;
@@ -600,32 +557,29 @@ pub fn settle_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Re
         let is_known = (right_extent + 1) == clue.len() + left_extent
             && (left_extent..=right_extent).all(|j| lane[j].is_known());
 
-        if is_known {
-            // Separator background before
-            if left_extent > 0 {
-                if i > 0 && clues[i - 1].must_be_separated_from(clue) {
-                    learn_cell(BACKGROUND, lane, left_extent - 1, &mut affected)?;
-                }
-            }
-            // Separator background after
-            if right_extent < lane.len() - 1 {
-                if i < clues.len() - 1 && clue.must_be_separated_from(&clues[i + 1]) {
-                    learn_cell(BACKGROUND, lane, right_extent + 1, &mut affected)?;
-                }
-            }
-
-            if let Some(prev_end) = prev_known_end {
-                for i in prev_end..left_extent {
-                    learn_cell(BACKGROUND, lane, i, &mut affected)?;
-                }
-            }
-        }
-
-        if is_known {
-            prev_known_end = Some(right_extent + 1);
-        } else {
+        if !is_known {
             prev_known_end = None;
+            continue;
         }
+
+        let (gap_before, gap_after) = needs_gaps_around(clues, i);
+        // Separator background before
+        if gap_before && left_extent > 0 {
+            learn_cell(BACKGROUND, lane, left_extent - 1, &mut affected)?;
+        }
+        // Separator background after
+        if gap_after && right_extent < lane.len() - 1 {
+            learn_cell(BACKGROUND, lane, right_extent + 1, &mut affected)?;
+        }
+
+        // Everything between the previous known block and this one is background.
+        if let Some(prev_end) = prev_known_end {
+            for i in prev_end..left_extent {
+                learn_cell(BACKGROUND, lane, i, &mut affected)?;
+            }
+        }
+
+        prev_known_end = Some(right_extent + 1);
     }
 
     // Right edge is known too:
@@ -645,10 +599,7 @@ pub fn skim_heuristic<C: Clue>(clues: &[C], lane: &[Cell]) -> i32 {
 }
 
 // This is the old "scrub"; we don't use it anymore
-pub fn scrub_line<C: Clue + Clone + Copy>(
-    cs: &[C],
-    lane: &mut [Cell],
-) -> anyhow::Result<ScrubReport> {
+pub fn scrub_line<C: Clue>(cs: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
     let mut res = ScrubReport {
         affected_cells: vec![],
     };
@@ -697,26 +648,20 @@ pub struct ClueSummary {
 impl ClueSummary {
     pub fn new<C: Clue>(clues: &[C]) -> ClueSummary {
         let mut foreground_cells: i32 = 0;
-        let mut space_taken: i32 = 0;
         let mut longest_clue: i32 = 0;
-        let mut last_clue: Option<C> = None;
         for c in clues {
             foreground_cells += c.len() as i32;
-            space_taken += c.len() as i32;
-            if let Some(last_clue) = last_clue {
-                if last_clue.must_be_separated_from(c) {
-                    // We need to leave a space between these clues.
-                    space_taken += 1;
-                }
-            }
-
             longest_clue = std::cmp::max(longest_clue, c.len() as i32);
-            last_clue = Some(*c);
         }
+        // We need to leave a space between clues that can't touch.
+        let separators = clues
+            .windows(2)
+            .filter(|pair| pair[0].must_be_separated_from(&pair[1]))
+            .count() as i32;
 
         ClueSummary {
             foreground_cells,
-            space_taken,
+            space_taken: foreground_cells + separators,
             longest_clue,
             count: clues.len() as i32,
         }
@@ -810,17 +755,10 @@ pub fn score_lane(summary: &ClueSummary, lane: &[Cell]) -> LaneScores {
 }
 
 // This is the new thing we call "scrub" (TODO: make names consistent!)
-pub fn exhaust_line<C: Clue + Clone + Copy>(
-    cs: &[C],
-    lane: &mut [Cell],
-) -> anyhow::Result<ScrubReport> {
+pub fn exhaust_line<C: Clue>(cs: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
     if cs.is_empty() {
         let mut affected_cells = vec![];
-
-        for i in 0..lane.len() {
-            learn_cell(BACKGROUND, lane, i, &mut affected_cells)?
-        }
-
+        learn_all_background(lane, &mut affected_cells)?;
         return Ok(ScrubReport { affected_cells });
     }
 
@@ -851,9 +789,9 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
     // that `gap` places it on.
     let mut clue_fits = vec![false; gap_stride * cs.len()];
     let mut clue_len_so_far = 0;
-    for (clue_idx, clue) in cs.iter().enumerate() {
-        for gap in 0..=total_slack {
-            clue_fits[clue_idx * gap_stride + gap] = (0..clue.len()).all(|clue_cell_idx| {
+    for (clue, fits_row) in cs.iter().zip(clue_fits.chunks_mut(gap_stride)) {
+        for (gap, fits) in fits_row.iter_mut().enumerate() {
+            *fits = (0..clue.len()).all(|clue_cell_idx| {
                 lane[clue_len_so_far + gap + clue_cell_idx].can_be(clue.color_at(clue_cell_idx))
             });
         }
@@ -875,12 +813,13 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
         let (earlier_rows, rest) = reachable.split_at_mut(clue_idx * gap_stride);
         let this_row = &mut rest[..gap_stride];
         let prev_row = clue_idx
-            .checked_sub(1)  // First clue has not predecessor...
+            .checked_sub(1) // First clue has not predecessor...
             .map(|prev| &earlier_rows[prev * gap_stride..][..gap_stride]);
         let prev_reachable /* Fn(usize) -> usize */ = |gap: usize| match prev_row {
             Some(row) => row[gap],
             None => gap == 0, // ...the left edge stands in for it
         };
+        let fits_row = &clue_fits[clue_idx * gap_stride..][..gap_stride];
 
         // `reachable_in_window` counts the reachable gaps in `lo..added`, and `added` never runs
         // past the largest previous gap that the current `new_gap` would accept.
@@ -904,7 +843,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
 
             // A clue that must be separated from its predecessor can't start where the
             // predecessor's gap left off, so it gives up one gap of reach.
-            let highest_pfx_gap : Option<usize> = if needs_gap {
+            let highest_pfx_gap: Option<usize> = if needs_gap {
                 new_gap.checked_sub(1)
             } else {
                 Some(new_gap)
@@ -918,7 +857,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
                 }
             }
 
-            if reachable_in_window > 0 && clue_fits[clue_idx * gap_stride + new_gap] {
+            if reachable_in_window > 0 && fits_row[new_gap] {
                 this_row[new_gap] = true;
             }
         }
@@ -936,6 +875,9 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
         let clue = &cs[clue_idx];
         let needs_gap =
             clue_idx + 1 < cs.len() && cs[clue_idx].must_be_separated_from(&cs[clue_idx + 1]);
+        let fits_row = &clue_fits[clue_idx * gap_stride..][..gap_stride];
+        // (`reachable` is only written after the sweep below finishes with this borrow.)
+        let reach_row = &reachable[clue_idx * gap_stride..][..gap_stride];
 
         both_reachable.fill(false);
 
@@ -979,8 +921,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
 
             // Every gap in `lo..=highest_gap` that the left pass also reached is actually reachable!
             for gap in marked_up_to.max(lo)..=highest_gap {
-                if reachable[clue_idx * gap_stride + gap] && clue_fits[clue_idx * gap_stride + gap]
-                {
+                if reach_row[gap] && fits_row[gap] {
                     both_reachable[gap] = true;
                 }
             }
@@ -988,10 +929,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
 
             // Advancing over gaps this clue can't use is always safe: they can't come back.
             first_ok = first_ok.max(lo);
-            while first_ok <= highest_gap
-                && !(reachable[clue_idx * gap_stride + first_ok]
-                    && clue_fits[clue_idx * gap_stride + first_ok])
-            {
+            while first_ok <= highest_gap && !(reach_row[first_ok] && fits_row[first_ok]) {
                 first_ok += 1;
             }
 
@@ -1004,7 +942,8 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
                 painted_up_to = painted_up_to.max(gap_sfx);
             }
         }
-        for new_gap in 0..=total_slack {
+        let reach_row = &mut reachable[clue_idx * gap_stride..][..gap_stride];
+        for (new_gap, reached) in reach_row.iter_mut().enumerate() {
             if both_reachable[new_gap] {
                 // TODO: why not do this in the previous loop?
                 // Reachable in both directions! Record it:
@@ -1013,7 +952,7 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
                         .actually_could_be(clue.color_at(clue_cell_idx));
                 }
             } else {
-                reachable[clue_idx * gap_stride + new_gap] = false;
+                *reached = false;
             }
         }
 
@@ -1023,8 +962,8 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
     // We need to handle the first gap, since the RHS-to-LHS pass doesn't look at it.
     for first_gap in (0..=total_slack).rev() {
         if reachable[first_gap] {
-            for g_idx in 0..first_gap {
-                superposition[g_idx].actually_could_be(BACKGROUND);
+            for cell in &mut superposition[..first_gap] {
+                cell.actually_could_be(BACKGROUND);
             }
             break; // Only need to record the longest possible gap
         }
@@ -1032,8 +971,8 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
 
     let mut affected_cells = vec![];
 
-    for i in 0..lane.len() {
-        learn_cell_intersect(superposition[i], lane, i, &mut affected_cells)?;
+    for (i, possible) in superposition.iter().enumerate() {
+        learn_cell_intersect(*possible, lane, i, &mut affected_cells)?;
     }
 
     Ok(ScrubReport { affected_cells })
@@ -1056,28 +995,10 @@ pub fn filter_report_by_color(
     report.affected_cells = new_affected_cells;
 }
 
-macro_rules! nc {
-    ($color:expr, $count:expr) => {
-        crate::puzzle::Nono {
-            color: $color.unwrap_color(),
-            count: $count,
-        }
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::puzzle::{Nono, Triano};
-
-    // Uses `Cell` everywhere, even in the clues, for simplicity, even though clues have to be one
-    // specific_color
-    fn nc(color: Cell, count: u16) -> Nono {
-        Nono {
-            color: color.unwrap_color(),
-            count,
-        }
-    }
 
     fn parse_color(c: char) -> Color {
         match c {
@@ -1354,7 +1275,7 @@ mod tests {
     macro_rules! heur {
     ([$($color:expr, $count:expr);*] $($state:expr),*) => {
         scrub_heuristic(
-            &vec![ $( crate::puzzle::Nono { color: $color.unwrap_color(), count: $count} ),* ],
+            &[ $( crate::puzzle::Nono { color: $color.unwrap_color(), count: $count} ),* ],
             &[ $($state),* ])
     };
 }
