@@ -7,8 +7,8 @@ use crate::{
     geometry::{GridKind, LaneMap},
     gui,
     line_solve::{
-        Cell, ModeMap, ScrubReport, SolveMode, exhaust_line, scrub_heuristic, skim_heuristic,
-        skim_line,
+        Cell, ClueSummary, ModeMap, ScrubReport, SolveMode, exhaust_line, score_lane,
+        scrub_heuristic, skim_heuristic, skim_line,
     },
     puzzle::{
         BACKGROUND, Clue, Color, ColorInfo, DynSolution, PartialSolution, Puzzle, Solution,
@@ -65,6 +65,8 @@ impl PerModeLaneState {
 #[derive(Clone)]
 pub struct LaneState<'a, C: Clue> {
     clues: &'a [C], // just convenience, since `lane` suffices to find it again
+    /// The clue-only half of this lane's scores; storing it saves some time
+    clue_summary: ClueSummary,
     /// Index into `LaneMap::lanes()`.
     lane: usize,
     family: usize,
@@ -99,6 +101,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
     ) -> LaneState<'a, C> {
         let mut res = LaneState {
             clues,
+            clue_summary: ClueSummary::new(clues),
             lane,
             family: lanes.lane(lane).family,
             index_in_family,
@@ -116,8 +119,8 @@ impl<'a, C: Clue> LaneState<'a, C> {
         scratch: &mut Vec<Cell>,
     ) {
         gather_into(lanes, self.lane, grid, scratch);
-        let lane: &[Cell] = scratch;
-        if lane.iter().all(|cell| cell.is_known()) {
+        let scores = score_lane(&self.clue_summary, scratch);
+        if scores.all_known {
             for mode in SolveMode::all() {
                 self.per_mode[*mode].score = std::i32::MIN;
             }
@@ -130,8 +133,8 @@ impl<'a, C: Clue> LaneState<'a, C> {
                 s.processed_score = s.score;
             }
             s.score = match mode {
-                SolveMode::Scrub => scrub_heuristic(self.clues, lane),
-                SolveMode::Skim => skim_heuristic(self.clues, lane),
+                SolveMode::Scrub => scores.scrub,
+                SolveMode::Skim => scores.skim,
             };
         }
     }

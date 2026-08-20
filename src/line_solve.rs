@@ -479,8 +479,18 @@ pub fn skim_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Resu
             possible_colors.actually_could_be(c.color_at(i));
         }
     }
-    for i in 0..lane.len() {
-        learn_cell_intersect(possible_colors, lane, i, &mut affected)?;
+    // Optimization: check whether `learn_cell_intersect` would do anything in the first place.
+    let mut lane_can_be = 0_u32;
+    let mut any_impossible = false;
+    for cell in lane.iter() {
+        lane_can_be |= cell.raw();
+        any_impossible |= cell.raw() & possible_colors.raw() == 0;
+    }
+    // Only allow the colors that are possible for the clue.
+    if any_impossible || lane_can_be & !possible_colors.raw() != 0 {
+        for i in 0..lane.len() {
+            learn_cell_intersect(possible_colors, lane, i, &mut affected)?;
+        }
     }
 
     // Now slam the clues back and forth!
@@ -631,37 +641,7 @@ pub fn settle_line<C: Clue + Copy>(clues: &[C], lane: &mut [Cell]) -> anyhow::Re
 }
 
 pub fn skim_heuristic<C: Clue>(clues: &[C], lane: &[Cell]) -> i32 {
-    if clues.is_empty() {
-        return 1000; // Can solve it right away!
-    }
-    let mut longest_foregroundable_span = 0;
-    let mut cur_foregroundable_span = 0;
-
-    for cell in lane {
-        if !cell.is_known_to_be(BACKGROUND) {
-            cur_foregroundable_span += 1;
-            longest_foregroundable_span =
-                std::cmp::max(cur_foregroundable_span, longest_foregroundable_span);
-        } else {
-            cur_foregroundable_span = 0;
-        }
-    }
-
-    let total_clue_length = clues.iter().map(|c| c.len() as u16).sum::<u16>();
-
-    let longest_clue = clues.iter().map(|c| c.len() as u16).max().unwrap();
-
-    let edge_bonus = if !lane.first().unwrap().is_known_to_be(BACKGROUND) {
-        2
-    } else {
-        0
-    } + if !lane.last().unwrap().is_known_to_be(BACKGROUND) {
-        2
-    } else {
-        0
-    };
-
-    (total_clue_length + longest_clue) as i32 - longest_foregroundable_span + edge_bonus
+    score_lane(&ClueSummary::new(clues), lane).skim
 }
 
 // This is the old "scrub"; we don't use it anymore
@@ -699,42 +679,83 @@ pub fn scrub_line<C: Clue + Clone + Copy>(
 }
 
 pub fn scrub_heuristic<C: Clue>(clues: &[C], lane: &[Cell]) -> i32 {
-    let mut foreground_cells: i32 = 0;
-    // If `space_taken == lane.len()`, the line is immediately solvable with no other knowledge.
-    let mut space_taken: i32 = 0;
-    let mut longest_clue: i32 = 0;
-    let mut last_clue: Option<C> = None;
-    for c in clues {
-        foreground_cells += c.len() as i32;
-        space_taken += c.len() as i32;
-        if let Some(last_clue) = last_clue {
-            if last_clue.must_be_separated_from(c) {
-                // We need to leave a space between these clues.
-                space_taken += 1;
+    score_lane(&ClueSummary::new(clues), lane).scrub
+}
+
+/// Everything the two heuristics need from a lane's *clues*, saved for performance reasons.
+#[derive(Clone, Copy, Debug)]
+pub struct ClueSummary {
+    /// Total foreground cells the clues account for.
+    foreground_cells: i32,
+    /// As `foreground_cells`, plus the separators that adjacent same-color clues force. If this
+    /// equals the lane length, the line is immediately solvable with no other knowledge.
+    space_taken: i32,
+    longest_clue: i32,
+    count: i32,
+}
+
+impl ClueSummary {
+    pub fn new<C: Clue>(clues: &[C]) -> ClueSummary {
+        let mut foreground_cells: i32 = 0;
+        let mut space_taken: i32 = 0;
+        let mut longest_clue: i32 = 0;
+        let mut last_clue: Option<C> = None;
+        for c in clues {
+            foreground_cells += c.len() as i32;
+            space_taken += c.len() as i32;
+            if let Some(last_clue) = last_clue {
+                if last_clue.must_be_separated_from(c) {
+                    // We need to leave a space between these clues.
+                    space_taken += 1;
+                }
             }
+
+            longest_clue = std::cmp::max(longest_clue, c.len() as i32);
+            last_clue = Some(*c);
         }
 
-        longest_clue = std::cmp::max(longest_clue, c.len() as i32);
-        last_clue = Some(*c);
+        ClueSummary {
+            foreground_cells,
+            space_taken,
+            longest_clue,
+            count: clues.len() as i32,
+        }
     }
-    let longest_clue = longest_clue;
-    let space_taken = space_taken;
+}
 
-    let known_background_cells = lane
-        .iter()
-        .filter(|cell| cell.is_known_to_be(BACKGROUND))
-        .count() as i32;
+/// What scoring a lane produces. Both heuristics and the "is this line finished?" test want
+/// different tallies of the same cells, so one walk answers all three.
+#[derive(Clone, Copy, Debug)]
+pub struct LaneScores {
+    pub skim: i32,
+    pub scrub: i32,
+    pub all_known: bool,
+}
 
-    let unknown_cells = lane.iter().filter(|cell| !cell.is_known()).count() as i32;
-
-    let known_foreground_cells = lane.len() as i32 - unknown_cells - known_background_cells;
-
-    // scrubbing colored squares back and forth is likely to show colored squares if this is high:
-    let density = space_taken - known_foreground_cells + longest_clue - clues.len() as i32;
-
+/// Score a lane for both modes at once. Every caller wants both numbers, and walking the cells
+/// is what the scoring costs, so the walk happens once.
+pub fn score_lane(summary: &ClueSummary, lane: &[Cell]) -> LaneScores {
+    let mut longest_foregroundable_span: i32 = 0;
+    let mut cur_foregroundable_span: i32 = 0;
+    let mut known_background_cells: i32 = 0;
+    let mut unknown_cells: i32 = 0;
     let mut known_foreground_chunks: i32 = 0;
     let mut in_a_foreground_chunk = false;
+
     for cell in lane {
+        if !cell.is_known_to_be(BACKGROUND) {
+            cur_foregroundable_span += 1;
+            longest_foregroundable_span =
+                std::cmp::max(cur_foregroundable_span, longest_foregroundable_span);
+        } else {
+            cur_foregroundable_span = 0;
+            known_background_cells += 1;
+        }
+
+        if !cell.is_known() {
+            unknown_cells += 1;
+        }
+
         if !cell.can_be(BACKGROUND) {
             if !in_a_foreground_chunk {
                 known_foreground_chunks += 1;
@@ -745,18 +766,47 @@ pub fn scrub_heuristic<C: Clue>(clues: &[C], lane: &[Cell]) -> i32 {
         }
     }
 
-    let unknown_background_cells = (lane.len() as i32 - foreground_cells) - known_background_cells;
+    let skim = if summary.count == 0 {
+        1000 // Can solve it right away!
+    } else {
+        let edge_bonus = if !lane.first().unwrap().is_known_to_be(BACKGROUND) {
+            2
+        } else {
+            0
+        } + if !lane.last().unwrap().is_known_to_be(BACKGROUND) {
+            2
+        } else {
+            0
+        };
+
+        (summary.foreground_cells + summary.longest_clue) - longest_foregroundable_span + edge_bonus
+    };
+
+    let known_foreground_cells = lane.len() as i32 - unknown_cells - known_background_cells;
+
+    // scrubbing colored squares back and forth is likely to show colored squares if this is high:
+    let density =
+        summary.space_taken - known_foreground_cells + summary.longest_clue - summary.count;
+
+    let unknown_background_cells =
+        (lane.len() as i32 - summary.foreground_cells) - known_background_cells;
 
     // Matching contiguous foreground cells to clues is likely to show background squares if this
     // is high:
     // > 0 is very good, 0 is still good, -1 is alright, -2 is probably not worth looking at.
     let excess_chunks = if known_foreground_cells > 0 {
-        known_foreground_chunks - clues.len() as i32
+        known_foreground_chunks - summary.count
     } else {
         -2
     };
 
-    density + std::cmp::max(0, unknown_background_cells * (excess_chunks + 2) / 2)
+    let scrub = density + std::cmp::max(0, unknown_background_cells * (excess_chunks + 2) / 2);
+
+    LaneScores {
+        skim,
+        scrub,
+        all_known: unknown_cells == 0,
+    }
 }
 
 // This is the new thing we call "scrub" (TODO: make names consistent!)
@@ -795,36 +845,84 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
     let gap_stride = total_slack + 1;
     let mut reachable = vec![false; gap_stride * cs.len()];
 
-    // Flood-fill left-reachability:
+    // Both flood fills keep asking "does this clue fit here?" repeately, so figure that out for
+    // all positions here.
+    // `clue_fits[clue_idx * gap_stride + gap]` is whether clue `clue_idx` can occupy the cells
+    // that `gap` places it on.
+    let mut clue_fits = vec![false; gap_stride * cs.len()];
     let mut clue_len_so_far = 0;
-    for clue_idx in 0..cs.len() {
-        let clue = &cs[clue_idx];
-        // Look at all of the places the previous clue might've been located
-        for pfx_gap in 0..=total_slack {
-            if clue_idx == 0 {
-                if pfx_gap != 0 {
-                    continue; // The left edge is always at 0.
-                }
-            } else if !reachable[(clue_idx - 1) * gap_stride + pfx_gap] {
-                continue; // Previous clue can't be there
-            }
-            for new_gap in pfx_gap..=total_slack {
-                // Try to place the gap before this clue and the clue color itself
-                let gap_placeable = (pfx_gap..new_gap)
-                    .all(|g_idx| lane[clue_len_so_far + g_idx].can_be(BACKGROUND));
-                let color_placeable = (0..clue.len()).all(|clue_cell_idx| {
-                    lane[clue_len_so_far + new_gap + clue_cell_idx]
-                        .can_be(clue.color_at(clue_cell_idx))
-                });
-                let consec_placeable = clue_idx == 0
-                    || !cs[clue_idx - 1].must_be_separated_from(&cs[clue_idx])
-                    || new_gap > pfx_gap;
-                if gap_placeable && color_placeable && consec_placeable {
-                    reachable[clue_idx * gap_stride + new_gap] = true;
-                }
-            }
+    for (clue_idx, clue) in cs.iter().enumerate() {
+        for gap in 0..=total_slack {
+            clue_fits[clue_idx * gap_stride + gap] = (0..clue.len()).all(|clue_cell_idx| {
+                lane[clue_len_so_far + gap + clue_cell_idx].can_be(clue.color_at(clue_cell_idx))
+            });
         }
         clue_len_so_far += clue.len();
+    }
+
+    // Flood-fill left-reachability.
+    //
+    // Rather than testing every (previous gap, new gap) pair, note that the previous gaps that
+    // can feed a given `new_gap` are exactly those with no un-backgroundable cell in between —
+    // a contiguous range whose ends both only move right as `new_gap` grows. So sweep `new_gap`
+    // upwards and keep a running count of how many gaps in that window the previous clue can
+    // actually reach; the window only ever needs one visit per gap, not one per pair.
+    let mut clue_len_so_far = 0;
+    for clue_idx in 0..cs.len() {
+        let needs_gap = clue_idx > 0 && cs[clue_idx - 1].must_be_separated_from(&cs[clue_idx]);
+
+        // HACK: get disjoint borrows for `this_row` (mutably) and `prev_row` -> `prev_reachable`
+        let (earlier_rows, rest) = reachable.split_at_mut(clue_idx * gap_stride);
+        let this_row = &mut rest[..gap_stride];
+        let prev_row = clue_idx
+            .checked_sub(1)  // First clue has not predecessor...
+            .map(|prev| &earlier_rows[prev * gap_stride..][..gap_stride]);
+        let prev_reachable /* Fn(usize) -> usize */ = |gap: usize| match prev_row {
+            Some(row) => row[gap],
+            None => gap == 0, // ...the left edge stands in for it
+        };
+
+        // `reachable_in_window` counts the reachable gaps in `lo..added`, and `added` never runs
+        // past the largest previous gap that the current `new_gap` would accept.
+        let mut lo: usize = 0;
+        let mut added: usize = 0;
+        let mut reachable_in_window: usize = 0;
+
+        for new_gap in 0..=total_slack {
+            // The cell just short of `new_gap` has become part of the gap...
+            if new_gap > 0 && !lane[clue_len_so_far + new_gap - 1].can_be(BACKGROUND) {
+                // ...and it can't be background, so
+                while lo < new_gap {
+                    // every previous gap at or below it is ruled out from here on
+                    if lo < added && prev_reachable(lo) {
+                        reachable_in_window -= 1;
+                    }
+                    lo += 1;
+                }
+                added = added.max(lo);
+            }
+
+            // A clue that must be separated from its predecessor can't start where the
+            // predecessor's gap left off, so it gives up one gap of reach.
+            let highest_pfx_gap : Option<usize> = if needs_gap {
+                new_gap.checked_sub(1)
+            } else {
+                Some(new_gap)
+            };
+            if let Some(highest_pfx_gap) = highest_pfx_gap {
+                while added <= highest_pfx_gap {
+                    if prev_reachable(added) {
+                        reachable_in_window += 1;
+                    }
+                    added += 1;
+                }
+            }
+
+            if reachable_in_window > 0 && clue_fits[clue_idx * gap_stride + new_gap] {
+                this_row[new_gap] = true;
+            }
+        }
+        clue_len_so_far += cs[clue_idx].len();
     }
 
     let mut superposition = vec![Cell::new_impossible(); lane.len()];
@@ -833,13 +931,32 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
     let mut both_reachable = vec![false; gap_stride];
 
     // Flood-fill right-reachability, intersected with existing reachability:
-    // `clue_len_so_far` is correct; now we'll subtract it back to 0.
+    // `clue_len_so_far` made it to the high-water-mark; now we'll subtract it back to 0.
     for clue_idx in (0..cs.len()).rev() {
         let clue = &cs[clue_idx];
+        let needs_gap =
+            clue_idx + 1 < cs.len() && cs[clue_idx].must_be_separated_from(&cs[clue_idx + 1]);
 
         both_reachable.fill(false);
 
+        // The mirror of the left pass's sweep, plus the background cells to record. `lo` is the
+        // leftmost gap this clue could sit at while still leaving every cell between it and
+        // `gap_sfx` background, and it only moves right as `gap_sfx` grows — as do `first_ok`
+        // and `gap_sfx` itself. Because all three ends only move right, both of the ranges
+        // written below can pick up where the last one stopped, which is what keeps a clue's
+        // whole sweep linear in the slack instead of quadratic.
+        let mut lo: usize = 0;
+        // The leftmost gap at or after `lo` where this clue both fits and is reachable from the
+        // left; the leftmost start any surviving arrangement can have, in other words.
+        let mut first_ok: usize = 0;
+        let mut marked_up_to: usize = 0;
+        let mut painted_up_to: usize = 0;
+
         for gap_sfx in 0..=total_slack {
+            if gap_sfx > 0 && !lane[clue_len_so_far + gap_sfx - 1].can_be(BACKGROUND) {
+                lo = gap_sfx;
+            }
+
             if clue_idx == cs.len() - 1 {
                 if gap_sfx != total_slack {
                     continue; // The right edge is always after all the background squares.
@@ -847,28 +964,44 @@ pub fn exhaust_line<C: Clue + Clone + Copy>(
             } else if !reachable[(clue_idx + 1) * gap_stride + gap_sfx] {
                 continue; // Clue to the right couldn't be there
             }
-            for new_gap in 0..=gap_sfx {
-                if !reachable[clue_idx * gap_stride + new_gap] {
-                    continue; // Spot not reachable from the LHS, so not worth reaching for.
-                }
-                // Try to place the clue color and the gap AFTER the clue.
-                let clue_placeable = (0..clue.len()).all(|clue_cell_idx| {
-                    lane[clue_len_so_far - clue.len() + new_gap + clue_cell_idx]
-                        .can_be(clue.color_at(clue_cell_idx))
-                });
-                let gap_placeable = (new_gap..gap_sfx)
-                    .all(|g_idx| lane[clue_len_so_far + g_idx].can_be(BACKGROUND));
-                let consec_placeable = clue_idx == cs.len() - 1
-                    || !cs[clue_idx].must_be_separated_from(&cs[clue_idx + 1])
-                    || new_gap < gap_sfx;
 
-                if gap_placeable && clue_placeable && consec_placeable {
-                    both_reachable[new_gap as usize] = true;
+            // As on the left, a clue that must be separated from its neighbour gives up a gap.
+            let Some(highest_gap) = (if needs_gap {
+                gap_sfx.checked_sub(1)
+            } else {
+                Some(gap_sfx)
+            }) else {
+                continue;
+            };
+            if highest_gap < lo {
+                continue;
+            }
 
-                    for g_idx in new_gap..gap_sfx {
-                        superposition[clue_len_so_far + g_idx].actually_could_be(BACKGROUND);
-                    }
+            // Every gap in `lo..=highest_gap` that the left pass also reached is actually reachable!
+            for gap in marked_up_to.max(lo)..=highest_gap {
+                if reachable[clue_idx * gap_stride + gap] && clue_fits[clue_idx * gap_stride + gap]
+                {
+                    both_reachable[gap] = true;
                 }
+            }
+            marked_up_to = marked_up_to.max(highest_gap + 1);
+
+            // Advancing over gaps this clue can't use is always safe: they can't come back.
+            first_ok = first_ok.max(lo);
+            while first_ok <= highest_gap
+                && !(reachable[clue_idx * gap_stride + first_ok]
+                    && clue_fits[clue_idx * gap_stride + first_ok])
+            {
+                first_ok += 1;
+            }
+
+            // Cells between the clue's leftmost real spot and `gap_sfx` are ones some
+            // arrangement leaves as background.
+            if first_ok <= highest_gap {
+                for gap in painted_up_to.max(first_ok)..gap_sfx {
+                    superposition[clue_len_so_far + gap].actually_could_be(BACKGROUND);
+                }
+                painted_up_to = painted_up_to.max(gap_sfx);
             }
         }
         for new_gap in 0..=total_slack {
