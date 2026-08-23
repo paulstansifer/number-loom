@@ -578,8 +578,7 @@ pub(crate) fn draw_string_in_rhombus(
 ) {
     fill_polygon(painter, points, rgb);
     const FONT_SCALE: f32 = 0.5;
-    let text_height = scale * FONT_SCALE;
-    let center = polygon_centroid(points) - Vec2::new(0.0, text_height / 6.0);
+    let center = polygon_centroid(points);
     draw_string_at(ui, painter, center, clue_txt, scale, rgb, FONT_SCALE);
 }
 
