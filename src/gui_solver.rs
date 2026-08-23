@@ -362,8 +362,24 @@ impl SolveGui {
         });
     }
 
+    /// The block of one color under the pointer, for the gutters to report. `None` when the
+    /// pointer isn't over the picture.
+    ///
+    /// This lags the pointer by a frame — `hovered_cell` is set by the canvas, which is drawn
+    /// after the gutters — but so does the sidebar's rosette, and egui repaints on every pointer
+    /// move anyway.
+    fn hover_blocks(&self) -> Option<crate::gui::HoverBlocks> {
+        let cell = self.hovered_cell?;
+        let picture = self.canvas.document.try_solution()?;
+        Some(crate::gui::HoverBlocks {
+            by_family: picture.blocks_at_cell(cell),
+            rgb: picture.palette()[&picture.cells()[cell as usize]].rgb,
+        })
+    }
+
     pub fn body(&mut self, ui: &mut egui::Ui, scale: f32) {
         let is_stale = !self.line_analysis.fresh(self.canvas.version);
+        let hover = self.hover_blocks();
 
         // A hexagon's three clue blocks run along the lane directions, so they can't be laid out
         // as panels beside the grid; they share the picture's painter instead.
@@ -372,6 +388,7 @@ impl SolveGui {
                 puzzle: &self.clues,
                 analysis: self.line_analysis.val.as_ref(),
                 is_stale,
+                hover,
             };
             self.hovered_cell =
                 self.canvas
@@ -379,31 +396,59 @@ impl SolveGui {
             return;
         }
 
-        ui.vertical(|ui| {
-            egui::Grid::new("solve_grid").show(ui, |ui| {
-                ui.label(""); // Top-left is empty
-                let line_analysis = self.line_analysis.val.as_ref();
-                draw_dyn_clues(
-                    ui,
-                    &self.clues,
-                    scale,
-                    Orientation::Vertical,
-                    line_analysis.and_then(|la| la.get(1)).map(|v| &v[..]),
-                    is_stale,
-                );
-                ui.end_row();
+        // The square gutters number their lines within a clue family, while `hover` names whole
+        // lanes; a family's first lane is the offset between the two.
+        let hint = |family: usize| -> Option<BlockHint> {
+            let hover = hover.as_ref()?;
+            let &(lane, len) = hover.by_family.get(family)?;
+            let start = self
+                .canvas
+                .document
+                .try_solution()?
+                .lane_map()
+                .family(family)
+                .start;
+            Some(BlockHint {
+                line: lane - start,
+                len,
+                rgb: hover.rgb,
+            })
+        };
+        // Family 0 is the rows, drawn by the horizontal gutter; family 1 is the columns.
+        let (row_hint, col_hint) = (hint(0), hint(1));
 
-                draw_dyn_clues(
-                    ui,
-                    &self.clues,
-                    scale,
-                    Orientation::Horizontal,
-                    line_analysis.and_then(|la| la.get(0)).map(|v| &v[..]),
-                    is_stale,
-                );
-                self.hovered_cell = self.canvas.canvas(ui, scale, self.render_style);
-                ui.end_row();
-            });
+        ui.vertical(|ui| {
+            // No spacing between the cells: each clue gutter reserves its own gap against the
+            // grid (`CLUE_PAD`, in cell units), and egui's default few pixels on top of that
+            // would be a zoom-independent gap that swamps the gutter when zoomed out.
+            egui::Grid::new("solve_grid")
+                .spacing(Vec2::ZERO)
+                .show(ui, |ui| {
+                    ui.label(""); // Top-left is empty
+                    let line_analysis = self.line_analysis.val.as_ref();
+                    draw_dyn_clues(
+                        ui,
+                        &self.clues,
+                        scale,
+                        Orientation::Vertical,
+                        line_analysis.and_then(|la| la.get(1)).map(|v| &v[..]),
+                        is_stale,
+                        col_hint,
+                    );
+                    ui.end_row();
+
+                    draw_dyn_clues(
+                        ui,
+                        &self.clues,
+                        scale,
+                        Orientation::Horizontal,
+                        line_analysis.and_then(|la| la.get(0)).map(|v| &v[..]),
+                        is_stale,
+                        row_hint,
+                    );
+                    self.hovered_cell = self.canvas.canvas(ui, scale, self.render_style);
+                    ui.end_row();
+                });
         });
     }
 }
@@ -412,6 +457,16 @@ impl SolveGui {
 pub enum Orientation {
     Horizontal,
     Vertical,
+}
+
+/// What one square gutter shows in place of an analysis mark: the length of the block under the
+/// pointer, on the one line of that gutter's family the pointer is on.
+#[derive(Clone, Copy)]
+pub struct BlockHint {
+    /// Which line of the family, indexed like the gutter's own clue lists.
+    pub line: usize,
+    pub len: usize,
+    pub rgb: (u8, u8, u8),
 }
 
 use crate::line_solve::SolveMode;
@@ -425,7 +480,7 @@ pub(crate) fn draw_analysis_mark(
     status: &LineStatus,
     is_stale: bool,
 ) {
-    let radius = scale * 0.2;
+    let radius = scale * crate::layout::ANALYSIS_MARK_RADIUS;
     let color = if is_stale {
         Color32::from_gray(192)
     } else {
@@ -450,7 +505,7 @@ pub(crate) fn draw_analysis_mark(
             ));
         }
         Err(_) => {
-            let stroke = egui::Stroke::new(2.0, Color32::RED);
+            let stroke = egui::Stroke::new((radius * 0.4).max(1.0), Color32::RED);
             painter.line_segment(
                 [
                     center + Vec2::new(-radius, -radius),
@@ -470,26 +525,15 @@ pub(crate) fn draw_analysis_mark(
     }
 }
 
-fn draw_string_at(
-    ui: &egui::Ui,
-    painter: &egui::Painter,
-    center: Pos2,
-    clue_txt: &str,
-    scale: f32,
-    (r, g, b): (u8, u8, u8),
-    font_scale: f32,
-) {
+/// The font to write a clue in: `scale * font_scale` tall, but squeezed narrower as the number
+/// gets longer, so a three-digit clue takes up no more width than a one-digit one.
+fn clue_font(ui: &egui::Ui, clue_txt: &str, scale: f32, font_scale: f32) -> egui::FontId {
     let base_font = egui::FontId::monospace(scale * font_scale);
     let text_width = |fonts: &Fonts, t: &str| {
         fonts
             .layout_no_wrap(t.to_string(), base_font.clone(), Color32::BLACK)
             .rect
             .width()
-    };
-    let text_color = if r as u16 + g as u16 + b as u16 > 384 {
-        Color32::BLACK
-    } else {
-        Color32::WHITE
     };
 
     let (width_2, width_3) = ui.fonts(|f| {
@@ -505,15 +549,85 @@ fn draw_string_at(
         egui::FontId::monospace(scale * font_scale / width_3),
     ];
 
-    let clue_font = fonts_by_digit[clue_txt.len().min(fonts_by_digit.len() - 1)].clone();
+    fonts_by_digit[clue_txt.len().min(fonts_by_digit.len() - 1)].clone()
+}
+
+fn draw_string_at(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    center: Pos2,
+    clue_txt: &str,
+    scale: f32,
+    (r, g, b): (u8, u8, u8),
+    font_scale: f32,
+) {
+    let text_color = if r as u16 + g as u16 + b as u16 > 384 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
 
     painter.text(
         center,
         egui::Align2::CENTER_CENTER,
         clue_txt,
-        clue_font,
+        clue_font(ui, clue_txt, scale, font_scale),
         text_color,
     );
+}
+
+/// How light a color looks, from 0.0 (black) to 1.0 (white).
+fn luminance(c: Color32) -> f32 {
+    (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0
+}
+
+/// A number written straight onto the canvas in its own color, with no clue box behind it: the
+/// gutters' hover readout.
+///
+/// A pale color (or, in a dark theme, a dark one) would be all but invisible against the plain
+/// background, so a number that doesn't stand out on its own gets an outline in the opposite
+/// extreme — the same text stamped underneath, offset in each of the eight directions.
+pub(crate) fn draw_bare_number(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    center: Pos2,
+    txt: &str,
+    scale: f32,
+    (r, g, b): (u8, u8, u8),
+) {
+    /// The size of a square clue's own label — the indicator strip is a clue box wide, so a
+    /// number fills it the same way a clue fills its box.
+    const FONT_SCALE: f32 = 0.7;
+    /// Below this much difference in lightness, the number needs an outline to be legible.
+    const MIN_CONTRAST: f32 = 0.4;
+
+    let font = clue_font(ui, txt, scale, FONT_SCALE);
+    let fill = Color32::from_rgb(r, g, b);
+
+    if (luminance(fill) - luminance(ui.visuals().panel_fill)).abs() < MIN_CONTRAST {
+        let outline = if luminance(fill) > 0.5 {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
+        let offset = (scale * 0.05).max(1.0);
+        for dx in [-1.0, 0.0, 1.0] {
+            for dy in [-1.0, 0.0, 1.0] {
+                if (dx, dy) == (0.0, 0.0) {
+                    continue;
+                }
+                painter.text(
+                    center + Vec2::new(dx * offset, dy * offset),
+                    egui::Align2::CENTER_CENTER,
+                    txt,
+                    font.clone(),
+                    outline,
+                );
+            }
+        }
+    }
+
+    painter.text(center, egui::Align2::CENTER_CENTER, txt, font, fill);
 }
 
 pub(crate) fn draw_string_in_box(
@@ -589,8 +703,12 @@ fn draw_clues<C: crate::puzzle::Clue>(
     orientation: Orientation,
     line_analysis: Option<&[LineStatus]>,
     is_stale: bool,
+    hover: Option<BlockHint>,
 ) {
-    let puzz_padding = 10.0;
+    // The strip between the grid and the first clue box, where the per-line analysis mark goes.
+    // It's in cell units like everything else here, so it holds its proportions at any zoom (and
+    // stays wide enough for a bare number to be drawn there instead of the mark).
+    let puzz_padding = scale * crate::layout::CLUE_PAD;
     let between_clues = scale * 0.5;
     let box_side = scale * 0.9;
     let box_margin = (scale - box_side) / 2.0;
@@ -619,18 +737,27 @@ fn draw_clues<C: crate::puzzle::Clue>(
     );
 
     for i in 0..clues_vec.len() {
-        if let Some(analysis) = line_analysis {
-            let center = match orientation {
-                Orientation::Horizontal => Pos2::new(
-                    response.rect.max.x - puzz_padding / 2.0,
-                    response.rect.min.y + (i as f32 + 0.5) * scale,
-                ),
-                Orientation::Vertical => Pos2::new(
-                    response.rect.min.x + (i as f32 + 0.5) * scale,
-                    response.rect.max.y - puzz_padding / 2.0,
-                ),
-            };
-            draw_analysis_mark(&painter, center, scale, &analysis[i], is_stale);
+        // The indicator strip against the grid: the hovered line's block length if there is one,
+        // and otherwise the analysis mark the number is deliberately covering up.
+        let center = match orientation {
+            Orientation::Horizontal => Pos2::new(
+                response.rect.max.x - puzz_padding / 2.0,
+                response.rect.min.y + (i as f32 + 0.5) * scale,
+            ),
+            Orientation::Vertical => Pos2::new(
+                response.rect.min.x + (i as f32 + 0.5) * scale,
+                response.rect.max.y - puzz_padding / 2.0,
+            ),
+        };
+        match hover.filter(|h| h.line == i) {
+            Some(h) => {
+                draw_bare_number(ui, &painter, center, &h.len.to_string(), scale, h.rgb);
+            }
+            None => {
+                if let Some(analysis) = line_analysis {
+                    draw_analysis_mark(&painter, center, scale, &analysis[i], is_stale);
+                }
+            }
         }
 
         let line_clues = &clues_vec[i];
@@ -699,15 +826,32 @@ pub fn draw_dyn_clues(
     orientation: Orientation,
     line_analysis: Option<&[LineStatus]>,
     is_stale: bool,
+    hover: Option<BlockHint>,
 ) {
     // Clue gutters are still laid out as two axis-aligned rectangles, so only square puzzles
     // can be drawn. `Geometry::gutters` has the per-lane anchors a six-way version needs.
     match puzzle {
         DynPuzzle::SquareNono(puzzle) => {
-            draw_clues(ui, puzzle, scale, orientation, line_analysis, is_stale);
+            draw_clues(
+                ui,
+                puzzle,
+                scale,
+                orientation,
+                line_analysis,
+                is_stale,
+                hover,
+            );
         }
         DynPuzzle::SquareTriano(puzzle) => {
-            draw_clues(ui, puzzle, scale, orientation, line_analysis, is_stale);
+            draw_clues(
+                ui,
+                puzzle,
+                scale,
+                orientation,
+                line_analysis,
+                is_stale,
+                hover,
+            );
         }
         DynPuzzle::TriNono(_) => {}
     }

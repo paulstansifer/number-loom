@@ -757,6 +757,21 @@ impl DynSolution {
         })
     }
 
+    /// The whole contiguous same-color block through a cell, as `(lane, length)` per clue family:
+    /// the two arms `runs_at_cell` reports, plus the cell itself. `memberships` and `runs` are
+    /// both in family order, so the two line up.
+    pub fn blocks_at_cell(&self, cell: u32) -> Vec<(usize, usize)> {
+        with_solution!(self, |s| {
+            let target = s.cells[cell as usize];
+            s.geometry
+                .memberships(cell)
+                .iter()
+                .zip(s.geometry.runs(cell, |c| s.cells[c as usize] == target))
+                .map(|(m, (back, fwd))| (m.lane as usize, back + fwd + 1))
+                .collect()
+        })
+    }
+
     /// The square picture, or `None` for a triddler.
     pub fn as_square(&self) -> Option<&Solution<Square>> {
         match self {
@@ -1210,6 +1225,43 @@ impl Document {
             author: "".to_string(),
             id: "".to_string(),
             license: "".to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod block_tests {
+    /// The gutters' hover readout must agree with the sidebar rosette: the block through a cell
+    /// is that family's two arms plus the cell itself. It also has to name the lane it measured,
+    /// in family order, since that's how the gutters find which line to write the number beside.
+    #[test]
+    fn blocks_are_the_rosette_arms_plus_one() {
+        for path in ["examples/png/apron.png", "examples/triddler/blob.g"] {
+            let mut doc = crate::import::load_path(&path.into(), None).unwrap();
+            let picture = doc.solution_mut();
+
+            for cell in 0..picture.cells().len() as u32 {
+                let runs = picture.runs_at_cell(cell);
+                let blocks = picture.blocks_at_cell(cell);
+                assert_eq!(runs.len(), blocks.len(), "{path}: one entry per family");
+
+                for (family, ((back, fwd), (lane, len))) in runs.iter().zip(&blocks).enumerate() {
+                    assert_eq!(*len, back + fwd + 1, "{path}: cell {cell}, family {family}");
+                    let lane = picture.lane_map().lane(*lane);
+                    assert_eq!(
+                        lane.family, family,
+                        "{path}: cell {cell} lanes out of order"
+                    );
+                    assert!(
+                        lane.cells.contains(&cell),
+                        "{path}: cell {cell} isn't on the lane its block was measured along"
+                    );
+                    assert!(
+                        *len <= lane.cells.len(),
+                        "{path}: block longer than its lane"
+                    );
+                }
+            }
         }
     }
 }

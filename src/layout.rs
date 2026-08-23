@@ -227,10 +227,17 @@ pub const CLUE_BOX_SHORT: f32 = 0.95;
 /// The gap between one clue box and the next along a gutter. Chosen so that consecutive boxes on
 /// a diagonal gutter clear each other too.
 pub const CLUE_GAP: f32 = 0.18;
-/// Breathing room between the grid and the nearest clue. Wide enough for the solve view's
-/// per-line analysis mark (skim dot, scrub diamond, error cross — radius `0.2 * scale`, so up to
-/// 0.4 units across) to sit at its midpoint without touching the grid or the first clue box.
-pub const CLUE_PAD: f32 = 0.6;
+/// Breathing room between the grid and the nearest clue: the strip the solve view's per-line
+/// indicator lives in. As wide as a clue box, so it can hold a bare (box-less) number the size of
+/// a clue's own label; that also leaves the analysis mark (skim dot, scrub diamond, error cross —
+/// radius `ANALYSIS_MARK_RADIUS`) room to sit at the strip's midpoint without touching either the
+/// grid or the first clue box.
+pub const CLUE_PAD: f32 = 0.9;
+
+/// The radius of the solve view's per-line analysis mark, in abstract units. Must stay under
+/// `CLUE_PAD / 2.0` so the mark clears both the grid and the clues.
+pub const ANALYSIS_MARK_RADIUS: f32 = 0.2;
+const _: () = assert!(2.0 * ANALYSIS_MARK_RADIUS < CLUE_PAD);
 
 /// Unit vectors along each triangular family's own lane direction: rows, `/` lines, `\` lines.
 pub(crate) const TRI_LANE_DIR: [Vec2; 3] = [

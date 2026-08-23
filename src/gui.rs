@@ -930,6 +930,27 @@ pub fn cells_in_lasso(picture: &crate::puzzle::DynSolution, path: &[Point]) -> V
     mask
 }
 
+/// The contiguous block of one color under the pointer, as the clue gutters need it: which lane
+/// it runs along in each clue family, and how long it is there. The same figure the sidebar
+/// rosette adds up — its two arms, plus the hovered cell itself.
+#[derive(Clone, PartialEq, Debug)]
+pub struct HoverBlocks {
+    /// `(lane, length)` per clue family, as `DynSolution::blocks_at_cell` reports it.
+    pub by_family: Vec<(usize, usize)>,
+    /// The hovered cell's color: what the numbers are drawn in.
+    pub rgb: (u8, u8, u8),
+}
+
+impl HoverBlocks {
+    /// How long the hovered block is along `lane`, if it runs along that lane at all.
+    pub fn on_lane(&self, lane: usize) -> Option<usize> {
+        self.by_family
+            .iter()
+            .find(|(l, _)| *l == lane)
+            .map(|(_, len)| *len)
+    }
+}
+
 /// What a canvas needs in order to draw clue gutters around the picture. Only the solve view
 /// supplies this; the editor draws the picture alone.
 pub struct ClueOverlay<'a> {
@@ -937,6 +958,8 @@ pub struct ClueOverlay<'a> {
     /// One `Vec<LineStatus>` per clue family, in family order.
     pub analysis: Option<&'a Vec<Vec<crate::grid_solve::LineStatus>>>,
     pub is_stale: bool,
+    /// The hovered cell's block lengths, shown in place of the analysis marks on its own lanes.
+    pub hover: Option<HoverBlocks>,
 }
 
 impl CanvasGui {
@@ -1261,23 +1284,43 @@ impl CanvasGui {
                         );
                     }
 
-                    // The analysis mark sits between the clues and the grid.
-                    if let Some(analysis) = overlay.analysis {
-                        let family = lane_families[g.lane];
-                        let index = g.lane - family_starts[family];
-                        if let Some(status) = analysis.get(family).and_then(|f| f.get(index)) {
-                            let at = to_screen
-                                * Pos2::new(
-                                    g.anchor.x + g.outward.x * (crate::layout::CLUE_PAD / 2.0),
-                                    g.anchor.y + g.outward.y * (crate::layout::CLUE_PAD / 2.0),
-                                );
-                            crate::gui_solver::draw_analysis_mark(
-                                &painter,
-                                at,
-                                scale,
-                                status,
-                                overlay.is_stale,
-                            );
+                    // The indicator strip between the clues and the grid: the hovered block's
+                    // length on the three lanes it runs along, and the analysis mark (which the
+                    // number deliberately covers up) everywhere else.
+                    let at = to_screen
+                        * Pos2::new(
+                            g.anchor.x + g.outward.x * (crate::layout::CLUE_PAD / 2.0),
+                            g.anchor.y + g.outward.y * (crate::layout::CLUE_PAD / 2.0),
+                        );
+                    let hovered = overlay
+                        .hover
+                        .as_ref()
+                        .and_then(|h| Some((h.on_lane(g.lane)?, h.rgb)));
+                    match hovered {
+                        Some((len, rgb)) => crate::gui_solver::draw_bare_number(
+                            ui,
+                            &painter,
+                            at,
+                            &len.to_string(),
+                            scale,
+                            rgb,
+                        ),
+                        None => {
+                            if let Some(analysis) = overlay.analysis {
+                                let family = lane_families[g.lane];
+                                let index = g.lane - family_starts[family];
+                                if let Some(status) =
+                                    analysis.get(family).and_then(|f| f.get(index))
+                                {
+                                    crate::gui_solver::draw_analysis_mark(
+                                        &painter,
+                                        at,
+                                        scale,
+                                        status,
+                                        overlay.is_stale,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
