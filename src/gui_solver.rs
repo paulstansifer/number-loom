@@ -5,6 +5,7 @@ use crate::{
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
+use web_time::Instant;
 
 use crate::puzzle::{Document, DynSolution};
 pub struct SolveGui {
@@ -18,6 +19,10 @@ pub struct SolveGui {
     pub render_style: RenderStyle,
     last_inferred_version: u32,
     pub hovered_cell: Option<u32>,
+    /// The solve, played back in the sidebar. Captured the first time the picture comes out
+    /// right, and frozen there: whatever the user does to the grid afterwards isn't part of the
+    /// solve they just finished.
+    pub replay: Option<Replay>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +109,7 @@ impl SolveGui {
             render_style: RenderStyle::Experimental,
             last_inferred_version: u32::MAX,
             hovered_cell: None,
+            replay: None,
         }
     }
 
@@ -142,12 +148,30 @@ impl SolveGui {
     }
 
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
+        // The first time the picture comes out right, freeze the solve for playback. Later
+        // completions (after an undo and a redo, say) reuse this one rather than recapturing.
+        if self.replay.is_none() && self.is_correctly_solved() {
+            self.replay = Some(Replay::new(&self.canvas));
+        }
+
         ui.vertical(|ui| {
             if !self.canvas.document.title.is_empty() {
                 ui.label(RichText::new(&self.canvas.document.title).strong());
             }
             if !self.canvas.document.author.is_empty() {
                 ui.label(format!("by {}", &self.canvas.document.author));
+            }
+
+            if let Some(replay) = &mut self.replay {
+                replay.show(ui, &self.canvas);
+            }
+
+            if self.is_correctly_solved() {
+                ui.colored_label(egui::Color32::DARK_GREEN, "Correctly solved");
+
+                if !self.canvas.document.description.is_empty() {
+                    ui.label(&self.canvas.document.description);
+                }
             }
 
             self.canvas.common_sidebar_items(ui, true, false);
@@ -214,12 +238,12 @@ impl SolveGui {
                             // previous cell) for the back arm, "far" for the forward arm, per
                             // `CellShape::triangle_edge_is_near`.
                             let others: Vec<usize> = (0..3).filter(|&f| f != family).collect();
-                            let edge_family = if cell_shape.triangle_edge_is_near(others[0]) == (i == 0)
-                            {
-                                others[0]
-                            } else {
-                                others[1]
-                            };
+                            let edge_family =
+                                if cell_shape.triangle_edge_is_near(others[0]) == (i == 0) {
+                                    others[0]
+                                } else {
+                                    others[1]
+                                };
                             let (ea, eb) = cell_shape.family_edge(
                                 crate::layout::Point::new(0.0, 0.0),
                                 edge_family,
@@ -337,14 +361,6 @@ impl SolveGui {
                     ui.colored_label(egui::Color32::DARK_RED, "Error detected");
                 }
             }
-            if self.is_correctly_solved() {
-                ui.colored_label(egui::Color32::DARK_GREEN, "Correctly solved");
-
-                if !self.canvas.document.description.is_empty() {
-                    ui.label(&self.canvas.document.description);
-                }
-            }
-
             ui.separator();
 
             if ui.checkbox(&mut self.infer_background, "[auto]").changed() {
@@ -450,6 +466,144 @@ impl SolveGui {
                     ui.end_row();
                 });
         });
+    }
+}
+
+/// How fast the sidebar replays a finished solve.
+const REPLAY_STEPS_PER_SECOND: f32 = 20.0;
+
+/// Pixels per cell for a replay `across` cells wide in a sidebar `available` pixels wide.
+fn replay_scale(across: f32, available: f32) -> f32 {
+    let whole = (available / across).floor();
+    if whole >= 1.0 {
+        whole
+    } else {
+        available / across  // Gotta use fractional pictures to fit at all
+    }
+}
+
+/// A finished solve, played back a step at a time.
+///
+/// The undo stack *is* the recording: it holds one entry per step, each naming the cells that
+/// step painted and the colors they had before it. So this stores no picture data of its own —
+/// just how long the solve was and when the animation started — and rebuilds each frame on
+/// demand from the stack as it stands. Frames cost a grid copy and a walk over the steps above
+/// the one being shown, which at a few frames a second is nothing.
+pub struct Replay {
+    /// How many steps the solve took, frozen when it came out right, so that whatever the user
+    /// does to the grid afterwards isn't replayed as part of it.
+    steps: usize,
+    /// When this run of the animation started.
+    started: Instant,
+    /// Where the replay was drawn, as of the last frame that drew it. `pub` for tests/gui.rs,
+    /// which needs somewhere to aim a click; see `CanvasGui::picture_rect`.
+    pub rect: Option<Rect>,
+}
+
+impl Replay {
+    fn new(canvas: &CanvasGui) -> Replay {
+        Replay {
+            steps: canvas.undo_stack.len(),
+            started: Instant::now(),
+            rect: None,
+        }
+    }
+
+    /// How far into the solve the animation has got, in steps. Uncapped, so it runs off the end
+    /// of the replay once it's finished.
+    pub fn step(&self) -> usize {
+        (self.started.elapsed().as_secs_f32() * REPLAY_STEPS_PER_SECOND) as usize
+    }
+
+    /// How many steps there are left to show: the solve's length, except that undoing back past
+    /// where it finished really does take those steps off the stack, leaving less to replay.
+    fn len(&self, canvas: &CanvasGui) -> usize {
+        self.steps.min(canvas.undo_stack.len())
+    }
+
+    /// The picture as it stood after `step` steps of the solve.
+    ///
+    /// Each undo entry holds the colors its step painted over, so starting from the picture as it
+    /// stands *now* and applying them newest-first walks backwards through the solve. Anything
+    /// the user painted after finishing gets unwound on the way past.
+    fn frame(&self, canvas: &CanvasGui, step: usize) -> Vec<Color> {
+        let mut cells = canvas.document.try_solution().unwrap().cells().to_vec();
+        for undone in canvas.undo_stack[step..].iter().rev() {
+            // Painting is the only thing that reaches the solver's undo stack: its palette editor
+            // is read-only, and every `ReplaceDocument` in the app goes to the editor's canvas.
+            if let Action::ChangeColor { changes } = undone {
+                for (cell, was) in changes {
+                    cells[*cell as usize] = *was;
+                }
+            }
+        }
+        cells
+    }
+
+    /// Draw the current frame, and start over if it's clicked.
+    ///
+    /// The canvas supplies the geometry, the palette, and — through its undo stack — the solve
+    /// itself.
+    fn show(&mut self, ui: &mut egui::Ui, canvas: &CanvasGui) {
+        let picture = canvas.document.try_solution().unwrap();
+        let extent = picture.extent();
+        let available = ui.available_width();
+        let scale = replay_scale(extent.x, available);
+
+        let (response, painter) = ui.allocate_painter(
+            // `min`, because a fractional scale is a division that can land a hair over.
+            Vec2::new((scale * extent.x).min(available), scale * extent.y),
+            egui::Sense::click(),
+        );
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        self.rect = Some(response.rect);
+        if response.clicked() {
+            self.started = Instant::now();
+        }
+
+        let len = self.len(canvas);
+        let step = self.step().min(len);
+        let running = step < len;
+
+        let to_screen = egui::emath::RectTransform::from_to(
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(extent.x, extent.y)),
+            response.rect,
+        );
+
+        let palette = picture.palette();
+        let cells = self.frame(canvas, step);
+        let mut shapes = Vec::with_capacity(cells.len());
+        for (index, color) in cells.iter().enumerate() {
+            // Unknown is gray whatever the render style is: the traditional styles leave it the
+            // same white as the background, which would make most of a replay invisible.
+            let fill = if *color == UNSOLVED {
+                Color32::from_rgb(128, 128, 128)
+            } else {
+                let (r, g, b) = palette[color].rgb;
+                Color32::from_rgb(r, g, b)
+            };
+            let cell = index as u32;
+            let (verts, n) = picture.cell_shape(cell).vertices(picture.cell_origin(cell));
+            shapes.push(egui::Shape::convex_polygon(
+                verts[..n]
+                    .iter()
+                    .map(|p| to_screen * Pos2::new(p.x, p.y))
+                    .collect(),
+                fill,
+                egui::Stroke::default(),
+            ));
+        }
+        painter.extend(shapes);
+
+        // Only while it's actually moving, and only in time for the next step, so a replay
+        // doesn't drag the whole app up to the monitor's frame rate and a finished one leaves it
+        // idle altogether.
+        if running {
+            let next = (step + 1) as f32 / REPLAY_STEPS_PER_SECOND;
+            let wait = (next - self.started.elapsed().as_secs_f32()).max(0.0);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f32(wait));
+        }
     }
 }
 
@@ -855,4 +1009,127 @@ pub fn draw_dyn_clues(
         }
         DynPuzzle::TriNono(_) => {}
     }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use crate::gui::NonogramGui;
+    use crate::puzzle::Solution;
+
+    fn canvas() -> CanvasGui {
+        NonogramGui::new(Document::from_solution(
+            DynSolution::Square(Solution::blank_bw(3, 3)),
+            "test".to_string(),
+        ))
+        .editor_gui
+    }
+
+    fn paint(canvas: &mut CanvasGui, cells: &[u32], color: Color) {
+        canvas.perform(
+            Action::ChangeColor {
+                changes: cells.iter().map(|c| (*c, color)).collect(),
+            },
+            ActionMood::Normal,
+        );
+    }
+
+    fn cells(canvas: &CanvasGui) -> Vec<Color> {
+        canvas.document.try_solution().unwrap().cells().to_vec()
+    }
+
+    /// The replay's `n`th frame is the picture as it stood after `n` actions — including the
+    /// steps that repaint a cell an earlier step already touched.
+    #[test]
+    fn frames_retrace_the_solve() {
+        let mut canvas = canvas();
+        let mut expected = vec![cells(&canvas)];
+        paint(&mut canvas, &[0, 1, 2], Color(1));
+        expected.push(cells(&canvas));
+        paint(&mut canvas, &[1, 4], BACKGROUND);
+        expected.push(cells(&canvas));
+        paint(&mut canvas, &[4, 8], Color(1));
+        expected.push(cells(&canvas));
+
+        let replay = Replay::new(&canvas);
+        assert_eq!(replay.len(&canvas), 3);
+        for (step, want) in expected.iter().enumerate() {
+            assert_eq!(replay.frame(&canvas, step), *want, "at step {step}");
+        }
+    }
+
+    /// Undone work is not part of the solve: the undo stack no longer holds it, so the replay
+    /// doesn't show it either.
+    #[test]
+    fn undone_steps_do_not_appear() {
+        let mut canvas = canvas();
+        let start = cells(&canvas);
+        paint(&mut canvas, &[0], Color(1));
+        paint(&mut canvas, &[8], Color(1));
+        canvas.un_or_re_do(true);
+
+        let replay = Replay::new(&canvas);
+        assert_eq!(replay.len(&canvas), 1);
+        assert_eq!(replay.frame(&canvas, 0), start);
+        assert_eq!(replay.frame(&canvas, 1), cells(&canvas));
+    }
+
+    /// Reading the stack live means the picture keeps moving under the replay. Painting after
+    /// finishing is unwound rather than replayed, because the step count was frozen at the moment
+    /// the solve came out right.
+    #[test]
+    fn painting_after_the_solve_is_not_replayed() {
+        let mut canvas = canvas();
+        paint(&mut canvas, &[0], Color(1));
+        paint(&mut canvas, &[8], Color(1));
+        let solved = cells(&canvas);
+
+        let replay = Replay::new(&canvas);
+        paint(&mut canvas, &[4], Color(1));
+        paint(&mut canvas, &[5], Color(1));
+
+        assert_eq!(replay.len(&canvas), 2);
+        // The last frame is still the solve's own, not the doodled-on picture.
+        assert_eq!(replay.frame(&canvas, 2), solved);
+        assert_ne!(cells(&canvas), solved);
+    }
+
+    /// Undoing back past where the solve finished really does take those steps off the stack, so
+    /// the replay gets shorter rather than reading off the end of it.
+    #[test]
+    fn undoing_past_the_end_shortens_the_replay() {
+        let mut canvas = canvas();
+        let start = cells(&canvas);
+        paint(&mut canvas, &[0], Color(1));
+        paint(&mut canvas, &[8], Color(1));
+
+        let replay = Replay::new(&canvas);
+        canvas.un_or_re_do(true);
+        canvas.un_or_re_do(true);
+
+        assert_eq!(replay.len(&canvas), 0);
+        assert_eq!(replay.frame(&canvas, 0), start);
+    }
+
+    /// Cells get whole pixels whenever the puzzle fits at one pixel per cell, and the replay
+    /// never spills out of the sidebar.
+    #[test]
+    fn replay_scale_prefers_whole_pixels() {
+        // 180px of sidebar, 25 cells across: 7.2px each, so 7.
+        assert_eq!(replay_scale(25.0, 180.0), 7.0);
+        // An exact fit isn't rounded down.
+        assert_eq!(replay_scale(20.0, 180.0), 9.0);
+        // Too wide for one pixel per cell: fractional, but still inside the sidebar.
+        assert_eq!(replay_scale(360.0, 180.0), 0.5);
+        // Never wider than the sidebar (up to the rounding a division can't avoid, which
+        // `show` clamps away), and never so small there's nothing to see.
+        for across in 1..500 {
+            let scale = replay_scale(across as f32, 180.0);
+            assert!(
+                scale > 0.0 && scale * across as f32 <= 180.001,
+                "{across} across"
+            );
+        }
+    }
+
 }

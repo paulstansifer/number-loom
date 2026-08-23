@@ -4,5 +4,5 @@
 * Maybe rename "gui_solver.rs"; it's too similar to "grid_solve.rs".
 * https://github.com/emilk/egui/issues/3218 has a workaround for bold text (for puzzle titles)
 * Maybe investigate using Tauri?
-* The "progress available" lane dots get bigger on zooming in, but the gutter for them doesn't.
 * The "unsolved cell" dots are too big in triddlers.
+* If the user drags the line tool off of a lane, maybe we should keep the rosette and helper numbers locked to the original lane?

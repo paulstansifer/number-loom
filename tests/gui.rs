@@ -382,4 +382,92 @@ mod tests {
             "the solver should not offer the lasso"
         );
     }
+
+    /// Finishing a puzzle puts a replay of the solve in the sidebar, and drawing it doesn't
+    /// panic on a real puzzle's geometry and palette.
+    #[test]
+    fn test_solve_replay() {
+        use number_loom::gui::{Action, ActionMood};
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+
+        let nonogram_gui = NonogramGui::new(doc);
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            nonogram_gui,
+        );
+
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+        assert!(harness.state().solve_gui.as_ref().unwrap().replay.is_none());
+
+        // Fill in the answer in three goes, so the replay has more than one step to play.
+        let solution = harness
+            .state()
+            .solve_gui
+            .as_ref()
+            .unwrap()
+            .intended_solution
+            .cells()
+            .to_vec();
+        let third = solution.len().div_ceil(3);
+        for chunk in 0..3 {
+            let changes = solution
+                .iter()
+                .enumerate()
+                .skip(chunk * third)
+                .take(third)
+                .map(|(i, c)| (i as u32, *c))
+                .collect();
+            harness
+                .state_mut()
+                .solve_gui
+                .as_mut()
+                .unwrap()
+                .canvas
+                .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+        }
+
+        // `step`, not `run`: a replay in progress asks to be repainted, which `run` treats as a
+        // UI that never settles.
+        harness.step();
+        assert!(harness.state().solve_gui.as_ref().unwrap().replay.is_some());
+
+        // Three steps at 15 a second is over in a fifth of a second; wait it out and the replay
+        // is showing the finished picture.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        harness.step();
+        let replay = harness
+            .state()
+            .solve_gui
+            .as_ref()
+            .unwrap()
+            .replay
+            .as_ref()
+            .unwrap();
+        assert!(replay.step() >= 3, "the replay should have run to the end");
+
+        // Clicking it starts the animation over, and leaves the picture itself alone.
+        let at = replay
+            .rect
+            .expect("the replay hasn't been drawn yet")
+            .center();
+        for pressed in [true, false] {
+            harness.input_mut().events.push(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        harness.step();
+        let solve_gui = harness.state().solve_gui.as_ref().unwrap();
+        assert_eq!(solve_gui.replay.as_ref().unwrap().step(), 0);
+        assert_eq!(
+            solve_gui.canvas.document.try_solution().unwrap().cells(),
+            solution
+        );
+    }
 }
