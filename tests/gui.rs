@@ -1,9 +1,19 @@
 #[cfg(test)]
 mod tests {
-    use egui::{CentralPanel, Event, Modifiers, PointerButton, Pos2};
+    use egui::{Event, Modifiers, PointerButton, Pos2};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use number_loom::{gui::NonogramGui, import};
+
+    /// A point that's actually on the canvas, taken from where the last frame drew the picture.
+    /// Hardcoding one goes stale every time the layout around the canvas shifts.
+    fn canvas_point(nonogram_gui: &NonogramGui) -> Pos2 {
+        nonogram_gui
+            .editor_gui
+            .picture_rect
+            .expect("the canvas hasn't been drawn yet")
+            .center()
+    }
 
     #[test]
     fn test_solve_button() {
@@ -12,9 +22,7 @@ mod tests {
         let nonogram_gui = NonogramGui::new(doc.clone());
         let mut harness = Harness::new_state(
             |ctx, nonogram_gui| {
-                CentralPanel::default().show(ctx, |ui| {
-                    nonogram_gui.main_ui(ctx, ui);
-                });
+                nonogram_gui.main_ui(ctx);
             },
             nonogram_gui,
         );
@@ -34,9 +42,7 @@ mod tests {
         let nonogram_gui = NonogramGui::new(doc.clone());
         let mut harness = Harness::new_state(
             |ctx, nonogram_gui| {
-                CentralPanel::default().show(ctx, |ui| {
-                    nonogram_gui.main_ui(ctx, ui);
-                });
+                nonogram_gui.main_ui(ctx);
             },
             nonogram_gui,
         );
@@ -69,16 +75,14 @@ mod tests {
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = Harness::new_state(
             |ctx, nonogram_gui| {
-                CentralPanel::default().show(ctx, |ui| {
-                    nonogram_gui.main_ui(ctx, ui);
-                });
+                nonogram_gui.main_ui(ctx);
             },
             nonogram_gui,
         );
 
         // Pencil is the default tool, so no need to select it.
 
-        let center = Pos2::new(237.0, 159.4);
+        let center = canvas_point(harness.state());
         harness.input_mut().events.push(Event::PointerButton {
             pos: center,
             button: PointerButton::Primary,
@@ -113,16 +117,14 @@ mod tests {
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = Harness::new_state(
             |ctx, nonogram_gui| {
-                CentralPanel::default().show(ctx, |ui| {
-                    nonogram_gui.main_ui(ctx, ui);
-                });
+                nonogram_gui.main_ui(ctx);
             },
             nonogram_gui,
         );
 
         // Pencil is the default tool, so no need to select it.
 
-        let center = Pos2::new(237.0, 159.4);
+        let center = canvas_point(harness.state());
         harness.input_mut().events.push(Event::PointerButton {
             pos: center,
             button: PointerButton::Primary,
@@ -186,9 +188,7 @@ mod tests {
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = Harness::new_state(
             |ctx, nonogram_gui| {
-                CentralPanel::default().show(ctx, |ui| {
-                    nonogram_gui.main_ui(ctx, ui);
-                });
+                nonogram_gui.main_ui(ctx);
             },
             nonogram_gui,
         );
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(before.len(), 96, "a hexagon of side 4 has 6 * 4^2 cells");
 
         // Somewhere inside this puzzle's (smaller) canvas.
-        let center = Pos2::new(220.0, 120.0);
+        let center = canvas_point(harness.state());
         harness.input_mut().events.push(Event::PointerButton {
             pos: center,
             button: PointerButton::Primary,
@@ -246,9 +246,7 @@ mod tests {
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = Harness::new_state(
             |ctx, nonogram_gui| {
-                CentralPanel::default().show(ctx, |ui| {
-                    nonogram_gui.main_ui(ctx, ui);
-                });
+                nonogram_gui.main_ui(ctx);
             },
             nonogram_gui,
         );
@@ -286,9 +284,7 @@ mod tests {
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = Harness::new_state(
             |ctx, nonogram_gui| {
-                CentralPanel::default().show(ctx, |ui| {
-                    nonogram_gui.main_ui(ctx, ui);
-                });
+                nonogram_gui.main_ui(ctx);
             },
             nonogram_gui,
         );
@@ -326,7 +322,7 @@ mod tests {
 
         // And it must be paintable, same as any other triddler.
         let before = solution.cells().to_vec();
-        let center = Pos2::new(220.0, 120.0);
+        let center = canvas_point(harness.state());
         harness.input_mut().events.push(Event::PointerButton {
             pos: center,
             button: PointerButton::Primary,
@@ -365,9 +361,7 @@ mod tests {
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = Harness::new_state(
             |ctx, nonogram_gui| {
-                CentralPanel::default().show(ctx, |ui| {
-                    nonogram_gui.main_ui(ctx, ui);
-                });
+                nonogram_gui.main_ui(ctx);
             },
             nonogram_gui,
         );

@@ -76,6 +76,7 @@ impl SolveGui {
                 current_tool: Tool::LineAlongLane,
                 line_tool_state: None,
                 selection: None,
+                picture_rect: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
                     version: 0,
@@ -142,8 +143,6 @@ impl SolveGui {
 
     pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            ui.set_width(150.0);
-
             if !self.canvas.document.title.is_empty() {
                 ui.label(RichText::new(&self.canvas.document.title).strong());
             }

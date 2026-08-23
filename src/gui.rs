@@ -346,6 +346,11 @@ pub struct CanvasGui {
     pub id: Staleable<String>,
     pub status: SharedStatus,
     pub progress: SharedProgress,
+    /// Where the picture itself (not counting any clue gutters) landed on screen, as of the last
+    /// frame that drew it. `pub` for tests/gui.rs, which needs a point that's reliably on the
+    /// canvas to aim a click at — a hardcoded one goes stale the moment the layout around it
+    /// moves.
+    pub picture_rect: Option<Rect>,
 }
 
 pub struct NonogramGui {
@@ -535,12 +540,27 @@ impl CanvasGui {
         palette_read_only: bool,
         editing: bool,
     ) {
-        ui.horizontal(|ui| {
+        // A focused `TextEdit` reads its key events without consuming them, so a bare-key
+        // shortcut still fires while the user is typing into one. Nothing here uses a modifier,
+        // so every one of them has to be suppressed by hand.
+        let typing = ui.ctx().wants_keyboard_input();
+
+        let (can_undo, can_redo) = (!self.undo_stack.is_empty(), !self.redo_stack.is_empty());
+
+        centered_row(ui, "undo_row", |ui| {
             ui.label(format!("({})", self.undo_stack.len()));
-            if ui.button(icons::ICON_UNDO).clicked() || ui.input(|i| i.key_pressed(egui::Key::Z)) {
+            if ui
+                .add_enabled(can_undo, egui::Button::new(icons::ICON_UNDO))
+                .clicked()
+                || (can_undo && !typing && ui.input(|i| i.key_pressed(egui::Key::Z)))
+            {
                 self.un_or_re_do(true);
             }
-            if ui.button(icons::ICON_REDO).clicked() || ui.input(|i| i.key_pressed(egui::Key::Y)) {
+            if ui
+                .add_enabled(can_redo, egui::Button::new(icons::ICON_REDO))
+                .clicked()
+                || (can_redo && !typing && ui.input(|i| i.key_pressed(egui::Key::Y)))
+            {
                 self.un_or_re_do(false);
             }
             ui.label(format!("({})", self.redo_stack.len()));
@@ -557,8 +577,7 @@ impl CanvasGui {
 
     fn tool_selector(&mut self, ui: &mut egui::Ui, editing: bool) {
         let was = self.current_tool;
-        ui.label("Tools");
-        ui.horizontal(|ui| {
+        centered_row(ui, "tools", |ui| {
             ui.selectable_value(
                 &mut self.current_tool,
                 Tool::Pencil,
@@ -998,6 +1017,13 @@ impl CanvasGui {
         );
         let from_screen = to_screen.inverse();
 
+        // The picture's own area, with any clue gutters excluded: this is somewhere a click
+        // reliably lands on a cell.
+        self.picture_rect = Some(to_screen.transform_rect(Rect::from_min_size(
+            Pos2::ZERO,
+            Vec2::new(extent.x, extent.y),
+        )));
+
         let cell_under = |picture: &crate::puzzle::DynSolution, pos: Pos2| -> Option<u32> {
             let p = from_screen * pos;
             picture
@@ -1029,6 +1055,16 @@ impl CanvasGui {
             }
             self.lasso_keys(ui);
             self.lasso_cursor(ui, hovered_cell);
+        } else if hovered_cell.is_some() {
+            // There's no brush or paint-bucket in the standard cursor set, so the best these can
+            // do is say how precise the tool is: the two that paint a cell the pointer is exactly
+            // on get a crosshair, and flood fill — which acts on a whole region — gets the
+            // blockier `Cell` instead, just so it doesn't look identical to them.
+            ui.ctx().set_cursor_icon(match self.current_tool {
+                Tool::Pencil | Tool::LineAlongLane => egui::CursorIcon::Crosshair,
+                Tool::FloodFill => egui::CursorIcon::Cell,
+                Tool::Lasso => unreachable!("handled above"),
+            });
         }
 
         if let Some(pointer_pos) = response.interact_pointer_pos() {
@@ -1417,7 +1453,27 @@ impl CanvasGui {
                 if !read_only {
                     let mut edited_color = [r as f32 / 256.0, g as f32 / 256.0, b as f32 / 256.0];
 
-                    if ui.color_edit_button_rgb(&mut edited_color).changed() {
+                    let edit = ui.color_edit_button_rgb(&mut edited_color);
+                    // `egui` only allows rectangular-swatch-of-current-color as the palette marker,
+                    // which doesn't look good in this case. (In fact, the color is also somewhat wrong) 
+                    // HACK: draw a pencil icon over it.
+                    let visuals = *ui.style().interact(&edit);
+                    let painter = ui.painter();
+                    painter.rect(
+                        edit.rect,
+                        visuals.corner_radius,
+                        visuals.bg_fill,
+                        visuals.bg_stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                    painter.text(
+                        edit.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        icons::ICON_EDIT,
+                        egui::FontId::proportional(edit.rect.height() * 0.7),
+                        visuals.fg_stroke.color,
+                    );
+                    if edit.on_hover_text("Edit this color").changed() {
                         // TODO: this should probably also be undoable
                         picked_color = *color;
                         color_info.rgb = (
@@ -1760,6 +1816,7 @@ impl NonogramGui {
                 current_tool: Tool::Pencil,
                 line_tool_state: None,
                 selection: None,
+                picture_rect: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
                     version: 0,
@@ -1907,54 +1964,58 @@ impl NonogramGui {
     }
 
     fn resizer(&mut self, ui: &mut egui::Ui) {
-        ui.label(format!(
-            "Canvas size: {}",
-            self.editor_gui.document.dims_label()
-        ));
+        ui.vertical_centered(|ui| {
+            ui.label(format!(
+                "Canvas size: {}",
+                self.editor_gui.document.dims_label()
+            ));
+        });
 
-        egui::Grid::new("resizer").show(ui, |ui| {
-            ui.label("");
-            ui.horizontal(|ui| {
-                if ui.button(icons::ICON_ADD).clicked() {
-                    self.resize(Some(true), None, true);
-                }
-                if ui.button(icons::ICON_REMOVE).clicked() {
-                    self.resize(Some(true), None, false);
-                }
-            });
-            ui.label("");
-            ui.end_row();
+        centered_row(ui, "resizer_row", |ui| {
+            egui::Grid::new("resizer").show(ui, |ui| {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    if ui.button(icons::ICON_ADD).clicked() {
+                        self.resize(Some(true), None, true);
+                    }
+                    if ui.button(icons::ICON_REMOVE).clicked() {
+                        self.resize(Some(true), None, false);
+                    }
+                });
+                ui.label("");
+                ui.end_row();
 
-            ui.vertical(|ui| {
-                if ui.button(icons::ICON_ADD).clicked() {
-                    self.resize(None, Some(true), true);
-                }
-                if ui.button(icons::ICON_REMOVE).clicked() {
-                    self.resize(None, Some(true), false);
-                }
-            });
-            ui.text_edit_singleline(&mut self.lines_to_affect_string);
+                ui.vertical(|ui| {
+                    if ui.button(icons::ICON_ADD).clicked() {
+                        self.resize(None, Some(true), true);
+                    }
+                    if ui.button(icons::ICON_REMOVE).clicked() {
+                        self.resize(None, Some(true), false);
+                    }
+                });
+                ui.text_edit_singleline(&mut self.lines_to_affect_string);
 
-            ui.vertical(|ui| {
-                if ui.button(icons::ICON_ADD).clicked() {
-                    self.resize(None, Some(false), true);
-                }
-                if ui.button(icons::ICON_REMOVE).clicked() {
-                    self.resize(None, Some(false), false);
-                }
-            });
-            ui.end_row();
+                ui.vertical(|ui| {
+                    if ui.button(icons::ICON_ADD).clicked() {
+                        self.resize(None, Some(false), true);
+                    }
+                    if ui.button(icons::ICON_REMOVE).clicked() {
+                        self.resize(None, Some(false), false);
+                    }
+                });
+                ui.end_row();
 
-            ui.label("");
-            ui.horizontal(|ui| {
-                if ui.button(icons::ICON_ADD).clicked() {
-                    self.resize(Some(false), None, true);
-                }
-                if ui.button(icons::ICON_REMOVE).clicked() {
-                    self.resize(Some(false), None, false);
-                }
+                ui.label("");
+                ui.horizontal(|ui| {
+                    if ui.button(icons::ICON_ADD).clicked() {
+                        self.resize(Some(false), None, true);
+                    }
+                    if ui.button(icons::ICON_REMOVE).clicked() {
+                        self.resize(Some(false), None, false);
+                    }
+                });
+                ui.label("");
             });
-            ui.label("");
         });
     }
 
@@ -1962,10 +2023,12 @@ impl NonogramGui {
     /// with a +/- pair on each of its six sides — one per `geometry::Side` — grown/shrunk via
     /// `tri_resize`. Each pair sits flush against, and rotated parallel to, its own hexagon edge.
     fn tri_resizer(&mut self, ui: &mut egui::Ui) {
-        ui.label(format!(
-            "Outline size: {}",
-            self.editor_gui.document.dims_label()
-        ));
+        ui.vertical_centered(|ui| {
+            ui.label(format!(
+                "Outline size: {}",
+                self.editor_gui.document.dims_label()
+            ));
+        });
 
         // Used to grey out a "+" that would have no effect at all (see `Outline::can_grow`) —
         // not to decide what clicking it does, `tri_resize` re-checks that against a fresh
@@ -2048,7 +2111,11 @@ impl NonogramGui {
         }
         let canvas = bounds.size() + Vec2::splat(2.0 * PAD);
 
-        let (response, painter) = ui.allocate_painter(canvas, egui::Sense::hover());
+        // Take the full width, so the hexagon ends up centred in the sidebar the way the square
+        // resizer's cross does — everything below is placed relative to `response.rect`'s centre,
+        // so widening the reservation is all it takes.
+        let strip = Vec2::new(ui.available_width().max(canvas.x), canvas.y);
+        let (response, painter) = ui.allocate_painter(strip, egui::Sense::hover());
         // Place the bounding box computed above flush inside the reserved rect (plus `PAD`), so
         // there's no dead space on any side and nothing is clipped.
         let center = response.rect.center() - bounds.center().to_vec2();
@@ -2142,7 +2209,9 @@ impl NonogramGui {
 
     fn edit_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            ui.set_width(140.0);
+            // The id tracks the title, and `Save/share` needs it whether or not the "Metadata"
+            // section happens to be expanded — so this can't live inside that section's body,
+            // which egui skips entirely while it's collapsed.
             let backup_title = self.editor_gui.document.get_or_make_up_title().unwrap();
             let id = self
                 .editor_gui
@@ -2152,25 +2221,9 @@ impl NonogramGui {
                 self.editor_gui.document.id = id.clone();
             }
 
-            ui.add(
-                egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"),
-            );
+            self.metadata_editor(ui);
 
-            ui.horizontal(|ui| {
-                ui.label("by ");
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut self.editor_gui.document.author)
-                            .hint_text("Author"),
-                    )
-                    .changed()
-                {
-                    let _ = UserSettings::set(
-                        consts::EDITOR_AUTHOR_NAME,
-                        &self.editor_gui.document.author,
-                    );
-                }
-            });
+            ui.separator();
 
             self.editor_gui.common_sidebar_items(ui, false, true);
 
@@ -2196,7 +2249,9 @@ impl NonogramGui {
                                 solution: _solution,
                                 solved_mask,
                             }) => (
-                                format!("{solve_counts} unsolved cells: {cells_left}"),
+                                // Unsolved cells first: that's the number that says whether the
+                                // puzzle works. The skim/scrub counts are solver diagnostics.
+                                format!("unsolved cells: {cells_left}\n{solve_counts}"),
                                 solved_mask,
                             ),
                             Err(e) => (format!("Error: {:?}", e), vec![]),
@@ -2225,8 +2280,31 @@ impl NonogramGui {
                     &self.editor_gui.progress,
                     ui,
                 );
+        });
+    }
 
-            ui.separator();
+    /// Title, author, description and license; in a collapsable section.
+    fn metadata_editor(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("Metadata").show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"),
+            );
+
+            ui.horizontal(|ui| {
+                ui.label("by ");
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.editor_gui.document.author)
+                            .hint_text("Author"),
+                    )
+                    .changed()
+                {
+                    let _ = UserSettings::set(
+                        consts::EDITOR_AUTHOR_NAME,
+                        &self.editor_gui.document.author,
+                    );
+                }
+            });
 
             ui.label("Description:");
             ui.text_edit_multiline(&mut self.editor_gui.document.description);
@@ -2314,15 +2392,22 @@ impl NonogramGui {
         ));
     }
 
-    pub fn main_ui(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+    /// The document-wide controls across the top: zoom, the New/Library/Open/Save dialogs, and
+    /// the Edit/Puzzle mode toggle. Runs before the sidebar and canvas each frame, so a mode
+    /// switched here takes effect on the same frame.
+    fn toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        // See the matching note in `common_sidebar_items`: bare-key shortcuts have to opt out of
+        // firing while a text field has the focus.
+        let typing = ctx.wants_keyboard_input();
+
         ui.horizontal(|ui| {
             if ui.button(icons::ICON_ZOOM_IN).clicked()
-                || ui.input(|i| i.key_pressed(egui::Key::Equals))
+                || (!typing && ui.input(|i| i.key_pressed(egui::Key::Equals)))
             {
                 self.scale = (self.scale + 2.0).min(50.0);
             }
             if ui.button(icons::ICON_ZOOM_OUT).clicked()
-                || ui.input(|i| i.key_pressed(egui::Key::Minus))
+                || (!typing && ui.input(|i| i.key_pressed(egui::Key::Minus)))
             {
                 self.scale = (self.scale - 2.0).max(1.0);
             }
@@ -2662,20 +2747,76 @@ impl NonogramGui {
                 self.enter_solve_mode();
             }
         });
-        ui.separator();
-
-        ui.horizontal_top(|ui| {
-            if let Some(solve_gui) = &mut self.solve_gui {
-                solve_gui.sidebar(ui);
-                solve_gui.body(ui, self.scale);
-            } else {
-                self.edit_sidebar(ui);
-                self.editor_gui
-                    .canvas(ui, self.scale, RenderStyle::Experimental);
-            }
-        });
     }
 }
+
+/// Starting width of the tool sidebar; the user may adjust it.
+const SIDEBAR_WIDTH: f32 = 150.0;
+
+/// Lay out a row of widgets centred within the available width.
+///
+/// egui won't do this on its own. `Layout::left_to_right` places items from the left edge
+/// whatever its `main_align` says — `horizontal_placement` hardcodes `Align::LEFT` — and
+/// `vertical_centered` only centres a child whose size it knows *before* laying it out, which a
+/// `ui.horizontal` row is not. The obvious fix, a sizing pass followed by a real one, would mean
+/// running `add_contents` twice per frame; these rows are made of buttons, so the measuring pass
+/// would act on every click a second time.
+///
+/// So: pad by however wide the row turned out last frame, and record this frame's width for the
+/// next one. Only the very first frame a row is shown is off-centre.
+fn centered_row<R>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let id = ui.id().with(id_salt);
+    let previous: Option<f32> = ui.data(|d| d.get_temp(id));
+    let pad = previous.map_or(0.0, |w| ((ui.available_width() - w) / 2.0).max(0.0));
+
+    let row = ui.horizontal(|ui| {
+        ui.add_space(pad);
+        add_contents(ui)
+    });
+
+    ui.data_mut(|d| d.insert_temp(id, row.response.rect.width() - pad));
+    row.inner
+}
+
+/// Which edge of a `TopBottomPanel` faces the rest of the window, and so carries its separator.
+enum Edge {
+    Top,
+    Bottom,
+}
+
+/// The frame for the toolbar and the status bar.
+///
+/// `TopBottomPanel` paints its separator line *inside* its own rect, overlapping the frame's
+/// margin on whichever edge faces the window. With egui's symmetric default margin that leaves
+/// only one pixel of clear space between the line and the buttons on that side, against two on
+/// the other — which reads as the bar being a pixel or two too short for its contents. Widening
+/// that one margin by the line's own width restores the balance.
+fn bar_frame(ctx: &egui::Context, separator_on: Edge) -> egui::Frame {
+    let style = ctx.style();
+    let base = egui::Frame::side_top_panel(&style);
+    let line = style
+        .visuals
+        .widgets
+        .noninteractive
+        .bg_stroke
+        .width
+        .ceil()
+        .max(0.0) as i8;
+
+    let mut margin = base.inner_margin;
+    match separator_on {
+        Edge::Top => margin.top += line,
+        Edge::Bottom => margin.bottom += line,
+    }
+    base.inner_margin(margin)
+}
+
+/// Breathing room between the canvas and the panels around it.
+const CANVAS_MARGIN: i8 = 16;
 
 #[derive(PartialEq, Eq)]
 enum NewPuzzleShape {
@@ -2695,6 +2836,13 @@ struct NewPuzzleDialog {
 
 impl eframe::App for NonogramGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.main_ui(ctx);
+    }
+}
+
+impl NonogramGui {
+    /// The whole window, panel by panel. Separate from `eframe::App::update` for testing.
+    pub fn main_ui(&mut self, ctx: &egui::Context) {
         // Styling. Has to be here instead of `edit_image` to take effect on the Web.
         let spacing = egui::Spacing {
             interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
@@ -2708,38 +2856,88 @@ impl eframe::App for NonogramGui {
         };
         ctx.set_style(style);
 
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            // `editor_gui.status`/`editor_gui.progress` are shared (via `Rc<RefCell<_>>`) with
-            // `solve_gui.canvas`, so this shows the latest message/progress regardless of which
-            // mode is active.
-            ui.horizontal(|ui| {
-                // Reserves a consistent height for the bar even when there's nothing to show,
-                // so the rest of the UI doesn't jump around as messages come and go.
-                ui.label("");
+        // Panel order matters: egui hands each panel the space its predecessors didn't claim, so
+        // the top and bottom bars span the full width, and the sidebar then splits what's left
+        // with the canvas.
+        egui::TopBottomPanel::top("toolbar")
+            .frame(bar_frame(ctx, Edge::Bottom))
+            .show(ctx, |ui| {
+                self.toolbar(ctx, ui);
+            });
 
-                if let Some(progress) = *self.editor_gui.progress.borrow() {
-                    // ~50% wider than the sidebar (150.0) is by default.
-                    ui.add(
-                        egui::ProgressBar::new(progress)
-                            .animate(true)
-                            .desired_width(225.0),
-                    );
-                }
+        egui::TopBottomPanel::bottom("status_bar")
+            .frame(bar_frame(ctx, Edge::Top))
+            .show(ctx, |ui| {
+                // `editor_gui.status`/`editor_gui.progress` are shared (via `Rc<RefCell<_>>`) with
+                // `solve_gui.canvas`, so this shows the latest message/progress regardless of which
+                // mode is active.
+                ui.horizontal(|ui| {
+                    // Reserves a consistent height for the bar even when there's nothing to show,
+                    // so the rest of the UI doesn't jump around as messages come and go.
+                    ui.label("");
 
-                if let Some(status) = self.editor_gui.status.get() {
-                    let color = if status.is_error {
-                        Color32::DARK_RED
+                    if let Some(progress) = *self.editor_gui.progress.borrow() {
+                        // ~50% wider than the sidebar (150.0) is by default.
+                        ui.add(
+                            egui::ProgressBar::new(progress)
+                                .animate(true)
+                                .desired_width(225.0),
+                        );
+                    }
+
+                    if let Some(status) = self.editor_gui.status.get() {
+                        let color = if status.is_error {
+                            Color32::DARK_RED
+                        } else {
+                            ui.visuals().text_color()
+                        };
+                        ui.colored_label(color, &status.text);
+                    }
+                });
+            });
+
+        egui::SidePanel::left("sidebar")
+            .resizable(true)
+            .default_width(SIDEBAR_WIDTH)
+            .width_range(SIDEBAR_WIDTH..=400.0)
+            .show(ctx, |ui| {
+                // Both sidebars can outgrow a short window — the editor's once "Metadata" is
+                // expanded, the solver's once a puzzle has a long palette.
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if let Some(solve_gui) = &mut self.solve_gui {
+                        solve_gui.sidebar(ui);
                     } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.colored_label(color, &status.text);
+                        self.edit_sidebar(ui);
+                    }
+                });
+            });
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(CANVAS_MARGIN))
+            .show(ctx, |ui| {
+                // egui routes ctrl-scroll (and trackpad pinch) into `zoom_delta` rather than into
+                // the scroll offset, so the scroll area below pans on a plain wheel and leaves
+                // this alone. Only zoom when the pointer is actually over the canvas, so the
+                // gesture doesn't fire while the user is over the sidebar.
+                let zoom_here = ui.rect_contains_pointer(ui.max_rect());
+
+                // A zoomed-in puzzle is routinely bigger than the window in both directions.
+                egui::ScrollArea::both().show(ui, |ui| {
+                    if let Some(solve_gui) = &mut self.solve_gui {
+                        solve_gui.body(ui, self.scale);
+                    } else {
+                        self.editor_gui
+                            .canvas(ui, self.scale, RenderStyle::Experimental);
+                    }
+                });
+
+                if zoom_here {
+                    let zoom = ui.input(|i| i.zoom_delta());
+                    if zoom != 1.0 {
+                        self.scale = (self.scale * zoom).clamp(1.0, 50.0);
+                    }
                 }
             });
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.main_ui(ctx, ui);
-        });
     }
 }
 
@@ -2782,27 +2980,8 @@ impl Disambiguator {
         }
         let report_running = self.progress > 0.0 && self.progress < 1.0;
 
-        if !report_running {
-            if ui.button("Disambiguate!").clicked() {
-                let (p_s, p_r) = mpsc::channel();
-                let (r_s, r_r) = mpsc::channel();
-                let (t_s, t_r) = mpsc::channel();
-                self.progress_r = p_r;
-                self.terminate_s = t_s;
-                self.report_r = r_r;
-
-                let solution = picture.clone();
-                spawn_async(async move {
-                    let result = disambig_candidates(&solution, p_s, t_r).await;
-                    r_s.send(result).unwrap();
-                });
-            }
-        } else {
-            if ui.button("Stop").clicked() {
-                let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
-                self.progress = 0.0;
-            }
-        }
+        // Taking the report before drawing means "Clear" becomes available on the same frame the
+        // report lands, rather than the one after.
         if let Ok(result) = self.report_r.try_recv() {
             // Clear any stale message (e.g. a load error from before) now that disambiguation
             // has something new to say (or, for `Report`, nothing to say).
@@ -2817,16 +2996,46 @@ impl Disambiguator {
             }
         }
 
+        // Both buttons share a row: "Clear" discards what the button beside it produced. They
+        // only record what was clicked, since acting on it needs `self` mutably.
+        let (mut start, mut stop, mut clear) = (false, false, false);
+        ui.horizontal(|ui| {
+            if !report_running {
+                start = ui.button("Disambiguate!").clicked();
+            } else {
+                stop = ui.button("Stop").clicked();
+            }
+            clear = ui
+                .add_enabled(self.report.is_some(), egui::Button::new("Clear"))
+                .clicked();
+        });
+
+        if start {
+            let (p_s, p_r) = mpsc::channel();
+            let (r_s, r_r) = mpsc::channel();
+            let (t_s, t_r) = mpsc::channel();
+            self.progress_r = p_r;
+            self.terminate_s = t_s;
+            self.report_r = r_r;
+
+            let solution = picture.clone();
+            spawn_async(async move {
+                let result = disambig_candidates(&solution, p_s, t_r).await;
+                r_s.send(result).unwrap();
+            });
+        }
+        if stop {
+            let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
+            self.progress = 0.0;
+        }
+
         *progress.borrow_mut() = if self.progress > 0.0 && self.progress < 1.0 {
             Some(self.progress)
         } else {
             None
         };
 
-        if ui
-            .add_enabled(self.report.is_some(), egui::Button::new("Clear"))
-            .clicked()
-        {
+        if clear {
             self.report = None;
         }
     }
