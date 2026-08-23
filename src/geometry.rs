@@ -535,6 +535,46 @@ mod tests {
         assert_eq!(backslashes, vec!["FLM", "AGHNO", "BCIJP", "DEK"]);
     }
 
+    /// The solver's rosette places each `(back, forward)` count using `arm_directions`, so those
+    /// vectors have to point the way the lane is actually stored — otherwise a family's two
+    /// numbers land on opposite sides of the centre from where they belong.
+    #[test]
+    fn arm_directions_follow_lane_order() {
+        for outline in [doc_example(), Outline::hexagon(3)] {
+            let geo = Geometry::<Tri>::new(outline);
+            let dirs = geo.arm_directions();
+            for cell in 0..geo.cell_count() as u32 {
+                for m in geo.memberships(cell) {
+                    let lane = geo.lane(m.lane as usize);
+                    let pos = m.position as usize;
+                    // Two steps along a lane land on a cell of the same shape, so the
+                    // bounding-box origins differ by exactly twice the step.
+                    let neighbors = [
+                        pos.checked_sub(2),
+                        Some(pos + 2).filter(|p| *p < lane.cells.len()),
+                    ];
+                    for (i, other) in neighbors.into_iter().enumerate() {
+                        let Some(other) = other else { continue };
+                        let from = geo.cell_origin(cell);
+                        let to = geo.cell_origin(lane.cells[other]);
+                        let (dx, dy) = (to.x - from.x, to.y - from.y);
+                        let len = (dx * dx + dy * dy).sqrt();
+                        let (dx, dy) = (dx / len, dy / len);
+                        let want = dirs[lane.family * 2 + i];
+                        assert!(
+                            (dx - want.x).abs() < 1e-3 && (dy - want.y).abs() < 1e-3,
+                            "family {} {} arm: lane runs ({dx}, {dy}), but arm_directions says ({}, {})",
+                            lane.family,
+                            if i == 0 { "back" } else { "forward" },
+                            want.x,
+                            want.y,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn doc_example_clue_set_split() {
         let geo = Geometry::<Tri>::new(doc_example());
@@ -1437,16 +1477,17 @@ impl GridKind for Tri {
     fn arm_directions() -> &'static [Vec2] {
         // 0 degrees, plus or minus 60, and their opposites: the six directions a triangular lane
         // can leave a cell in, ordered (back, forward) per family to match `runs_at_cell`, which
-        // walks `LaneMap::memberships` in family order (0 = rows, 1 = `/` lines, 2 = `\` lines —
-        // see `Geometry::gutters`' `outward` for the same three directions, independently derived
-        // from `CellShape::family_edge`). Families 1 and 2 were swapped here before; confirmed by
-        // comparing against `gutters()`'s `outward` vectors for a real hexagon.
+        // walks `LaneMap::memberships` in family order (0 = rows, 1 = `/` lines, 2 = `\` lines).
+        //
+        // "Forward" is whichever way the lane is *stored*, not whichever way it looks like it
+        // ought to run: `Tri::build` walks rows rightward, `/` lines *downward-left* from their
+        // topmost cell, and `\` lines downward-right. The `/` pair is the surprising one.
         const S: f32 = 0.866_025_4; // sin 60
         const DIRS: [Vec2; 6] = [
             Vec2 { x: -1.0, y: 0.0 },
             Vec2 { x: 1.0, y: 0.0 },
-            Vec2 { x: -0.5, y: S },
             Vec2 { x: 0.5, y: -S },
+            Vec2 { x: -0.5, y: S },
             Vec2 { x: -0.5, y: -S },
             Vec2 { x: 0.5, y: S },
         ];
