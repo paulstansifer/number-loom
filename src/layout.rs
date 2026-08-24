@@ -43,8 +43,7 @@ impl std::ops::Add<Vec2> for Point {
 /// The height of a row of equilateral triangles with edge 1.0: √3/2.
 pub const TRI_ROW_HEIGHT: f32 = 0.866_025_4;
 
-/// Half a triangle's base — the horizontal distance between consecutive cells in a triangular
-/// row, since neighbouring triangles overlap by half their width.
+/// Half a triangle's base: the horizontal distance between consecutive cells in a triangular row
 pub const TRI_HALF_BASE: f32 = 0.5;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -218,11 +217,11 @@ pub struct Guide {
 ///
 /// Adjacent parallel lanes are `TRI_ROW_HEIGHT` apart, but the boxes are axis-aligned while a
 /// diagonal gutter is not: that 0.866 of separation splits into (0.75, 0.43), so the box has to
-/// fit inside the *larger* component or neighbouring lanes' clues would still overlap on screen.
+/// fit inside the *larger* component or neighboring lanes' clues would still overlap on screen.
 pub const CLUE_BOX: f32 = 0.7;
 /// A clue box's short side (the extent across the lane, flush against the puzzle edge it's lined
 /// up against). Just under one full cell edge, so a chain of boxes reads as an extension of the
-/// grid without touching its neighbouring gutter's boxes.
+/// grid without touching its neighboring gutter's boxes.
 pub const CLUE_BOX_SHORT: f32 = 0.95;
 /// The gap between one clue box and the next along a gutter. Chosen so that consecutive boxes on
 /// a diagonal gutter clear each other too.
@@ -255,9 +254,8 @@ pub(crate) const TRI_LANE_DIR: [Vec2; 3] = [
 /// A clue box shaped like a rhombus pointing along the lane: its long *side* runs along the
 /// lane's own direction (i.e. along `outward`), and its short side runs along `edge_dir` — the
 /// puzzle boundary edge the box is lined up against — so a chain of clues reads as beads strung
-/// along the gutter, each one flush against the grid, rather than a stack of boxes poking into
-/// their neighbours at the wrong angle. `size` is the box's extent along the lane's own
-/// direction; `short` is its extent across the lane; `edge_dir` need not be perpendicular to
+/// along the gutter, each one flush against the grid. `size` is the box's extent along the lane's
+/// own direction; `short` is its extent across the lane; `edge_dir` need not be perpendicular to
 /// `size`'s direction (for a triangular grid it's 60° off).
 pub fn tri_clue_rhombus(
     center: Point,

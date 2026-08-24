@@ -675,10 +675,19 @@ mod tests {
             b: (0, 0),
             c: (-2, 2),
         };
-        assert_eq!(outline.cells().len(), 2, "sanity check on the hand-picked outline");
+        assert_eq!(
+            outline.cells().len(),
+            2,
+            "sanity check on the hand-picked outline"
+        );
 
-        assert!(outline.can_grow(Side::Bottom), "row 1 should still have cells");
-        let grown = outline.resized(Side::Bottom, 5).expect("some growth is possible");
+        assert!(
+            outline.can_grow(Side::Bottom),
+            "row 1 should still have cells"
+        );
+        let grown = outline
+            .resized(Side::Bottom, 5)
+            .expect("some growth is possible");
         assert_eq!(
             grown.a,
             (0, 2),
@@ -998,7 +1007,7 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     /// that need a cell go on through `cell_of`.
     fn translate(coord: Self::Coord, steps: (i32, i32)) -> Option<Self::Coord>;
 
-    /// Unit vectors toward each neighbouring lane direction — 4 for a square, 6 for a triangle.
+    /// Unit vectors toward each adjacent lane direction — 4 for a square, 6 for a triangle.
     /// Used to lay out the solver's contiguous-run widget.
     fn arm_directions() -> &'static [Vec2];
 
@@ -1666,7 +1675,7 @@ impl<K: GridKind> Geometry<K> {
         self.lanes.clue_set_counts()
     }
 
-    /// Unit vectors toward each neighbouring lane direction: 4 for a square, 6 for a triangle,
+    /// Unit vectors toward each adjacent lane direction: 4 for a square, 6 for a triangle,
     /// listed as `(backward, forward)` pairs per family to match `runs`.
     pub fn arm_directions(&self) -> &'static [Vec2] {
         K::arm_directions()
@@ -2330,7 +2339,7 @@ mod typed_tests {
                         "{cell} -> {neighbor} is not mutual in {dims:?}"
                     );
                 }
-                // A triangle has three edges; cells on the boundary have fewer neighbours.
+                // A triangle has three edges; cells on the boundary have fewer neighbors.
                 assert!(geo.neighbor_cells(cell).count() <= 3);
             }
         }
@@ -2709,8 +2718,7 @@ mod typed_tests {
                 let family = geo.lane(g.lane).family;
                 for i in 0..clue_counts[g.lane] {
                     let c = g.clue_box_center(i);
-                    let corners =
-                        tri_clue_rhombus(c, family, g.edge_dir, CLUE_BOX, CLUE_BOX_SHORT);
+                    let corners = tri_clue_rhombus(c, family, g.edge_dir, CLUE_BOX, CLUE_BOX_SHORT);
                     boxes.push((g.lane, i, c, corners));
                 }
             }

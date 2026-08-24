@@ -728,7 +728,7 @@ impl DynSolution {
         with_solution!(self, |s| s.geometry.translate_cell(cell, steps))
     }
 
-    /// Unit vectors toward each neighbouring lane direction, as `(backward, forward)` pairs per
+    /// Unit vectors toward each adjacent lane direction, as `(backward, forward)` pairs per
     /// family — matching what `runs_at_cell` returns.
     pub fn arm_directions(&self) -> &'static [crate::layout::Vec2] {
         with_solution!(self, |s| s.geometry.arm_directions())

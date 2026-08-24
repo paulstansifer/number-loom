@@ -630,8 +630,6 @@ impl CanvasGui {
         while let Some(cell) = q.pop_front() {
             changes.insert(cell, self.current_color);
 
-            // Adjacency comes from the geometry, so a triangle's three edge neighbours work
-            // exactly as a square's four do.
             for neighbor in picture.neighbor_cells(cell) {
                 if picture.cells()[neighbor as usize] == target_color && visited.insert(neighbor) {
                     q.push_back(neighbor);
@@ -1396,7 +1394,7 @@ impl CanvasGui {
         let drag_len = (drag.x * drag.x + drag.y * drag.y).sqrt();
 
         // A lane's cells zigzag between ▲ and ▼ centroids on a triangular grid, so the step to
-        // an immediate neighbour is not representative of the lane's direction — e.g. from a ▲,
+        // an immediate neighbor is not representative of the lane's direction — e.g. from a ▲,
         // the very next step is purely vertical even on a "/" lane. Use the span from the lane's
         // first cell to its last instead, which averages the zigzag out into the lane's true
         // on-screen direction, and gives a stable average per-cell spacing along it.
@@ -1498,7 +1496,7 @@ impl CanvasGui {
 
                     let edit = ui.color_edit_button_rgb(&mut edited_color);
                     // `egui` only allows rectangular-swatch-of-current-color as the palette marker,
-                    // which doesn't look good in this case. (In fact, the color is also somewhat wrong) 
+                    // which doesn't look good in this case. (In fact, the color is also somewhat wrong)
                     // HACK: draw a pencil icon over it.
                     let visuals = *ui.style().interact(&edit);
                     let painter = ui.painter();
@@ -1605,10 +1603,9 @@ pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui
 
 /// The outline of a set of cells, as a list of abstract-unit segments.
 ///
-/// Found by cancellation rather than by asking which neighbour lies across which edge: push every
-/// selected cell's edges into a table, and an edge shared by two selected cells lands there twice.
-/// What's left having landed once is exactly the boundary. That needs nothing shape-specific, so
-/// squares and both triangle orientations come out right with no dispatch.
+/// Found by cancellation: push every selected cell's edges into a table, and an edge shared by
+/// two selected cells lands there twice. What's left having landed once is exactly the boundary.
+/// Works for squares and triangles.
 fn selection_outline(picture: &DynSolution, cells: &[u32]) -> Vec<(Point, Point)> {
     /// A cell corner quantized onto a fixed sub-cell grid. Corners land on exact lattice values,
     /// so this is stable, and two cells' shared edge always produces the identical key.
@@ -3428,7 +3425,7 @@ mod line_tool_tests {
     }
 
     /// A triangular grid's `/` and `\` lanes zigzag between ▲ and ▼ cell centroids, so a lane's
-    /// direction can't be judged from a single neighbouring cell: from a ▲, the very next cell
+    /// direction can't be judged from a single neighboring cell: from a ▲, the very next cell
     /// along a "/" lane sits directly *below* it (a purely vertical step), which used to fool the
     /// snapping into thinking that lane wasn't diagonal at all. Regardless of which orientation
     /// a lane starts (or ends) on, dragging along its full length should paint the whole thing.

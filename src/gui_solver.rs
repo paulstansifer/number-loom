@@ -237,8 +237,8 @@ impl SolveGui {
 
                     // Arms are shaped like the rhombus that lane's clue boxes use, so they read
                     // as belonging to that lane, and pushed further out than a square grid's
-                    // arms so neighbouring rhombuses (60° apart, wide across their short
-                    // diagonal) don't overlap each other or the centre swatch.
+                    // arms so adjacent rhombuses (60° apart, wide across their short diagonal)
+                    // don't overlap each other or the centre swatch.
                     let arm_size = scale * 0.68;
                     let arm_distance = scale * 1.7;
                     for (family, (back, forward)) in runs.iter().enumerate() {
@@ -509,7 +509,7 @@ fn replay_scale(across: f32, available: f32) -> f32 {
     if whole >= 1.0 {
         whole
     } else {
-        available / across  // Gotta use fractional pictures to fit at all
+        available / across // Gotta use fractional pictures to fit at all
     }
 }
 
@@ -1162,5 +1162,4 @@ mod replay_tests {
             );
         }
     }
-
 }

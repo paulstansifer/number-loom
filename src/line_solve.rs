@@ -962,7 +962,7 @@ pub fn exhaust_line<C: Clue>(cs: &[C], lane: &mut [Cell]) -> anyhow::Result<Scru
                 continue; // Clue to the right couldn't be there
             }
 
-            // As on the left, a clue that must be separated from its neighbour gives up a gap.
+            // As on the left, a clue that must be separated from its neighbor gives up a gap.
             let Some(highest_gap) = (if needs_gap {
                 gap_sfx.checked_sub(1)
             } else {
