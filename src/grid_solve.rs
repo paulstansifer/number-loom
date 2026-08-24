@@ -530,11 +530,13 @@ impl<'p, 'x, C: Clue, K: GridKind> SolveContext<'p, 'x, C, K> {
         line_cache: &'x mut Option<LineCache<C>>,
         options: &'x SolveOptions,
     ) -> SolveContext<'p, 'x, C, K> {
-        let progress = indicatif::ProgressBar::new_spinner();
         let progress_live = !options.trace_solve && options.display_cli_progress;
-        if !progress_live {
-            progress.finish_and_clear();
-        }
+
+        let progress = if progress_live {
+            indicatif::ProgressBar::new_spinner()
+        } else {
+            indicatif::ProgressBar::hidden() // much faster this way!
+        };
 
         SolveContext {
             puzzle,
@@ -679,14 +681,13 @@ impl<'p, C: Clue> SolveState<'p, C> {
         let options = ctx.options;
         let lane_map = ctx.lane_map();
 
-        ctx.progress.tick();
-
         let Some((idx, mode)) = self.choose_lane(options.max_effort) else {
             return Ok(Step::Stalled);
         };
         let solved_lane = self.lanes[idx].lane;
 
         if ctx.progress_live {
+            ctx.progress.tick();
             ctx.progress.set_message(format!(
                 "{} cells left: {: >6}  {}ing {}",
                 self.solve_counts,
