@@ -10,7 +10,7 @@ path = "src/bin/bench-pbnsolve.rs"
 [package]
 name = "number-loom"
 description = "Multipurpose GUI and CLI tool for constructing nonograms"
-version = "0.4.2"
+version = "0.5.0"
 authors = ["Paul Stansifer <paul.stansifer@gmail.com>"]
 edition = "2024"
 license = "MIT"
