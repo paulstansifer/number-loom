@@ -32,6 +32,27 @@ pub enum RenderStyle {
     Experimental,
 }
 
+impl RenderStyle {
+    /// The name this style is saved under. Stored rather than derived, so that renaming a variant
+    /// doesn't silently reset everyone's saved choice.
+    fn setting_name(self) -> &'static str {
+        match self {
+            RenderStyle::TraditionalDots => "traditional_dots",
+            RenderStyle::TraditionalXes => "traditional_xes",
+            RenderStyle::Experimental => "experimental",
+        }
+    }
+
+    fn from_setting_name(name: &str) -> Option<RenderStyle> {
+        match name {
+            "traditional_dots" => Some(RenderStyle::TraditionalDots),
+            "traditional_xes" => Some(RenderStyle::TraditionalXes),
+            "experimental" => Some(RenderStyle::Experimental),
+            _ => None,
+        }
+    }
+}
+
 impl SolveGui {
     pub fn new(
         mut document: Document,
@@ -64,12 +85,6 @@ impl SolveGui {
         let clues = document.puzzle().clone();
         let solved_mask = vec![true; document.solution_mut().cells().len()];
 
-        fn get_bool_setting(key: &str) -> bool {
-            UserSettings::get(key)
-                .and_then(|s| s.parse::<bool>().ok())
-                .unwrap_or(false)
-        }
-
         SolveGui {
             canvas: CanvasGui {
                 document: working_doc,
@@ -99,14 +114,16 @@ impl SolveGui {
             },
             clues,
             intended_solution: document.take_solution().unwrap(),
-            analyze_lines: get_bool_setting(consts::SOLVER_ANALYZE_LINES),
-            detect_errors: get_bool_setting(consts::SOLVER_DETECT_ERRORS),
-            infer_background: get_bool_setting(consts::SOLVER_INFER_BACKGROUND),
+            analyze_lines: UserSettings::get_bool(consts::SOLVER_ANALYZE_LINES),
+            detect_errors: UserSettings::get_bool(consts::SOLVER_DETECT_ERRORS),
+            infer_background: UserSettings::get_bool(consts::SOLVER_INFER_BACKGROUND),
             line_analysis: Staleable {
                 val: None,
                 version: u32::MAX,
             },
-            render_style: RenderStyle::Experimental,
+            render_style: UserSettings::get(consts::SOLVER_RENDER_STYLE)
+                .and_then(|name| RenderStyle::from_setting_name(&name))
+                .unwrap_or(RenderStyle::Experimental),
             last_inferred_version: u32::MAX,
             hovered_cell: None,
             replay: None,
@@ -316,6 +333,9 @@ impl SolveGui {
             ui.separator();
 
             ui.label("Render style");
+            // Radio buttons report `changed()` one at a time; comparing against the style we came
+            // in with saves whichever one of the three the user landed on.
+            let was = self.render_style;
             ui.radio_value(
                 &mut self.render_style,
                 RenderStyle::TraditionalDots,
@@ -331,6 +351,12 @@ impl SolveGui {
                 RenderStyle::Experimental,
                 "experimental",
             );
+            if self.render_style != was {
+                let _ = UserSettings::set(
+                    consts::SOLVER_RENDER_STYLE,
+                    self.render_style.setting_name(),
+                );
+            }
 
             ui.separator();
 
@@ -339,6 +365,11 @@ impl SolveGui {
                     consts::SOLVER_ANALYZE_LINES,
                     &self.analyze_lines.to_string(),
                 );
+                if !self.analyze_lines {
+                    // Turning the aid off has to take its marks with it; otherwise the last
+                    // analysis sits in the gutters, going staler with every move.
+                    self.line_analysis.update(None, u32::MAX);
+                }
             }
             if ui.button("Analyze Lines").clicked() || self.analyze_lines {
                 let clues = &self.clues;

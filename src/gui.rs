@@ -1887,7 +1887,7 @@ impl NonogramGui {
             library_receiver: mpsc::channel().1,
             new_dialog: None,
             library_dialog: None,
-            auto_solve: false,
+            auto_solve: UserSettings::get_bool(consts::EDITOR_AUTO_SOLVE),
             lines_to_affect_string: "5".to_string(),
             solve_report: "".to_string(),
             solve_mode: false,
@@ -2278,7 +2278,14 @@ impl NonogramGui {
             }
 
             ui.separator();
-            ui.checkbox(&mut self.auto_solve, "auto-solve");
+            if ui.checkbox(&mut self.auto_solve, "auto-solve").changed() {
+                let _ = UserSettings::set(consts::EDITOR_AUTO_SOLVE, &self.auto_solve.to_string());
+                if !self.auto_solve {
+                    // The shading clears itself (it's only drawn while fresh), but the report is
+                    // plain text that would otherwise linger after the aid is switched off.
+                    self.solve_report.clear();
+                }
+            }
             if ui.button("Solve").clicked() || self.auto_solve {
                 let puzzle = self.editor_gui.document.try_solution().unwrap().to_puzzle();
 

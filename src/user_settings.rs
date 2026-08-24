@@ -14,7 +14,9 @@ pub mod consts {
     pub const SOLVER_ANALYZE_LINES: &str = "solver.analyze_lines";
     pub const SOLVER_DETECT_ERRORS: &str = "solver.detect_errors";
     pub const SOLVER_INFER_BACKGROUND: &str = "solver.infer_background";
+    pub const SOLVER_RENDER_STYLE: &str = "solver.render_style";
     pub const EDITOR_AUTHOR_NAME: &str = "editor.author_name";
+    pub const EDITOR_AUTO_SOLVE: &str = "editor.auto_solve";
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -50,6 +52,14 @@ impl UserSettings {
                 Err(_) => None,
             }
         }
+    }
+
+    /// Retrieves a boolean value from the store, defaulting to `false` for a key that's missing
+    /// (or that holds something that isn't a bool).
+    pub fn get_bool(key: &str) -> bool {
+        Self::get(key)
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(false)
     }
 
     /// Sets a value in the store for the given key.
