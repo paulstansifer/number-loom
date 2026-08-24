@@ -17,6 +17,7 @@ license = "MIT"
 keywords = ["nonogram"]
 readme = "README.md"
 repository = "https://github.com/paulstansifer/number-loom"
+default-run = "number-loom"
 
 [dependencies]
 image = "0.25"
