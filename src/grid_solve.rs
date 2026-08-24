@@ -7,8 +7,8 @@ use crate::{
     geometry::{GridKind, LaneMap},
     gui,
     line_solve::{
-        Cell, ClueSummary, ModeMap, ScrubReport, SolveMode, exhaust_line, score_lane,
-        scrub_heuristic, skim_heuristic, skim_line,
+        Cell, ClueSummary, LaneCounts, ModeMap, ScrubReport, SolveMode, count_cells, count_lane,
+        exhaust_line, score_counts, scrub_heuristic, skim_heuristic, skim_line,
     },
     puzzle::{
         BACKGROUND, Clue, Color, ColorInfo, DynSolution, PartialSolution, Puzzle, Solution,
@@ -73,6 +73,16 @@ pub struct LaneState<'a, C: Clue> {
     /// Position within the family, for display only.
     index_in_family: usize,
     per_mode: ModeMap<PerModeLaneState>,
+    /// The cell-side half of this lane's scores, kept current by `note_change` rather than
+    /// rebuilt by walking the lane.
+    counts: LaneCounts,
+    /// Where this lane's slice of `SolveState::known_bg` / `not_bg` lives.
+    words: std::ops::Range<usize>,
+    /// Whether the two counts that aren't a simple running total need recomputing from the
+    /// bitmaps. Set by `note_change`, cleared by `rescore`, so a batch of changes to one lane
+    /// costs one recomputation rather than one each.
+    span_stale: bool,
+    chunks_stale: bool,
 }
 
 /// Family 0 is rows, 1 is columns; a triangular puzzle adds `/` and `\` lines.
@@ -91,14 +101,27 @@ impl<'a, C: Clue> LaneState<'a, C> {
         format!("{}{}", family_letter(self.family), self.index_in_family + 1)
     }
 
+    /// Seed a lane from a gathered copy of it, filling in its slice of the two bitmaps. This is
+    /// the only place that walks a whole lane to score it; after this the counts are maintained.
     fn new(
         clues: &'a [C],
         lanes: &LaneMap,
         lane: usize,
         index_in_family: usize,
-        grid: &PartialSolution,
-        scratch: &mut Vec<Cell>,
+        gathered: &[Cell],
+        words: std::ops::Range<usize>,
+        known_bg: &mut [u64],
+        not_bg: &mut [u64],
     ) -> LaneState<'a, C> {
+        for (position, cell) in gathered.iter().enumerate() {
+            if cell.is_known_to_be(BACKGROUND) {
+                set_bit(&mut known_bg[words.clone()], position);
+            }
+            if !cell.can_be(BACKGROUND) {
+                set_bit(&mut not_bg[words.clone()], position);
+            }
+        }
+
         let mut res = LaneState {
             clues,
             clue_summary: ClueSummary::new(clues),
@@ -106,20 +129,61 @@ impl<'a, C: Clue> LaneState<'a, C> {
             family: lanes.lane(lane).family,
             index_in_family,
             per_mode: ModeMap::new_uniform(PerModeLaneState::new()),
+            counts: count_lane(gathered),
+            words,
+            span_stale: false,
+            chunks_stale: false,
         };
-        res.rescore(lanes, grid, false, scratch);
+        res.rescore(known_bg, not_bg, false);
         res
     }
 
-    fn rescore(
+    /// Fold one cell's change into this lane's counts. Knowledge only ever grows — a cell's set
+    /// of possible colors only shrinks — so each predicate below can only ever flip one way, and
+    /// a change that doesn't flip one costs nothing.
+    fn note_change(
         &mut self,
-        lanes: &LaneMap,
-        grid: &PartialSolution,
-        was_processed: bool,
-        scratch: &mut Vec<Cell>,
+        position: usize,
+        was: Cell,
+        now: Cell,
+        known_bg: &mut [u64],
+        not_bg: &mut [u64],
     ) {
-        gather_into(lanes, self.lane, grid, scratch);
-        let scores = score_lane(&self.clue_summary, scratch);
+        if !was.is_known() && now.is_known() {
+            self.counts.unknown_cells -= 1;
+        }
+
+        if !was.is_known_to_be(BACKGROUND) && now.is_known_to_be(BACKGROUND) {
+            self.counts.known_background_cells += 1;
+            set_bit(&mut known_bg[self.words.clone()], position);
+            self.span_stale = true;
+            if position == 0 {
+                self.counts.first_is_known_background = true;
+            }
+            if position + 1 == self.counts.len as usize {
+                self.counts.last_is_known_background = true;
+            }
+        }
+
+        if was.can_be(BACKGROUND) && !now.can_be(BACKGROUND) {
+            set_bit(&mut not_bg[self.words.clone()], position);
+            self.chunks_stale = true;
+        }
+    }
+
+    fn rescore(&mut self, known_bg: &[u64], not_bg: &[u64], was_processed: bool) {
+        let len = self.counts.len as usize;
+        if self.span_stale {
+            self.counts.longest_foregroundable_span =
+                longest_clear_run(&known_bg[self.words.clone()], len);
+            self.span_stale = false;
+        }
+        if self.chunks_stale {
+            self.counts.known_foreground_chunks = count_set_runs(&not_bg[self.words.clone()], len);
+            self.chunks_stale = false;
+        }
+
+        let scores = score_counts(&self.clue_summary, &self.counts);
         if scores.all_known {
             for mode in SolveMode::all() {
                 self.per_mode[*mode].score = std::i32::MIN;
@@ -145,13 +209,65 @@ impl<'a, C: Clue> LaneState<'a, C> {
     }
 }
 
+/// How many `u64`s a lane of `len` positions needs.
+fn words_for(len: usize) -> usize {
+    len.div_ceil(64)
+}
+
+fn set_bit(words: &mut [u64], position: usize) {
+    words[position / 64] |= 1 << (position % 64);
+}
+
+/// Word `i` of a lane's bitmap, with any bits past the lane's end cleared. Bitmaps are sized in
+/// whole words, so the last one has slack that must not be mistaken for real positions.
+fn in_range(word: u64, i: usize, len: usize) -> u64 {
+    let base = i * 64;
+    if base + 64 <= len {
+        word
+    } else {
+        word & !(!0_u64 << (len - base))
+    }
+}
+
+/// The longest run of clear bits among the first `len`. Costs a step per set bit rather than per
+/// position, which is the point: a mostly-clear lane is walked in a few instructions.
+fn longest_clear_run(words: &[u64], len: usize) -> i32 {
+    let mut best: usize = 0;
+    // Where the run we're in started, i.e. just past the last set bit.
+    let mut run_start: usize = 0;
+    for (i, word) in words.iter().enumerate() {
+        let mut word = in_range(*word, i, len);
+        while word != 0 {
+            let position = i * 64 + word.trailing_zeros() as usize;
+            best = best.max(position - run_start);
+            run_start = position + 1;
+            word &= word - 1; // clear the lowest set bit
+        }
+    }
+    best.max(len - run_start) as i32
+}
+
+/// How many maximal runs of set bits the first `len` bits hold — i.e. how many set bits have a
+/// clear bit (or the lane's edge) before them.
+fn count_set_runs(words: &[u64], len: usize) -> i32 {
+    let mut runs: u32 = 0;
+    let mut previous_set = false;
+    for (i, word) in words.iter().enumerate() {
+        let word = in_range(*word, i, len);
+        let shifted = (word << 1) | previous_set as u64;
+        runs += (word & !shifted).count_ones();
+        previous_set = word >> 63 != 0;
+    }
+    runs as i32
+}
+
 /// Copy a lane's cells out of the grid into a contiguous buffer, so that the geometry-agnostic
 /// line solvers in `line_solve` can work on it as a plain 1-D array.
 ///
 /// `buf` is reused across calls on purpose. It is tempting to return a fresh `Vec` instead, but
 /// the copy itself is cheap and the *allocation* is not: skim-only puzzles do no scrubbing and
-/// keep no line cache, so this gather and the one in `rescore` are the only per-operation work of
-/// their size, and allocating for each one costs ~9% on such puzzles.
+/// keep no line cache, so this gather is the only per-step work of its size, and allocating for
+/// each one costs ~9% on such puzzles.
 fn gather_into(lanes: &LaneMap, lane: usize, grid: &PartialSolution, buf: &mut Vec<Cell>) {
     buf.clear();
     buf.extend(lanes.lane(lane).cells.iter().map(|c| grid[*c as usize]));
@@ -161,6 +277,29 @@ fn gather_into(lanes: &LaneMap, lane: usize, grid: &PartialSolution, buf: &mut V
 fn scatter(lanes: &LaneMap, lane: usize, buf: &[Cell], grid: &mut PartialSolution) {
     for (position, cell) in lanes.lane(lane).cells.iter().enumerate() {
         grid[*cell as usize] = buf[position];
+    }
+}
+
+/// A lane's counts are moved by deltas rather than recomputed, so a missed transition would
+/// quietly skew its score for the rest of the solve. In debug builds, check a freshly-rescored
+/// lane against a full walk of it; in release this compiles away entirely.
+fn debug_assert_counts_agree<C: Clue>(
+    lane_state: &LaneState<'_, C>,
+    lane_map: &LaneMap,
+    grid: &PartialSolution,
+) {
+    if cfg!(debug_assertions) {
+        let walked = lane_map
+            .lane(lane_state.lane)
+            .cells
+            .iter()
+            .map(|cell| grid[*cell as usize]);
+        assert_eq!(
+            lane_state.counts,
+            count_cells(walked),
+            "lane {} counts drifted from what the cells say",
+            lane_state.lane
+        );
     }
 }
 
@@ -220,7 +359,7 @@ fn dyn_solution<C: Clue, K: GridKind>(
 
 fn display_step<C: Clue, K: GridKind>(
     clue_lane: &LaneState<'_, C>,
-    orig_lane: Vec<Cell>,
+    orig_lane: &[Cell],
     mode: SolveMode,
     grid: &PartialSolution,
     puzzle: &Puzzle<C, K>,
@@ -262,11 +401,11 @@ fn display_step<C: Clue, K: GridKind>(
     // Hackish way of getting the original score...
     let (orig_score, new_score) = match mode {
         SolveMode::Scrub => (
-            scrub_heuristic(clue_lane.clues, &orig_lane),
+            scrub_heuristic(clue_lane.clues, orig_lane),
             clue_lane.per_mode[mode].score,
         ),
         SolveMode::Skim => (
-            skim_heuristic(clue_lane.clues, &orig_lane),
+            skim_heuristic(clue_lane.clues, orig_lane),
             clue_lane.per_mode[mode].score,
         ),
     };
@@ -345,14 +484,22 @@ pub fn settle_solution<C: Clue, K: GridKind>(
 /// across every branch it explores.
 #[derive(Default)]
 pub struct Scratch {
-    /// Gather buffer for scoring; live only within a single `rescore` call.
-    score: Vec<Cell>,
+    /// Gather buffer for seeding the lanes at the start of a solve. Nothing uses it after that:
+    /// scoring works off the counts each lane keeps, not off the cells.
+    seed: Vec<Cell>,
     /// Working copy of the lane being solved: gathered out of the grid, mutated in place by the
     /// line solver, then scattered back.
     lane: Vec<Cell>,
     /// Per-lane "needs another look" marks. Two lanes can share more than one cell, so this
     /// dedupes: a lane gets rescored once per step however many affected cells it holds.
     stale: Vec<bool>,
+    /// What the last line solve moved: each cell it changed, paired with what that cell was
+    /// before. `invalidate` folds these into the lane counts.
+    changes: Vec<(u32, Cell)>,
+    /// Lane positions already recorded in `changes`. A `ScrubReport` can name a position more
+    /// than once — a cell narrowed twice reports twice — and a count must only move once per
+    /// cell, so the walk that builds `changes` dedupes as it goes.
+    recorded: Vec<bool>,
 }
 
 /// Everything a solve needs that doesn't change as it progresses, plus the caches and buffers it
@@ -424,6 +571,13 @@ pub struct SolveState<'p, C: Clue> {
     pub grid: PartialSolution,
     /// Parallel to `LaneMap::lanes()`, so a lane index indexes both this and the geometry.
     lanes: Vec<LaneState<'p, C>>,
+    /// One bit per lane position, all the lanes' bitmaps end to end (`LaneState::words` says
+    /// where each one sits): whether that cell is known to be background. Scoring needs the
+    /// longest run without one, which is the one tally that can't be kept as a running total —
+    /// but recomputing it from a bitmap costs a couple of words instead of a walk of the lane.
+    known_bg: Vec<u64>,
+    /// As `known_bg`, but for cells that definitely *aren't* background. Scoring counts the runs.
+    not_bg: Vec<u64>,
     pub cells_left: usize,
     pub solve_counts: ModeMap<usize>,
     /// How many more fruitless attempts each below-`max_effort` mode gets before we stop trying
@@ -440,17 +594,31 @@ impl<'p, C: Clue> SolveState<'p, C> {
         let lane_map = ctx.lane_map();
         let scratch = &mut ctx.scratch;
 
+        let total_words: usize = lane_map
+            .lanes()
+            .iter()
+            .map(|lane| words_for(lane.cells.len()))
+            .sum();
+        let mut known_bg = vec![0_u64; total_words];
+        let mut not_bg = vec![0_u64; total_words];
+
         let mut lanes = vec![];
+        let mut words_used = 0;
         // `lanes` is parallel to `geometry.lanes()`, so a lane index indexes both.
         for family in 0..lane_map.family_count() {
             for (index_in_family, lane) in lane_map.family(family).enumerate() {
+                gather_into(lane_map, lane, &grid, &mut scratch.seed);
+                let words = words_used..words_used + words_for(scratch.seed.len());
+                words_used = words.end;
                 lanes.push(LaneState::new(
                     &puzzle.lines[lane],
                     lane_map,
                     lane,
                     index_in_family,
-                    &grid,
-                    &mut scratch.score,
+                    &scratch.seed,
+                    words,
+                    &mut known_bg,
+                    &mut not_bg,
                 ));
             }
         }
@@ -459,6 +627,8 @@ impl<'p, C: Clue> SolveState<'p, C> {
             cells_left: grid.iter().filter(|c| !c.is_known()).count(),
             grid,
             lanes,
+            known_bg,
+            not_bg,
             solve_counts: ModeMap::new_uniform(0),
             allowed_failures: INITIAL_ALLOWED_FAILURES,
         }
@@ -559,23 +729,45 @@ impl<'p, C: Clue> SolveState<'p, C> {
             );
         }
 
-        let known_before = orig_version_of_line.iter().filter(|c| c.is_known()).count();
-        let known_after = grid_lane.iter().filter(|c| c.is_known()).count();
-
         scatter(lane_map, solved_lane, &ctx.scratch.lane, &mut self.grid);
-        self.lanes[idx].rescore(
-            lane_map,
-            &self.grid,
-            /*was_processed=*/ true,
-            &mut ctx.scratch.score,
-        );
 
-        self.cells_left -= known_after - known_before;
+        // Only the cells the report names can have moved, so the counts move by a delta rather
+        // than by re-walking the lane. `report.affected_cells` holds positions *within the lane
+        // we just solved*, so translate them into cell indices on the way.
+        let Scratch {
+            lane,
+            changes,
+            recorded,
+            ..
+        } = &mut ctx.scratch;
+        let solved_lane_cells = &lane_map.lane(solved_lane).cells;
+        changes.clear();
+        recorded.clear();
+        recorded.resize(lane.len(), false);
+        let mut newly_known = 0;
+        for &position in &report.affected_cells {
+            if recorded[position] {
+                continue;
+            }
+            recorded[position] = true;
+            let was = orig_version_of_line[position];
+            if !was.is_known() && lane[position].is_known() {
+                newly_known += 1;
+            }
+            changes.push((solved_lane_cells[position], was));
+        }
+        self.cells_left -= newly_known;
+
+        // Fold the changes into every lane that holds one, so that nothing below — the trace, a
+        // caller that stops here because the puzzle is finished, a fork of this state — sees
+        // scores that predate the step.
+        let Scratch { changes, stale, .. } = &mut ctx.scratch;
+        self.invalidate(changes, Some(solved_lane), lane_map, stale);
 
         if options.trace_solve {
             display_step(
                 &self.lanes[idx],
-                orig_version_of_line,
+                &orig_version_of_line,
                 mode,
                 &self.grid,
                 puzzle,
@@ -599,16 +791,6 @@ impl<'p, C: Clue> SolveState<'p, C> {
             }
         }
 
-        // `report.affected_cells` holds positions *within the lane we just solved*, so translate
-        // them into cell indices before handing them to `invalidate`.
-        let affected = report
-            .affected_cells
-            .iter()
-            .map(|position| lane_map.lane(solved_lane).cells[*position]);
-        // The lane we just solved was rescored above and must stay `processed`, or we'd pick it
-        // straight back up.
-        self.invalidate(affected, Some(solved_lane), lane_map, &mut ctx.scratch);
-
         Ok(Step::Attempted)
     }
 
@@ -625,19 +807,28 @@ impl<'p, C: Clue> SolveState<'p, C> {
     ) -> anyhow::Result<()> {
         let lane_map = ctx.lane_map();
 
+        let was = self.grid[cell as usize];
         if self.grid[cell as usize].learn(color)? {
             self.cells_left -= 1;
         }
-        self.invalidate(std::iter::once(cell), None, lane_map, &mut ctx.scratch);
+        let Scratch { changes, stale, .. } = &mut ctx.scratch;
+        changes.clear();
+        changes.push((cell, was));
+        self.invalidate(changes, None, lane_map, stale);
         // A guess is new information, so it's worth another cheap pass before escalating.
         self.allowed_failures = INITIAL_ALLOWED_FAILURES;
 
         Ok(())
     }
 
-    /// Mark every lane through `cells` as worth re-examining: bring its scores up to date and
-    /// clear its `processed` flags so `choose_lane` will consider it again. `already_current`, if
-    /// given, is a lane that has just been rescored and should be left alone.
+    /// React to a batch of changed cells: fold each one into the counts of every lane holding it,
+    /// then rescore those lanes and clear their `processed` flags so `choose_lane` will consider
+    /// them again. `changes` pairs each cell with what it was before, which is what the counts
+    /// need in order to move by a delta instead of being recomputed.
+    ///
+    /// `just_solved`, if given, is the lane the caller has just run a line solver over. It gets
+    /// rescored like the rest — its cells moved too — but keeps its `processed` flags, or we'd
+    /// pick it straight back up, and it's the one lane whose score shift counts as "processed".
     ///
     /// We ask the geometry which lanes hold each cell rather than using the old "column `i` meets
     /// row `j` at position `i`" shortcut: on a square grid the two agree, but that shortcut
@@ -645,29 +836,43 @@ impl<'p, C: Clue> SolveState<'p, C> {
     /// and two lanes can share more than one cell.
     fn invalidate(
         &mut self,
-        cells: impl Iterator<Item = u32>,
-        already_current: Option<usize>,
+        changes: &[(u32, Cell)],
+        just_solved: Option<usize>,
         lane_map: &LaneMap,
-        scratch: &mut Scratch,
+        stale: &mut Vec<bool>,
     ) {
-        scratch.stale.clear();
-        scratch.stale.resize(self.lanes.len(), false);
-        for cell in cells {
+        // Split the borrow: the lanes are updated while the bitmaps and the grid are read.
+        let SolveState {
+            grid,
+            lanes,
+            known_bg,
+            not_bg,
+            ..
+        } = self;
+
+        stale.clear();
+        stale.resize(lanes.len(), false);
+        for &(cell, was) in changes {
+            let now = grid[cell as usize];
             for membership in lane_map.memberships(cell) {
-                if Some(membership.lane as usize) != already_current {
-                    scratch.stale[membership.lane as usize] = true;
-                }
+                let lane = membership.lane as usize;
+                lanes[lane].note_change(membership.position as usize, was, now, known_bg, not_bg);
+                stale[lane] = true;
             }
         }
 
-        for (other_lane, is_stale) in self.lanes.iter_mut().zip(&scratch.stale) {
+        // Always rescore the lane we just solved, even if the line solver learned nothing: that's
+        // what rolls its score into `processed_score` so we can measure improvement correctly.
+        if let Some(just_solved) = just_solved {
+            lanes[just_solved].rescore(known_bg, not_bg, /*was_processed=*/ true);
+            debug_assert_counts_agree(&lanes[just_solved], lane_map, grid);
+            stale[just_solved] = false;
+        }
+
+        for (other_lane, is_stale) in lanes.iter_mut().zip(&*stale) {
             if *is_stale {
-                other_lane.rescore(
-                    lane_map,
-                    &self.grid,
-                    /*was_processed=*/ false,
-                    &mut scratch.score,
-                );
+                other_lane.rescore(known_bg, not_bg, /*was_processed=*/ false);
+                debug_assert_counts_agree(other_lane, lane_map, grid);
                 for mode in SolveMode::all() {
                     other_lane.per_mode[*mode].processed = false;
                 }

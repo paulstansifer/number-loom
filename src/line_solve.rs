@@ -677,18 +677,51 @@ pub struct LaneScores {
     pub all_known: bool,
 }
 
-/// Score a lane for both modes at once. Every caller wants both numbers, and walking the cells
-/// is what the scoring costs, so the walk happens once.
-pub fn score_lane(summary: &ClueSummary, lane: &[Cell]) -> LaneScores {
+/// The tallies of a lane's cells that `score_counts` needs. Splitting these out from the
+/// arithmetic lets `grid_solve` keep them up to date as cells change, instead of re-walking a
+/// whole lane every time one of its cells moves — see `LaneState::rescore`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaneCounts {
+    pub len: i32,
+    /// Longest run of cells that aren't known to be background.
+    pub longest_foregroundable_span: i32,
+    pub known_background_cells: i32,
+    /// Cells whose color isn't pinned down yet.
+    pub unknown_cells: i32,
+    /// Maximal runs of cells that definitely aren't background.
+    pub known_foreground_chunks: i32,
+    pub first_is_known_background: bool,
+    pub last_is_known_background: bool,
+}
+
+/// Walk a lane and tally it. `grid_solve` only does this to seed a lane and to check itself;
+/// after that it maintains the same numbers incrementally.
+pub fn count_lane(lane: &[Cell]) -> LaneCounts {
+    count_cells(lane.iter().copied())
+}
+
+/// As `count_lane`, but over any run of cells, so that a caller who doesn't already have them
+/// contiguously doesn't have to gather them first.
+pub fn count_cells(cells: impl Iterator<Item = Cell>) -> LaneCounts {
+    let mut len: i32 = 0;
     let mut longest_foregroundable_span: i32 = 0;
     let mut cur_foregroundable_span: i32 = 0;
     let mut known_background_cells: i32 = 0;
     let mut unknown_cells: i32 = 0;
     let mut known_foreground_chunks: i32 = 0;
     let mut in_a_foreground_chunk = false;
+    let mut first_is_known_background = false;
+    let mut last_is_known_background = false;
 
-    for cell in lane {
-        if !cell.is_known_to_be(BACKGROUND) {
+    for cell in cells {
+        let is_known_background = cell.is_known_to_be(BACKGROUND);
+        if len == 0 {
+            first_is_known_background = is_known_background;
+        }
+        last_is_known_background = is_known_background;
+        len += 1;
+
+        if !is_known_background {
             cur_foregroundable_span += 1;
             longest_foregroundable_span =
                 std::cmp::max(cur_foregroundable_span, longest_foregroundable_span);
@@ -711,30 +744,46 @@ pub fn score_lane(summary: &ClueSummary, lane: &[Cell]) -> LaneScores {
         }
     }
 
+    LaneCounts {
+        len,
+        longest_foregroundable_span,
+        known_background_cells,
+        unknown_cells,
+        known_foreground_chunks,
+        first_is_known_background,
+        last_is_known_background,
+    }
+}
+
+/// Score a lane for both modes at once, from tallies someone else gathered. Every caller wants
+/// both numbers and the "is this line finished?" answer, and they all come off the same counts.
+pub fn score_counts(summary: &ClueSummary, counts: &LaneCounts) -> LaneScores {
+    let LaneCounts {
+        len,
+        longest_foregroundable_span,
+        known_background_cells,
+        unknown_cells,
+        known_foreground_chunks,
+        first_is_known_background,
+        last_is_known_background,
+    } = *counts;
+
     let skim = if summary.count == 0 {
         1000 // Can solve it right away!
     } else {
-        let edge_bonus = if !lane.first().unwrap().is_known_to_be(BACKGROUND) {
-            2
-        } else {
-            0
-        } + if !lane.last().unwrap().is_known_to_be(BACKGROUND) {
-            2
-        } else {
-            0
-        };
+        let edge_bonus = if !first_is_known_background { 2 } else { 0 }
+            + if !last_is_known_background { 2 } else { 0 };
 
         (summary.foreground_cells + summary.longest_clue) - longest_foregroundable_span + edge_bonus
     };
 
-    let known_foreground_cells = lane.len() as i32 - unknown_cells - known_background_cells;
+    let known_foreground_cells = len - unknown_cells - known_background_cells;
 
     // scrubbing colored squares back and forth is likely to show colored squares if this is high:
     let density =
         summary.space_taken - known_foreground_cells + summary.longest_clue - summary.count;
 
-    let unknown_background_cells =
-        (lane.len() as i32 - summary.foreground_cells) - known_background_cells;
+    let unknown_background_cells = (len - summary.foreground_cells) - known_background_cells;
 
     // Matching contiguous foreground cells to clues is likely to show background squares if this
     // is high:
@@ -752,6 +801,12 @@ pub fn score_lane(summary: &ClueSummary, lane: &[Cell]) -> LaneScores {
         scrub,
         all_known: unknown_cells == 0,
     }
+}
+
+/// Walk a lane and score it. Only the heuristics and the tests need this; the solver keeps its
+/// `LaneCounts` up to date instead.
+pub fn score_lane(summary: &ClueSummary, lane: &[Cell]) -> LaneScores {
+    score_counts(summary, &count_lane(lane))
 }
 
 // This is the new thing we call "scrub" (TODO: make names consistent!)
