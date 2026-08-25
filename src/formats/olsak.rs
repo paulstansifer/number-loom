@@ -23,7 +23,7 @@ fn olsak_ch(c: char, orig_to_sanitized: &mut HashMap<char, char>) -> char {
         if c.is_alphanumeric() && !existing.contains(&c) {
             c
         } else {
-            for c in 'a'..'z' {
+            for c in 'a'..='z' {
                 if !existing.contains(&c) {
                     return c;
                 }

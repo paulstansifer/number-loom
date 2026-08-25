@@ -186,7 +186,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
         let scores = score_counts(&self.clue_summary, &self.counts);
         if scores.all_known {
             for mode in SolveMode::all() {
-                self.per_mode[*mode].score = std::i32::MIN;
+                self.per_mode[*mode].score = i32::MIN;
             }
             return;
         }
@@ -305,7 +305,7 @@ fn debug_assert_counts_agree<C: Clue>(
 
 /// Returns an index into `lanes`, which is parallel to `LaneMap::lanes()`.
 fn find_best_lane<C: Clue>(lanes: &[LaneState<'_, C>], mode: SolveMode) -> Option<usize> {
-    let mut best_score = std::i32::MIN;
+    let mut best_score = i32::MIN;
     let mut res = None;
 
     for (idx, lane) in lanes.iter().enumerate() {
@@ -986,7 +986,7 @@ pub async fn disambig_candidates(
     }
 
     for cell in 0..cell_count {
-        let mut best_result = std::usize::MAX;
+        let mut best_result = usize::MAX;
         let mut best_color = BACKGROUND;
 
         for new_col in s.palette().keys() {
