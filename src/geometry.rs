@@ -1962,7 +1962,7 @@ fn build_guides<K: GridKind>(
                     to,
                     family,
                     index: family_lanes.len(),
-                    emphasis: family_lanes.len() % 5 == 0,
+                    emphasis: family_lanes.len().is_multiple_of(5),
                 });
             }
         }

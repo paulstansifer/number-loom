@@ -11,11 +11,10 @@ fn get_children<'a, 'input>(
     let mut res = vec![];
 
     for child in node.children() {
-        if child.is_text() {
-            if child.text().unwrap().trim() != "" {
+        if child.is_text()
+            && child.text().unwrap().trim() != "" {
                 bail!("unexpected text: {}", child.text().unwrap());
             }
-        }
         if child.is_element() {
             if child.tag_name().name() == tag {
                 res.push(child);
@@ -190,7 +189,7 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
                     .context("'char' attribute is empty")?,
                 name: color_name.to_string(),
                 rgb: (r, g, b),
-                color: color,
+                color,
                 corner: None, // webpbn isn't intended to represent Triano clues
             };
 

@@ -72,11 +72,10 @@ impl StatusCell {
     // clears the message, unless it was set too recently for the user to have read it yet.
     pub fn maybe_clear_on_dirty(&self) {
         let mut inner = self.inner.borrow_mut();
-        if let Some((_, set_at)) = *inner {
-            if set_at.elapsed() >= STATUS_GRACE_PERIOD {
+        if let Some((_, set_at)) = *inner
+            && set_at.elapsed() >= STATUS_GRACE_PERIOD {
                 *inner = None;
             }
-        }
     }
 }
 
@@ -240,7 +239,7 @@ impl<T> Staleable<T> {
         }
     }
 
-    pub fn get_or_refresh<'a, F>(&'a mut self, version: Version, refresh: F) -> &'a mut T
+    pub fn get_or_refresh<F>(&mut self, version: Version, refresh: F) -> &mut T
     where
         F: FnOnce() -> T,
     {
@@ -1205,7 +1204,7 @@ impl CanvasGui {
         let disambig_report = disambiguator.as_ref().and_then(|d| d.report.as_ref());
         let solved_mask = self.solved_mask.get_if_fresh(self.version);
         let overlays_suppress_unsolved = disambig_report.is_some()
-            || disambiguator.map_or(false, |d| d.progress > 0.0 && d.progress < 1.0);
+            || disambiguator.is_some_and(|d| d.progress > 0.0 && d.progress < 1.0);
 
         let picture = self.document.try_solution().unwrap();
         let palette = picture.palette();
@@ -1218,7 +1217,7 @@ impl CanvasGui {
                     let index = drawn.cell as usize;
                     let color_info = &palette[&sol.cells[index]];
                     let solved =
-                        solved_mask.map_or(true, |sm| sm.1[index]) || overlays_suppress_unsolved;
+                        solved_mask.is_none_or(|sm| sm.1[index]) || overlays_suppress_unsolved;
                     let mut dr = (&palette[&BACKGROUND], 1.0);
                     if let Some(report) = disambig_report.as_ref() {
                         let (c, score) = report[index];
@@ -1449,7 +1448,7 @@ impl CanvasGui {
             // Angle between the lane's direction and the drag, ignoring which way along the
             // lane it points, so dragging toward either end still snaps to that lane.
             let cos_angle = ((span.x * drag.x + span.y * drag.y) / (span_len * drag_len)).abs();
-            if best.map_or(true, |(_, best_cos)| cos_angle > best_cos) {
+            if best.is_none_or(|(_, best_cos)| cos_angle > best_cos) {
                 best = Some((membership.lane as usize, cos_angle));
             }
         }
@@ -1561,11 +1560,10 @@ impl CanvasGui {
                             (edited_color[2] * 256.0) as u8,
                         );
                     }
-                    if *color != BACKGROUND {
-                        if ui.button(icons::ICON_DELETE).clicked() {
+                    if *color != BACKGROUND
+                        && ui.button(icons::ICON_DELETE).clicked() {
                             removed_color = Some(*color);
                         }
-                    }
                 }
             });
         }
@@ -1874,11 +1872,10 @@ impl NonogramGui {
 
         let current_color = default_color(picture.palette());
 
-        if document.author.is_empty() {
-            if let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME) {
+        if document.author.is_empty()
+            && let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME) {
                 document.author = author;
             }
-        }
 
         NonogramGui {
             editor_gui: CanvasGui {
@@ -3030,6 +3027,12 @@ pub struct Disambiguator {
     progress_r: mpsc::Receiver<f32>,
     progress: f32,
     report_r: mpsc::Receiver<DisambigResult>,
+}
+
+impl Default for Disambiguator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Disambiguator {

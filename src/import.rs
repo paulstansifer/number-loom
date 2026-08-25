@@ -40,7 +40,7 @@ pub fn load(
 ) -> anyhow::Result<Document> {
     use crate::formats::webpbn::webpbn_to_document;
 
-    let input_format = puzzle::infer_format(&filename, format);
+    let input_format = puzzle::infer_format(filename, format);
 
     Ok(match input_format {
         NonogramFormat::Html => {
@@ -288,7 +288,7 @@ pub fn char_grid_to_solution(char_grid: &str) -> Solution<Square> {
 
     let clue_style = if has_triangles {
         // Let's assume triano clues are black-and-white; fix the palette!
-        for (_, color_info) in &mut palette {
+        for color_info in palette.values_mut() {
             if color_info.color == BACKGROUND {
                 continue;
             }
@@ -425,10 +425,8 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
 
     let mut olsak_palette = HashMap::<char, ColorInfo>::new();
     // For each dimension, store the "glued" colors (the caps):
-    let mut olsak_glued_palettes = vec![
-        HashMap::<(char, Glue), ColorInfo>::new(),
-        HashMap::<(char, Glue), ColorInfo>::new(),
-    ];
+    let mut olsak_glued_palettes = [HashMap::<(char, Glue), ColorInfo>::new(),
+        HashMap::<(char, Glue), ColorInfo>::new()];
     let mut clue_style = ClueStyle::Nono;
     // `#t`/`#T` declares a triddler, which has six data groups rather than two.
     let mut triddler = false;
@@ -482,7 +480,7 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
 
             let rising = color_name.contains('/');
 
-            let (corner, unique_ch) = match (color_name.split_once(&['/', '\\']), rising) {
+            let (corner, unique_ch) = match (color_name.split_once(['/', '\\']), rising) {
                 (None, _) => (None, unique_ch.chars().next().unwrap()),
                 (Some(("white", "black")), true) => (
                     Some(Corner {
@@ -539,7 +537,7 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
                 (128, 128, 128)
             };
 
-            let dim_0_glue = comment.chars().nth(0).map(parse_glue).unwrap_or(NoGlue);
+            let dim_0_glue = comment.chars().next().map(parse_glue).unwrap_or(NoGlue);
             let dim_1_glue = comment.chars().nth(1).map(parse_glue).unwrap_or(NoGlue);
 
             if dim_0_glue != NoGlue || dim_1_glue != NoGlue {
@@ -571,18 +569,13 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
 
             next_color += 1;
         } else if let Dimension(d) = cur_stanza {
-            if !olsak_palette.contains_key(&'1') {
-                olsak_palette.insert(
-                    '1',
-                    ColorInfo {
+            olsak_palette.entry('1').or_insert_with(|| ColorInfo {
                         ch: '#',
                         name: "black".to_string(),
                         rgb: (0, 0, 0),
                         color: Color(next_color),
                         corner: None,
-                    },
-                );
-            }
+                    });
 
             if d >= if triddler { 6 } else { 2 } {
                 // There can be comments after the end!
@@ -622,15 +615,13 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
                         let mut chars: Vec<char> = clue_str.chars().collect();
                         let front_cap = chars
                             .first()
-                            .map(|c| olsak_glued_palettes[d].get(&(*c, Left)).map(|c| c.color))
-                            .flatten();
+                            .and_then(|c| olsak_glued_palettes[d].get(&(*c, Left)).map(|c| c.color));
                         if front_cap.is_some() {
                             chars.remove(0);
                         }
                         let back_cap = chars
                             .last()
-                            .map(|c| olsak_glued_palettes[d].get(&(*c, Right)).map(|c| c.color))
-                            .flatten();
+                            .and_then(|c| olsak_glued_palettes[d].get(&(*c, Right)).map(|c| c.color));
                         if back_cap.is_some() {
                             chars.pop();
                         }
@@ -660,9 +651,7 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
             }
         }
     }
-    if !olsak_palette.contains_key(&'0') {
-        olsak_palette.insert('0', ColorInfo::default_bg());
-    }
+    olsak_palette.entry('0').or_insert_with(|| ColorInfo::default_bg());
 
     let mut palette: HashMap<Color, ColorInfo> = olsak_palette
         .into_values()

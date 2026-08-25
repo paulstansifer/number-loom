@@ -121,11 +121,10 @@ fn count_colors(doc: &Document) -> HashMap<(u8, u8, u8), usize> {
 fn count_colors_from_solution(solution: &DynSolution) -> HashMap<(u8, u8, u8), usize> {
     let mut counts = HashMap::new();
     for color in solution.cells() {
-        if let Some(color_info) = solution.palette().get(color) {
-            if color_info.corner.is_none() {
+        if let Some(color_info) = solution.palette().get(color)
+            && color_info.corner.is_none() {
                 *counts.entry(color_info.rgb).or_insert(0) += 1;
             }
-        }
     }
     counts
 }

@@ -142,12 +142,12 @@ impl Clue for Triano {
     fn to_string(&self, palette: &Palette) -> String {
         let mut res = String::new();
         if let Some(front_cap) = self.front_cap {
-            res.push_str(&palette[&front_cap].ch.to_string());
+            res.push(palette[&front_cap].ch);
         }
-        res.push_str(&palette[&self.body_color].ch.to_string());
+        res.push(palette[&self.body_color].ch);
         res.push_str(&self.body_len.to_string());
         if let Some(back_cap) = self.back_cap {
-            res.push_str(&palette[&back_cap].ch.to_string());
+            res.push(palette[&back_cap].ch);
         }
         res
     }
@@ -802,6 +802,12 @@ pub struct DynSolveCache {
     triano_cache: Option<crate::grid_solve::LineCache<Triano>>,
 }
 
+impl Default for DynSolveCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DynSolveCache {
     pub fn new() -> Self {
         DynSolveCache {
@@ -1072,7 +1078,7 @@ impl Document {
         match puzzle.plain_solve() {
             Ok(report) => {
                 if report.cells_left > 0 {
-                    problems.push(format!("puzzle is not solveable with line-logic"));
+                    problems.push("puzzle is not solveable with line-logic".to_string());
                 }
             }
             Err(_) => {

@@ -124,7 +124,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            println!("");
+            println!();
         }
 
         return Ok(());

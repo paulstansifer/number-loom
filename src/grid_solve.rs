@@ -436,7 +436,7 @@ where
                     lane[*idx] = *new_cell;
                 }
 
-                return Ok(report.clone());
+                Ok(report.clone())
             }
             std::collections::hash_map::Entry::Vacant(v) => {
                 let report = f(clues, lane)?;
@@ -447,7 +447,7 @@ where
                 }
 
                 v.insert((report.clone(), cells_to_cache));
-                return Ok(report);
+                Ok(report)
             }
         }
     } else {

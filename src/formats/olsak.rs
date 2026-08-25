@@ -21,7 +21,7 @@ fn olsak_ch(c: char, orig_to_sanitized: &mut HashMap<char, char>) -> char {
     let existing = HashSet::<char>::from_iter(orig_to_sanitized.values().cloned());
     *orig_to_sanitized.entry(c).or_insert_with(|| {
         if c.is_alphanumeric() && !existing.contains(&c) {
-            return c;
+            c
         } else {
             for c in 'a'..'z' {
                 if !existing.contains(&c) {
