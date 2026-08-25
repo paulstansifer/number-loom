@@ -404,6 +404,53 @@ pub fn default_color(palette: &Palette) -> Color {
     }
 }
 
+/// The number-key shortcut for the `index`th palette entry, in the order the palette editor
+/// shows them, along with the character to name it in a tooltip.
+fn palette_shortcut(index: usize) -> Option<(egui::Key, char)> {
+    use egui::Key::*;
+    const KEYS: [(egui::Key, char); 10] = [
+        (Num1, '1'),
+        (Num2, '2'),
+        (Num3, '3'),
+        (Num4, '4'),
+        (Num5, '5'),
+        (Num6, '6'),
+        (Num7, '7'),
+        (Num8, '8'),
+        (Num9, '9'),
+        (Num0, '0'),
+    ];
+    KEYS.get(index).copied()
+}
+
+/// The icon, bare-key shortcut, and tooltip key-name for each tool.
+fn tool_appearance(tool: Tool) -> (&'static str, egui::Key, char) {
+    match tool {
+        Tool::Pencil => (icons::ICON_BRUSH, egui::Key::P, 'P'),
+        Tool::LineAlongLane => (icons::ICON_LINE_START, egui::Key::L, 'L'),
+        Tool::FloodFill => (icons::ICON_FORMAT_COLOR_FILL, egui::Key::F, 'F'),
+        // `L` is spoken for by the line tool, so the lasso gets "select" instead.
+        Tool::Lasso => (icons::ICON_LASSO_SELECT, egui::Key::S, 'S'),
+    }
+}
+
+/// One entry in the tool row: a toggle button that its key also reaches. `typing` suppresses the
+/// key while a `TextEdit` has the keyboard.
+fn tool_button(
+    ui: &mut egui::Ui,
+    current_tool: &mut Tool,
+    tool: Tool,
+    typing: bool,
+    description: &str,
+) {
+    let (icon, key, ch) = tool_appearance(tool);
+    ui.selectable_value(current_tool, tool, egui::RichText::new(icon).size(24.0))
+        .on_hover_text(format!("{description} (press {ch})"));
+    if !typing && ui.input(|i| i.key_pressed(key)) {
+        *current_tool = tool;
+    }
+}
+
 impl CanvasGui {
     /// Sync `self.current_color` and `self.drag_start_color` to the document, for safety.
     fn clamp_colors_to_palette(&mut self) {
@@ -604,33 +651,37 @@ impl CanvasGui {
 
     fn tool_selector(&mut self, ui: &mut egui::Ui, editing: bool) {
         let was = self.current_tool;
+
+        // Same story as in `common_sidebar_items`: no modifiers here either.
+        let typing = ui.ctx().wants_keyboard_input();
+
         centered_row(ui, "tools", |ui| {
-            ui.selectable_value(
-                &mut self.current_tool,
-                Tool::Pencil,
-                egui::RichText::new(icons::ICON_BRUSH).size(24.0),
-            )
-            .on_hover_text("Pencil");
-            ui.selectable_value(
+            tool_button(ui, &mut self.current_tool, Tool::Pencil, typing, "Pencil");
+            tool_button(
+                ui,
                 &mut self.current_tool,
                 Tool::LineAlongLane,
-                egui::RichText::new(icons::ICON_LINE_START).size(24.0),
-            )
-            .on_hover_text("Line along a row, column or diagonal");
+                typing,
+                "Line along a row, column or diagonal",
+            );
+            // Flood fill and the lasso are editor-only, so their keys are dead in the solver
+            // rather than silently switching to a tool with no button.
             if editing {
-                ui.selectable_value(
+                tool_button(
+                    ui,
                     &mut self.current_tool,
                     Tool::FloodFill,
-                    egui::RichText::new(icons::ICON_FORMAT_COLOR_FILL).size(24.0),
-                )
-                .on_hover_text("Flood Fill");
+                    typing,
+                    "Flood Fill",
+                );
 
-                ui.selectable_value(
+                tool_button(
+                    ui,
                     &mut self.current_tool,
                     Tool::Lasso,
-                    egui::RichText::new(icons::ICON_LASSO_SELECT).size(24.0),
-                )
-                .on_hover_text("Lasso select: draw a loop, then drag to move what's inside");
+                    typing,
+                    "Lasso select: draw a loop, then drag to move what's inside",
+                );
             }
         });
 
@@ -1495,20 +1546,24 @@ impl CanvasGui {
         let mut removed_color = None;
         let mut add_color = false;
 
+        // Same story as in `common_sidebar_items`: these shortcuts have no modifier, so they
+        // have to stand down by hand while a `TextEdit` has the keyboard.
+        let typing = ui.ctx().wants_keyboard_input();
+
         use itertools::Itertools;
 
-        for (color, color_info) in self
+        for (index, (color, color_info)) in self
             .document
             .solution_mut()
             .palette_mut()
             .iter_mut()
             .sorted_by_key(|(color, _)| *color)
-        {
             // TODO: actually paint a palette entry for unsolved,
             // in case the user doesn't have a middle button.
-            if *color == UNSOLVED && read_only {
-                continue;
-            }
+            .filter(|(color, _)| !(**color == UNSOLVED && read_only))
+            .enumerate()
+        {
+            let shortcut = palette_shortcut(index);
             let (r, g, b) = color_info.rgb;
             let button_text = if color_info.corner.is_some() {
                 color_info.ch.to_string()
@@ -1525,7 +1580,17 @@ impl CanvasGui {
                     .monospace()
                     .size(24.0)
                     .color(egui::Color32::from_rgb(r, g, b));
-                if ui.add(egui::Button::new(color_text)).clicked() {
+                let hover_text = match shortcut {
+                    Some((_, ch)) => format!("Paint with {} (press {})", color_info.name, ch),
+                    None => format!("Paint with {}", color_info.name),
+                };
+                if ui
+                    .add(egui::Button::new(color_text))
+                    .on_hover_text(hover_text)
+                    .clicked()
+                    || (!typing
+                        && shortcut.is_some_and(|(key, _)| ui.input(|i| i.key_pressed(key))))
+                {
                     picked_color = *color;
                 };
 

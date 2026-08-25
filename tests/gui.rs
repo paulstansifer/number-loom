@@ -15,6 +15,18 @@ mod tests {
             .center()
     }
 
+    /// Tap a bare key and let the GUI react to it.
+    fn press_key(harness: &mut Harness<NonogramGui>, key: egui::Key) {
+        harness.input_mut().events.push(Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+        harness.run();
+    }
+
     #[test]
     fn test_solve_button() {
         let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
@@ -65,6 +77,94 @@ mod tests {
             nonogram_gui.editor_gui.current_color,
             number_loom::puzzle::BACKGROUND
         );
+    }
+
+    /// The number keys pick palette entries by their position in the palette editor, so `1` is
+    /// the background and `2` is the first drawing color — not `Color(1)` and `Color(2)`.
+    #[test]
+    fn test_palette_number_keys() {
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+
+        let nonogram_gui = NonogramGui::new(doc.clone());
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            nonogram_gui,
+        );
+        harness.run();
+
+        press_key(&mut harness, egui::Key::Num1);
+        assert_eq!(
+            harness.state().editor_gui.current_color,
+            number_loom::puzzle::BACKGROUND
+        );
+
+        press_key(&mut harness, egui::Key::Num2);
+        assert_eq!(
+            harness.state().editor_gui.current_color,
+            number_loom::puzzle::Color(1)
+        );
+
+        // A key past the end of the palette leaves the choice alone.
+        press_key(&mut harness, egui::Key::Num9);
+        assert_eq!(
+            harness.state().editor_gui.current_color,
+            number_loom::puzzle::Color(1)
+        );
+    }
+
+    /// Each tool has a bare-key shortcut, and the two editor-only tools' keys do nothing in the
+    /// solver, where those buttons aren't offered.
+    #[test]
+    fn test_tool_shortcuts() {
+        use number_loom::gui::Tool;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+
+        let nonogram_gui = NonogramGui::new(doc.clone());
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            nonogram_gui,
+        );
+        harness.run();
+
+        assert_eq!(harness.state().editor_gui.current_tool, Tool::Pencil);
+
+        for (key, tool) in [
+            (egui::Key::L, Tool::LineAlongLane),
+            (egui::Key::F, Tool::FloodFill),
+            (egui::Key::S, Tool::Lasso),
+            (egui::Key::P, Tool::Pencil),
+        ] {
+            press_key(&mut harness, key);
+            assert_eq!(harness.state().editor_gui.current_tool, tool);
+        }
+
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+        assert!(harness.state().solve_mode);
+
+        // The solver offers the pencil and the line tool, but not flood fill or the lasso.
+        press_key(&mut harness, egui::Key::L);
+        let solve_tool = |harness: &Harness<NonogramGui>| {
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .canvas
+                .current_tool
+        };
+        assert_eq!(solve_tool(&harness), Tool::LineAlongLane);
+
+        press_key(&mut harness, egui::Key::S);
+        assert_eq!(solve_tool(&harness), Tool::LineAlongLane);
+
+        press_key(&mut harness, egui::Key::F);
+        assert_eq!(solve_tool(&harness), Tool::LineAlongLane);
     }
 
     #[test]
