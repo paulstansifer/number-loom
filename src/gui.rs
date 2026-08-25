@@ -73,9 +73,10 @@ impl StatusCell {
     pub fn maybe_clear_on_dirty(&self) {
         let mut inner = self.inner.borrow_mut();
         if let Some((_, set_at)) = *inner
-            && set_at.elapsed() >= STATUS_GRACE_PERIOD {
-                *inner = None;
-            }
+            && set_at.elapsed() >= STATUS_GRACE_PERIOD
+        {
+            *inner = None;
+        }
     }
 }
 
@@ -381,7 +382,7 @@ pub enum Action {
         changes: HashMap<u32, Color>,
     },
     ReplaceDocument {
-        document: Document,
+        document: Box<Document>,
     },
 }
 
@@ -432,7 +433,7 @@ impl CanvasGui {
                 }
             }
             Action::ReplaceDocument { document: _ } => Action::ReplaceDocument {
-                document: self.document.clone(),
+                document: Box::new(self.document.clone()),
             },
         }
     }
@@ -507,7 +508,7 @@ impl CanvasGui {
             Action::ReplaceDocument { document } => {
                 let mut document = document;
                 if let Ok(true) = document.has_complete_solution() {
-                    self.document = document;
+                    self.document = *document;
                     self.version += 1;
                     // A mask means nothing against a picture that was swapped out from under it,
                     // and a floating layer belongs to the picture it was lifted from.
@@ -1560,10 +1561,9 @@ impl CanvasGui {
                             (edited_color[2] * 256.0) as u8,
                         );
                     }
-                    if *color != BACKGROUND
-                        && ui.button(icons::ICON_DELETE).clicked() {
-                            removed_color = Some(*color);
-                        }
+                    if *color != BACKGROUND && ui.button(icons::ICON_DELETE).clicked() {
+                        removed_color = Some(*color);
+                    }
                 }
             });
         }
@@ -1587,7 +1587,7 @@ impl CanvasGui {
             new_picture.palette_mut().remove(&removed_color);
             self.perform(
                 Action::ReplaceDocument {
-                    document: new_document,
+                    document: Box::new(new_document),
                 },
                 ActionMood::Normal,
             );
@@ -1608,7 +1608,7 @@ impl CanvasGui {
             );
             self.perform(
                 Action::ReplaceDocument {
-                    document: new_document,
+                    document: Box::new(new_document),
                 },
                 ActionMood::Normal,
             );
@@ -1873,9 +1873,10 @@ impl NonogramGui {
         let current_color = default_color(picture.palette());
 
         if document.author.is_empty()
-            && let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME) {
-                document.author = author;
-            }
+            && let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME)
+        {
+            document.author = author;
+        }
 
         NonogramGui {
             editor_gui: CanvasGui {
@@ -1984,7 +1985,7 @@ impl NonogramGui {
             }
         }
 
-        let mut new_doc = self.editor_gui.document.clone();
+        let mut new_doc = Box::new(self.editor_gui.document.clone());
         {
             let solution = new_doc.solution_mut();
             *solution = DynSolution::Square(Solution::from_columns(
@@ -2027,7 +2028,7 @@ impl NonogramGui {
             return;
         };
 
-        let mut new_doc = self.editor_gui.document.clone();
+        let mut new_doc = Box::new(self.editor_gui.document.clone());
         *new_doc.solution_mut() = DynSolution::Tri(resized);
         self.editor_gui.perform(
             Action::ReplaceDocument { document: new_doc },
@@ -2449,6 +2450,7 @@ impl NonogramGui {
         if let Ok(result) = self.opened_file_receiver.try_recv() {
             match result {
                 Ok(document) => {
+                    let document = Box::new(document);
                     self.editor_gui
                         .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
                 }
@@ -2800,12 +2802,9 @@ impl NonogramGui {
             }
 
             if let Some(new_document) = new_document {
-                self.editor_gui.perform(
-                    Action::ReplaceDocument {
-                        document: new_document,
-                    },
-                    ActionMood::Normal,
-                );
+                let document = Box::new(new_document);
+                self.editor_gui
+                    .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
                 self.new_dialog = None;
                 self.library_dialog = None;
                 self.show_save_share_window = false;
@@ -3537,7 +3536,7 @@ mod palette_tests {
         // The black-and-white palette has no `Color(3)`.
         gui.perform(
             Action::ReplaceDocument {
-                document: doc(Solution::blank_bw(3, 3)),
+                document: Box::new(doc(Solution::blank_bw(3, 3))),
             },
             ActionMood::Normal,
         );
@@ -3555,7 +3554,7 @@ mod palette_tests {
 
         gui.perform(
             Action::ReplaceDocument {
-                document: doc(Solution::blank_bw(4, 4)),
+                document: Box::new(doc(Solution::blank_bw(4, 4))),
             },
             ActionMood::Normal,
         );
