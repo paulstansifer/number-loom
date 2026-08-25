@@ -651,7 +651,7 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
             }
         }
     }
-    olsak_palette.entry('0').or_insert_with(|| ColorInfo::default_bg());
+    olsak_palette.entry('0').or_insert_with(ColorInfo::default_bg);
 
     let mut palette: HashMap<Color, ColorInfo> = olsak_palette
         .into_values()
