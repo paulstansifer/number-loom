@@ -381,9 +381,10 @@ impl SolveGui {
                 );
             }
             if (ui.button("Detect errors").clicked() || self.detect_errors)
-                && self.detect_any_errors() {
-                    ui.colored_label(egui::Color32::DARK_RED, "Error detected");
-                }
+                && self.detect_any_errors()
+            {
+                ui.colored_label(egui::Color32::DARK_RED, "Error detected");
+            }
             ui.separator();
 
             if ui.checkbox(&mut self.infer_background, "[auto]").changed() {
@@ -393,10 +394,11 @@ impl SolveGui {
                 );
             }
             if (ui.button("Infer background").clicked() || self.infer_background)
-                && self.last_inferred_version != self.canvas.version {
-                    self.infer_background();
-                    self.last_inferred_version = self.canvas.version;
-                }
+                && self.last_inferred_version != self.canvas.version
+            {
+                self.infer_background();
+                self.last_inferred_version = self.canvas.version;
+            }
         });
     }
 
@@ -718,10 +720,12 @@ fn clue_font(ui: &egui::Ui, clue_txt: &str, scale: f32, font_scale: f32) -> egui
             f32::max(text_width(f, "000") / (scale * font_scale), 1.0),
         )
     });
-    let fonts_by_digit = [base_font.clone(),
+    let fonts_by_digit = [
+        base_font.clone(),
         base_font,
         egui::FontId::monospace(scale * font_scale / width_2),
-        egui::FontId::monospace(scale * font_scale / width_3)];
+        egui::FontId::monospace(scale * font_scale / width_3),
+    ];
 
     fonts_by_digit[clue_txt.len().min(fonts_by_digit.len() - 1)].clone()
 }

@@ -11,10 +11,9 @@ fn get_children<'a, 'input>(
     let mut res = vec![];
 
     for child in node.children() {
-        if child.is_text()
-            && child.text().unwrap().trim() != "" {
-                bail!("unexpected text: {}", child.text().unwrap());
-            }
+        if child.is_text() && child.text().unwrap().trim() != "" {
+            bail!("unexpected text: {}", child.text().unwrap());
+        }
         if child.is_element() {
             if child.tag_name().name() == tag {
                 res.push(child);
