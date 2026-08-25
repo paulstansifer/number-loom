@@ -509,7 +509,7 @@ pub struct SolveContext<'p, 'x, C: Clue, K: GridKind> {
     pub options: &'x SolveOptions,
     pub line_cache: &'x mut Option<LineCache<C>>,
     pub scratch: Scratch,
-    progress: indicatif::ProgressBar,
+    pub progress: indicatif::ProgressBar,
     /// Whether `progress` is actually on screen. `set_message` takes its argument by value, so
     /// without this the per-step status line gets formatted (and thrown away) even when nothing
     /// is displaying it — which is every non-interactive solve, including the benchmarks.
@@ -572,7 +572,7 @@ const INITIAL_ALLOWED_FAILURES: ModeMap<i32> = ModeMap {
 pub struct SolveState<'p, C: Clue> {
     pub grid: PartialSolution,
     /// Parallel to `LaneMap::lanes()`, so a lane index indexes both this and the geometry.
-    lanes: Vec<LaneState<'p, C>>,
+    pub lanes: Vec<LaneState<'p, C>>,
     /// One bit per lane position, all the lanes' bitmaps end to end (`LaneState::words` says
     /// where each one sits): whether that cell is known to be background. Scoring needs the
     /// longest run without one, which is the one tally that can't be kept as a running total —

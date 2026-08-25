@@ -1,3 +1,4 @@
+pub mod bt_solve;
 pub mod export;
 pub mod formats;
 pub mod geometry;
