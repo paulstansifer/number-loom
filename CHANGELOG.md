@@ -1,6 +1,6 @@
 ## Changelog
 
-## 0.5.0 - future
+## 0.5.0 - 2026-08-25
 ### Added
  - Added support for triddlers (triangles on a hex grid)
  - Added lasso select-and-move
