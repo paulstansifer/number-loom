@@ -343,14 +343,7 @@ fn draw_clue_gutters(
                     Some(n) => n.to_string(),
                     None => color_info.ch.to_string(),
                 };
-                crate::gui_solver::draw_string_in_rhombus(
-                    ui,
-                    painter,
-                    &points,
-                    &text,
-                    scale,
-                    color_info.rgb,
-                );
+                solver::draw_string_in_rhombus(ui, painter, &points, &text, scale, color_info.rgb);
             }
 
             // The indicator strip between the clues and the grid: the hovered block's
@@ -366,20 +359,15 @@ fn draw_clue_gutters(
                 .as_ref()
                 .and_then(|h| Some((h.on_lane(g.lane)?, h.rgb)));
             match hovered {
-                Some((len, rgb)) => crate::gui_solver::draw_bare_number(
-                    ui,
-                    painter,
-                    at,
-                    &len.to_string(),
-                    scale,
-                    rgb,
-                ),
+                Some((len, rgb)) => {
+                    solver::draw_bare_number(ui, painter, at, &len.to_string(), scale, rgb)
+                }
                 None => {
                     if let Some(analysis) = overlay.analysis {
                         let family = lane_families[g.lane];
                         let index = g.lane - family_starts[family];
                         if let Some(status) = analysis.get(family).and_then(|f| f.get(index)) {
-                            crate::gui_solver::draw_analysis_mark(
+                            solver::draw_analysis_mark(
                                 painter,
                                 at,
                                 scale,

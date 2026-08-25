@@ -3,8 +3,6 @@ pub mod formats;
 pub mod geometry;
 pub mod grid_solve;
 pub mod gui;
-pub mod gui_gallery;
-pub mod gui_solver;
 pub mod import;
 pub mod layout;
 pub mod line_solve;

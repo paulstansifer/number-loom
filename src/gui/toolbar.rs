@@ -179,9 +179,7 @@ impl NonogramGui {
                                 egui::ScrollArea::vertical().show(ui, |ui| {
                                     egui::Grid::new("library_grid").show(ui, |ui| {
                                         for (i, doc) in docs.iter().enumerate() {
-                                            if crate::gui_gallery::gallery_puzzle_preview(ui, doc)
-                                                .clicked()
-                                            {
+                                            if gallery::gallery_puzzle_preview(ui, doc).clicked() {
                                                 new_document = Some(doc.clone());
                                                 next_enter_solve_mode = true;
                                                 close_library = true;

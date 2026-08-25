@@ -8,16 +8,17 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     woven/ - frozen `WOVEN` share strings; see the README there before touching them
   puzzles/ - puzzles for human entertainment; filenames are oblique references to the solution
   src/
-    gui{,_solver,_gallery}.rs - GUI implementation (for the editor, solver, and the puzzle-chooser)
-    gui/ - the editor, split up by concern. `gui.rs` keeps the app state, the undo stack, the
-      sidebar, and `main_ui`; everything below is a child module, so it can see `gui.rs`'s
-      private fields without any of them having to be `pub`.
+    gui.rs - the GUI: app state, the undo stack, the sidebar, and `main_ui`
+    gui/ - the rest of the GUI, split up by concern. These are child modules of `gui`, so they
+      can see `gui.rs`'s private fields without any of them having to be `pub`.
       canvas.rs - drawing the picture and its clue gutters, and the pointer hit test
       selection.rs - the lasso: drawing a loop, what it caught, and moving the catch around
       tools.rs - the other tools (pencil, line, flood fill): which is selected and what each does
       palette.rs - the palette editor and its number-key shortcuts
       resize.rs - growing and shrinking the picture (separate resizers per shape)
       toolbar.rs - the controls across the top, and the New/Library/Save-share dialogs
+      solver.rs - the solving view: clue rendering, line analysis, and the solve replay
+      gallery.rs - the puzzle-chooser's previews
     import.rs, export.rs - support for various file formats
     line_solve.rs - fast, complete line-logic implementation
     grid_solve.rs - fast, complete puzzle solving using line logic

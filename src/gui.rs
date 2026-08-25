@@ -1,7 +1,9 @@
 mod canvas;
+pub mod gallery;
 mod palette;
 mod resize;
 mod selection;
+pub mod solver;
 mod toolbar;
 mod tools;
 
@@ -85,10 +87,11 @@ pub type SharedStatus = Rc<StatusCell>;
 // (0.0 to 1.0) while a long-running task is in progress, `None` otherwise.
 pub type SharedProgress = Rc<RefCell<Option<f32>>>;
 
+use solver::{RenderStyle, SolveGui};
+
 use crate::{
     export::to_bytes,
     grid_solve::{self, DisambigResult, disambig_candidates},
-    gui_solver::{RenderStyle, SolveGui},
     import,
     // The abstract-units point, distinct from egui's `Pos2`: everything the lasso does is in
     // grid space, and only the painter converts.
@@ -736,7 +739,7 @@ impl NonogramGui {
     fn enter_solve_mode(&mut self) {
         self.solve_mode = true;
 
-        self.solve_gui = Some(crate::gui_solver::SolveGui::new(
+        self.solve_gui = Some(SolveGui::new(
             self.editor_gui.document.clone(),
             Rc::clone(&self.editor_gui.status),
             Rc::clone(&self.editor_gui.progress),

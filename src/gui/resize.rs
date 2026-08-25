@@ -327,7 +327,7 @@ impl NonogramGui {
 
             // Hand-drawn +/- (a rotated cross/dash), rather than rotated text: simpler and more
             // robust than centring a rotated glyph, and matches how `draw_analysis_mark` in
-            // gui_solver.rs already draws a rotated mark with plain line segments.
+            // solver.rs already draws a rotated mark with plain line segments.
             let stroke = egui::Stroke::new(1.5, visuals.fg_stroke.color);
             painter.line_segment(
                 [

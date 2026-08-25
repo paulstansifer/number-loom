@@ -1,6 +1,6 @@
+use super::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool, default_color};
 use crate::{
     grid_solve::LineStatus,
-    gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool, default_color},
     puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
     user_settings::{UserSettings, consts},
 };
@@ -56,8 +56,8 @@ impl RenderStyle {
 impl SolveGui {
     pub fn new(
         mut document: Document,
-        status: crate::gui::SharedStatus,
-        progress: crate::gui::SharedProgress,
+        status: super::SharedStatus,
+        progress: super::SharedProgress,
     ) -> Self {
         let mut working_doc = document.clone();
         for cell in working_doc.solution_mut().cells_mut() {
@@ -408,10 +408,10 @@ impl SolveGui {
     /// This lags the pointer by a frame — `hovered_cell` is set by the canvas, which is drawn
     /// after the gutters — but so does the sidebar's rosette, and egui repaints on every pointer
     /// move anyway.
-    fn hover_blocks(&self) -> Option<crate::gui::HoverBlocks> {
+    fn hover_blocks(&self) -> Option<super::HoverBlocks> {
         let cell = self.hovered_cell?;
         let picture = self.canvas.document.try_solution()?;
-        Some(crate::gui::HoverBlocks {
+        Some(super::HoverBlocks {
             by_family: picture.blocks_at_cell(cell),
             rgb: picture.palette()[&picture.cells()[cell as usize]].rgb,
         })
@@ -424,7 +424,7 @@ impl SolveGui {
         // A hexagon's three clue blocks run along the lane directions, so they can't be laid out
         // as panels beside the grid; they share the picture's painter instead.
         if matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_)) {
-            let overlay = crate::gui::ClueOverlay {
+            let overlay = super::ClueOverlay {
                 puzzle: &self.clues,
                 analysis: self.line_analysis.val.as_ref(),
                 is_stale,
@@ -976,7 +976,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
                     draw_string_in_box(ui, &painter, rect, &len.to_string(), scale, color_info.rgb);
                     current_pos -= box_side;
                 } else {
-                    let mut triangle = crate::gui::triangle_shape(
+                    let mut triangle = super::triangle_shape(
                         color_info.corner.expect("must be a corner"),
                         bg_color,
                         Vec2::new(box_side, box_side),
