@@ -65,11 +65,8 @@ impl CanvasGui {
         self.canvas_with_clues(ui, scale, render_style, None)
     }
 
-    /// As `canvas`, but reserving room around the picture for clue gutters and drawing them.
-    ///
-    /// Clues share the picture's painter and coordinate system rather than living in their own
-    /// widgets, because a hexagon's three clue blocks are not axis-aligned rectangles and can't be
-    /// laid out by a grid of separate panels.
+    /// As `canvas`, but growing the drawing area to cover wherever the clues reach, and handing
+    /// the gutters themselves to `draw_clue_gutters`.
     pub fn canvas_with_clues(
         &mut self,
         ui: &mut egui::Ui,
@@ -241,102 +238,7 @@ impl CanvasGui {
 
         // Clue gutters, in the same coordinate system as the picture.
         if let Some(overlay) = &clues {
-            let lane_families: Vec<usize> = picture
-                .lane_map()
-                .lanes()
-                .iter()
-                .map(|l| l.family)
-                .collect();
-            let family_starts: Vec<usize> = (0..picture.lane_map().family_count())
-                .map(|f| picture.lane_map().family(f).start)
-                .collect();
-
-            for (_, gutter) in picture.gutters() {
-                for g in gutter {
-                    let expressed = crate::with_puzzle!(overlay.puzzle, |p| {
-                        let mut v: Vec<(ColorInfo, Option<u16>)> = p.lines[g.lane]
-                            .iter()
-                            .flat_map(|c| {
-                                c.express(&p.palette)
-                                    .into_iter()
-                                    .map(|(ci, n)| (ci.clone(), n))
-                            })
-                            .collect();
-                        // Clues run in the lane's own direction, so the box nearest the grid is
-                        // the last one; `reversed` covers the families whose clues are labelled
-                        // at the far end from where the lane is stored.
-                        if !g.reversed {
-                            v.reverse();
-                        }
-                        v
-                    });
-
-                    let family = lane_families[g.lane];
-                    for (i, (color_info, count)) in expressed.iter().enumerate() {
-                        let c = g.clue_box_center(i);
-                        let points = crate::layout::tri_clue_rhombus(
-                            c,
-                            family,
-                            g.edge_dir,
-                            crate::layout::CLUE_BOX,
-                            crate::layout::CLUE_BOX_SHORT,
-                        )
-                        .map(|p| to_screen * Pos2::new(p.x, p.y));
-                        let text = match count {
-                            Some(n) => n.to_string(),
-                            None => color_info.ch.to_string(),
-                        };
-                        crate::gui_solver::draw_string_in_rhombus(
-                            ui,
-                            &painter,
-                            &points,
-                            &text,
-                            scale,
-                            color_info.rgb,
-                        );
-                    }
-
-                    // The indicator strip between the clues and the grid: the hovered block's
-                    // length on the three lanes it runs along, and the analysis mark (which the
-                    // number deliberately covers up) everywhere else.
-                    let at = to_screen
-                        * Pos2::new(
-                            g.anchor.x + g.outward.x * (crate::layout::CLUE_PAD / 2.0),
-                            g.anchor.y + g.outward.y * (crate::layout::CLUE_PAD / 2.0),
-                        );
-                    let hovered = overlay
-                        .hover
-                        .as_ref()
-                        .and_then(|h| Some((h.on_lane(g.lane)?, h.rgb)));
-                    match hovered {
-                        Some((len, rgb)) => crate::gui_solver::draw_bare_number(
-                            ui,
-                            &painter,
-                            at,
-                            &len.to_string(),
-                            scale,
-                            rgb,
-                        ),
-                        None => {
-                            if let Some(analysis) = overlay.analysis {
-                                let family = lane_families[g.lane];
-                                let index = g.lane - family_starts[family];
-                                if let Some(status) =
-                                    analysis.get(family).and_then(|f| f.get(index))
-                                {
-                                    crate::gui_solver::draw_analysis_mark(
-                                        &painter,
-                                        at,
-                                        scale,
-                                        status,
-                                        overlay.is_stale,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            draw_clue_gutters(ui, &painter, picture, overlay, scale, &to_screen);
         }
 
         // Grid lines, precomputed by the geometry: one boundary per lane, with every fifth one
@@ -379,6 +281,116 @@ impl CanvasGui {
         response.mark_changed();
 
         hovered_cell
+    }
+}
+
+/// The clue gutters: the numbers ringing the picture, and the indicator strip between them and
+/// the grid.
+///
+/// Clues share the picture's painter and coordinate system rather than living in their own
+/// widgets, because a hexagon's three clue blocks are not axis-aligned rectangles and can't be
+/// laid out by a grid of separate panels.
+fn draw_clue_gutters(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    picture: &DynSolution,
+    overlay: &ClueOverlay<'_>,
+    scale: f32,
+    to_screen: &egui::emath::RectTransform,
+) {
+    let lane_families: Vec<usize> = picture
+        .lane_map()
+        .lanes()
+        .iter()
+        .map(|l| l.family)
+        .collect();
+    let family_starts: Vec<usize> = (0..picture.lane_map().family_count())
+        .map(|f| picture.lane_map().family(f).start)
+        .collect();
+
+    for (_, gutter) in picture.gutters() {
+        for g in gutter {
+            let expressed = crate::with_puzzle!(overlay.puzzle, |p| {
+                let mut v: Vec<(ColorInfo, Option<u16>)> = p.lines[g.lane]
+                    .iter()
+                    .flat_map(|c| {
+                        c.express(&p.palette)
+                            .into_iter()
+                            .map(|(ci, n)| (ci.clone(), n))
+                    })
+                    .collect();
+                // Clues run in the lane's own direction, so the box nearest the grid is
+                // the last one; `reversed` covers the families whose clues are labelled
+                // at the far end from where the lane is stored.
+                if !g.reversed {
+                    v.reverse();
+                }
+                v
+            });
+
+            let family = lane_families[g.lane];
+            for (i, (color_info, count)) in expressed.iter().enumerate() {
+                let c = g.clue_box_center(i);
+                let points = crate::layout::tri_clue_rhombus(
+                    c,
+                    family,
+                    g.edge_dir,
+                    crate::layout::CLUE_BOX,
+                    crate::layout::CLUE_BOX_SHORT,
+                )
+                .map(|p| to_screen * Pos2::new(p.x, p.y));
+                let text = match count {
+                    Some(n) => n.to_string(),
+                    None => color_info.ch.to_string(),
+                };
+                crate::gui_solver::draw_string_in_rhombus(
+                    ui,
+                    painter,
+                    &points,
+                    &text,
+                    scale,
+                    color_info.rgb,
+                );
+            }
+
+            // The indicator strip between the clues and the grid: the hovered block's
+            // length on the three lanes it runs along, and the analysis mark (which the
+            // number deliberately covers up) everywhere else.
+            let at = to_screen
+                * Pos2::new(
+                    g.anchor.x + g.outward.x * (crate::layout::CLUE_PAD / 2.0),
+                    g.anchor.y + g.outward.y * (crate::layout::CLUE_PAD / 2.0),
+                );
+            let hovered = overlay
+                .hover
+                .as_ref()
+                .and_then(|h| Some((h.on_lane(g.lane)?, h.rgb)));
+            match hovered {
+                Some((len, rgb)) => crate::gui_solver::draw_bare_number(
+                    ui,
+                    painter,
+                    at,
+                    &len.to_string(),
+                    scale,
+                    rgb,
+                ),
+                None => {
+                    if let Some(analysis) = overlay.analysis {
+                        let family = lane_families[g.lane];
+                        let index = g.lane - family_starts[family];
+                        if let Some(status) = analysis.get(family).and_then(|f| f.get(index)) {
+                            crate::gui_solver::draw_analysis_mark(
+                                painter,
+                                at,
+                                scale,
+                                status,
+                                overlay.is_stale,
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
