@@ -6,3 +6,4 @@
 * Maybe investigate using Tauri?
 * The "unsolved cell" dots are too big in triddlers.
 * If the user drags the line tool off of a lane, maybe we should keep the rosette and helper numbers locked to the original lane?
+* "New" dialog for triddlers needs work. Perhaps we should show a resizer and a preview?
