@@ -9,10 +9,13 @@ use super::*;
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Tool {
     Pencil,
+    /// Editor-only
     FloodFill,
     LineAlongLane,
-    /// Editor only — the solver's sidebar never offers it, so its canvas can't end up here.
+    /// Editor only
     Lasso,
+    /// Solver only
+    Annotate,
 }
 
 /// The icon, bare-key shortcut, and tooltip key-name for each tool.
@@ -23,6 +26,7 @@ fn tool_appearance(tool: Tool) -> (&'static str, egui::Key, char) {
         Tool::FloodFill => (icons::ICON_FORMAT_COLOR_FILL, egui::Key::F, 'F'),
         // `L` is spoken for by the line tool, so the lasso gets "select" instead.
         Tool::Lasso => (icons::ICON_LASSO_SELECT, egui::Key::S, 'S'),
+        Tool::Annotate => (icons::ICON_SQUARE_FOOT, egui::Key::A, 'A'),
     }
 }
 
@@ -77,6 +81,15 @@ impl CanvasGui {
                     typing,
                     "Lasso select: draw a loop, then drag to move what's inside",
                 );
+            } else {
+                // Likewise, annotate is solve-only
+                tool_button(
+                    ui,
+                    &mut self.current_tool,
+                    Tool::Annotate,
+                    typing,
+                    "Annotate a border: click to mark one, drag to measure a span (or hold shift)",
+                );
             }
         });
 
@@ -84,6 +97,23 @@ impl CanvasGui {
         // about a floating layer.
         if was == Tool::Lasso && self.current_tool != Tool::Lasso {
             self.clear_selection();
+        }
+    }
+
+    /// The tool the pointer is actually driving this frame.
+    ///
+    /// Holding shift is a momentary switch to the annotate tool, so a solver can measure a run
+    /// without giving up the line tool. A drag already in flight keeps whatever tool started it:
+    /// letting go of shift halfway through must not hand that drag to something else.
+    pub(super) fn effective_tool(&self, ui: &egui::Ui) -> Tool {
+        if self.annotate_drag.is_some() {
+            Tool::Annotate
+        } else if self.line_tool_state.is_some() {
+            Tool::LineAlongLane
+        } else if self.allow_annotations && ui.input(|i| i.modifiers.shift) {
+            Tool::Annotate
+        } else {
+            self.current_tool
         }
     }
 
@@ -190,8 +220,9 @@ impl CanvasGui {
                     self.line_tool_state = None;
                 }
             }
-            // Handled above, where the pointer is still allowed to be off the grid.
-            Tool::Lasso => {}
+            // Both are handled above: the lasso because the pointer is still allowed to be off
+            // the grid, and annotating because it snaps to a border rather than to a cell.
+            Tool::Lasso | Tool::Annotate => {}
         }
     }
 

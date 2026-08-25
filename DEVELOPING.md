@@ -11,6 +11,7 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     gui.rs - the core of the GUI: app state, the undo stack, the sidebar, and `main_ui`
     gui/
       canvas.rs - drawing the picture and its clue gutters, and the pointer hit test
+      annotate.rs - the solver's scratch marks on cell borders (undo never sees them)
       selection.rs - the lasso: drawing a loop, what it caught, and moving the catch around
       tools.rs - the other tools (pencil, line, flood fill)
       palette.rs - the palette editor and its number-key shortcuts

@@ -1,3 +1,4 @@
+mod annotate;
 mod canvas;
 pub mod gallery;
 mod palette;
@@ -7,6 +8,7 @@ pub mod solver;
 mod toolbar;
 mod tools;
 
+pub use annotate::{AnnotateDrag, Annotation};
 pub use canvas::{ClueOverlay, HoverBlocks, triangle_shape};
 pub use palette::default_color;
 pub use selection::{Selection, cells_in_lasso};
@@ -266,6 +268,15 @@ pub struct CanvasGui {
     /// The lasso tool's selection, if any. Outlives switching tools only long enough to be
     /// flattened; see `flatten_selection`.
     pub selection: Option<Selection>,
+    /// The annotate tool's scratch marks. Deliberately outside the undo system: none of these is
+    /// an `Action`, and none of them bumps `version`.
+    pub annotations: Vec<Annotation>,
+    /// The annotation being dragged out right now, if any.
+    pub annotate_drag: Option<AnnotateDrag>,
+    /// Whether this canvas offers the annotate tool at all — true only in the solver, the way
+    /// flood fill and the lasso are editor-only. Gates the button, the `A` key and the shift
+    /// momentary alike.
+    pub allow_annotations: bool,
     /// Indexed by dense cell index, like `Solution::cells`.
     pub solved_mask: Staleable<(String, Vec<bool>)>,
     pub disambiguator: Staleable<Disambiguator>,
@@ -428,8 +439,11 @@ impl CanvasGui {
                     self.document = *document;
                     self.version += 1;
                     // A mask means nothing against a picture that was swapped out from under it,
-                    // and a floating layer belongs to the picture it was lifted from.
+                    // and a floating layer belongs to the picture it was lifted from. Annotations
+                    // name lanes, which the new picture may not have at all.
                     self.selection = None;
+                    self.annotations.clear();
+                    self.annotate_drag = None;
                     // The new palette may not have the color the old one did.
                     self.clamp_colors_to_palette();
                 } else {
@@ -514,6 +528,22 @@ impl CanvasGui {
 
         self.tool_selector(ui, editing);
 
+        // Annotations aren't part of the picture, so undo can't take them back — this is the only
+        // way to be rid of them, and it only appears when there's something to clear.
+        if self.allow_annotations && !self.annotations.is_empty() {
+            centered_row(ui, "clear_annotations", |ui| {
+                if ui
+                    .button("Clear annotations")
+                    .on_hover_text("Remove every annotation (press Escape)")
+                    .clicked()
+                    || (!typing && ui.input(|i| i.key_pressed(egui::Key::Escape)))
+                {
+                    self.annotations.clear();
+                    self.annotate_drag = None;
+                }
+            });
+        }
+
         ui.separator();
 
         self.palette_editor(ui, palette_read_only);
@@ -558,6 +588,9 @@ impl NonogramGui {
                 current_tool: Tool::Pencil,
                 line_tool_state: None,
                 selection: None,
+                annotations: vec![],
+                annotate_drag: None,
+                allow_annotations: false,
                 picture_rect: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),

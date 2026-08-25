@@ -89,6 +89,9 @@ impl SolveGui {
                 current_tool: Tool::LineAlongLane,
                 line_tool_state: None,
                 selection: None,
+                annotations: vec![],
+                annotate_drag: None,
+                allow_annotations: true,
                 picture_rect: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
@@ -245,19 +248,12 @@ impl SolveGui {
                             let arm_center = true_center + Vec2::new(dir.x, dir.y) * arm_distance;
                             // The arm's short side should sit flush against this cell's real
                             // edge for the *other* family it borders — "near" (leading to the
-                            // previous cell) for the back arm, "far" for the forward arm, per
-                            // `CellShape::triangle_edge_is_near`.
-                            let others: Vec<usize> = (0..3).filter(|&f| f != family).collect();
-                            let edge_family =
-                                if cell_shape.triangle_edge_is_near(others[0]) == (i == 0) {
-                                    others[0]
-                                } else {
-                                    others[1]
-                                };
-                            let (ea, eb) = cell_shape.family_edge(
+                            // previous cell) for the back arm, "far" for the forward arm.
+                            let (ea, eb) = super::annotate::lane_step_edge(
+                                cell_shape,
                                 crate::layout::Point::new(0.0, 0.0),
-                                edge_family,
-                                true,
+                                family,
+                                i == 0,
                             );
                             let (edx, edy) = (eb.x - ea.x, eb.y - ea.y);
                             let elen = (edx * edx + edy * edy).sqrt();
@@ -705,7 +701,12 @@ pub(crate) fn draw_analysis_mark(
 
 /// The font to write a clue in: `scale * font_scale` tall, but squeezed narrower as the number
 /// gets longer, so a three-digit clue takes up no more width than a one-digit one.
-fn clue_font(ui: &egui::Ui, clue_txt: &str, scale: f32, font_scale: f32) -> egui::FontId {
+pub(crate) fn clue_font(
+    ui: &egui::Ui,
+    clue_txt: &str,
+    scale: f32,
+    font_scale: f32,
+) -> egui::FontId {
     let base_font = egui::FontId::monospace(scale * font_scale);
     let text_width = |fonts: &Fonts, t: &str| {
         fonts

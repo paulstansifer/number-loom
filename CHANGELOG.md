@@ -1,5 +1,9 @@
 ## Changelog
 
+## Future
+### Added
+ - Annotation tool during solve to help count out lines
+
 ## 0.5.0 - 2026-08-25
 ### Added
  - Added support for triddlers (triangles on a hex grid)

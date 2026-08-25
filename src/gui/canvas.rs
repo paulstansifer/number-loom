@@ -4,6 +4,7 @@
 //! Everything else — the tools, undo, the overlays — works in dense cell indices and is the same
 //! for every shape.
 
+use super::annotate::{AnnotatePointer, Border, borders_near};
 use super::selection::{LassoPointer, marching_ants, selection_outline};
 use super::*;
 
@@ -141,7 +142,12 @@ impl CanvasGui {
             self.selection = None;
         }
 
-        if self.current_tool == Tool::Lasso {
+        // Shift is a momentary switch to the annotate tool and a drag holds on to whichever tool
+        // started it, so nothing below this line may consult `current_tool` directly.
+        let tool = self.effective_tool(ui);
+        let mut preview_border: Option<Border> = None;
+
+        if tool == Tool::Lasso {
             // The lasso is the one tool that must keep tracking the pointer once it leaves the
             // grid — a loop drawn around the outside of a shape is perfectly ordinary — so it
             // works from the abstract-unit position directly, not from a cell.
@@ -152,21 +158,42 @@ impl CanvasGui {
             }
             self.lasso_keys(ui);
             self.lasso_cursor(ui, hovered_cell);
+        } else if tool == Tool::Annotate {
+            // Also a question about a *position* rather than a cell — which border the pointer is
+            // nearest — so, like the lasso, this works in abstract units.
+            if self.annotate_drag.is_none()
+                && let Some(pointer_pos) = response.hover_pos()
+            {
+                let p = from_screen * pointer_pos;
+                preview_border =
+                    borders_near(self.document.try_solution().unwrap(), Point::new(p.x, p.y))
+                        .first()
+                        .copied();
+            }
+            if let Some(pointer_pos) = response.interact_pointer_pos() {
+                let p = from_screen * pointer_pos;
+                let pointer = AnnotatePointer::from_egui(&ui.input(|i| i.pointer.clone()));
+                self.annotate_input(pointer, Point::new(p.x, p.y));
+            }
+            if hovered_cell.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
         } else if hovered_cell.is_some() {
             // There's no brush or paint-bucket in the standard cursor set, so the best these can
             // do is say how precise the tool is: the two that paint a cell the pointer is exactly
             // on get a crosshair, and flood fill — which acts on a whole region — gets the
             // blockier `Cell` instead, just so it doesn't look identical to them.
-            ui.ctx().set_cursor_icon(match self.current_tool {
+            ui.ctx().set_cursor_icon(match tool {
                 Tool::Pencil | Tool::LineAlongLane => egui::CursorIcon::Crosshair,
                 Tool::FloodFill => egui::CursorIcon::Cell,
-                Tool::Lasso => unreachable!("handled above"),
+                Tool::Lasso | Tool::Annotate => unreachable!("handled above"),
             });
         }
 
-        // The lasso is handled above, where the pointer is still allowed off the grid.
+        // The lasso and the annotate tool are handled above, where the pointer is still allowed
+        // to be somewhere other than on a cell.
         if let Some(pointer_pos) = response.interact_pointer_pos()
-            && self.current_tool != Tool::Lasso
+            && !matches!(tool, Tool::Lasso | Tool::Annotate)
             && let Some(cell) = cell_under(self.document.solution_mut(), pointer_pos)
         {
             let pointer = ui.input(|i| i.pointer.clone());
@@ -278,6 +305,11 @@ impl CanvasGui {
         }
 
         painter.extend(shapes);
+
+        // After the picture's own shapes, so the marks land on top of the cells, the grid guides
+        // and the lasso's ants.
+        self.draw_annotations(ui, &painter, scale, &to_screen, preview_border);
+
         response.mark_changed();
 
         hovered_cell

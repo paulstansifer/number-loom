@@ -165,6 +165,29 @@ mod tests {
 
         press_key(&mut harness, egui::Key::F);
         assert_eq!(solve_tool(&harness), Tool::LineAlongLane);
+
+        // ...and annotate is the mirror image: live here, dead back in the editor.
+        press_key(&mut harness, egui::Key::A);
+        assert_eq!(solve_tool(&harness), Tool::Annotate);
+    }
+
+    /// `A` belongs to the solver, so it does nothing in the editor — where there's no annotate
+    /// button to go with it.
+    #[test]
+    fn test_annotate_key_is_dead_in_the_editor() {
+        use number_loom::gui::Tool;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+
+        press_key(&mut harness, egui::Key::A);
+        assert_eq!(harness.state().editor_gui.current_tool, Tool::Pencil);
     }
 
     #[test]
@@ -569,5 +592,183 @@ mod tests {
             solve_gui.canvas.document.try_solution().unwrap().cells(),
             solution
         );
+    }
+
+    /// Drives the annotate tool through the real solve-mode canvas: the pointer positions, the
+    /// coordinate transform and the tool dispatch, none of which the unit tests in `annotate` see.
+    ///
+    /// Returns the harness sitting in solve mode, plus the picture's on-screen rect and the size
+    /// of one cell in it, so a test can aim at a particular border.
+    fn solving_harness() -> (Harness<'static, NonogramGui>, egui::Rect, egui::Vec2) {
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let (width, height) = match doc.try_solution().unwrap().shape() {
+            number_loom::geometry::Shape::Square { width, height } => (width, height),
+            _ => panic!("apron.png should be a square puzzle"),
+        };
+
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+
+        let rect = harness
+            .state()
+            .solve_gui
+            .as_ref()
+            .unwrap()
+            .canvas
+            .picture_rect
+            .expect("the solve canvas hasn't been drawn yet");
+        let cell = egui::Vec2::new(rect.width() / width as f32, rect.height() / height as f32);
+        (harness, rect, cell)
+    }
+
+    fn annotations<'a>(
+        harness: &'a Harness<'a, NonogramGui>,
+    ) -> &'a [number_loom::gui::Annotation] {
+        &harness
+            .state()
+            .solve_gui
+            .as_ref()
+            .unwrap()
+            .canvas
+            .annotations
+    }
+
+    /// Press, move and release, one frame each, so the drag actually reads as a drag.
+    ///
+    /// `modifiers` goes on the `RawInput` as well as on the events: `InputState::modifiers` —
+    /// which is what a held-shift check reads — comes from there, not from the events.
+    fn drag(harness: &mut Harness<NonogramGui>, from: Pos2, to: Pos2, modifiers: Modifiers) {
+        let mut frame = |events: Vec<Event>| {
+            harness.input_mut().modifiers = modifiers;
+            harness.input_mut().events.extend(events);
+            harness.run();
+        };
+
+        frame(vec![
+            Event::PointerMoved(from),
+            Event::PointerButton {
+                pos: from,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        frame(vec![Event::PointerMoved(to)]);
+        frame(vec![Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+
+        harness.input_mut().modifiers = Modifiers::NONE;
+    }
+
+    /// A drag along a row measures the cells it covered, and leaves the picture, the undo stack
+    /// and `version` completely alone — annotations are scratch.
+    #[test]
+    fn test_annotate_drag_measures_a_span() {
+        use number_loom::gui::Tool;
+
+        let (mut harness, rect, cell) = solving_harness();
+        press_key(&mut harness, egui::Key::A);
+        assert_eq!(
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .canvas
+                .current_tool,
+            Tool::Annotate
+        );
+
+        let before = harness.state().solve_gui.as_ref().unwrap().canvas.version;
+        let grid = harness
+            .state()
+            .solve_gui
+            .as_ref()
+            .unwrap()
+            .canvas
+            .document
+            .try_solution()
+            .unwrap()
+            .cells()
+            .to_vec();
+
+        // Just inside the left edge of column 0, along the middle of row 2, over to just inside
+        // the left edge of column 3: three cells.
+        let y = rect.min.y + 2.5 * cell.y;
+        let at = |cells: f32| Pos2::new(rect.min.x + cells * cell.x + 0.05 * cell.x, y);
+        drag(&mut harness, at(0.0), at(3.0), Modifiers::NONE);
+
+        assert_eq!(annotations(&harness).len(), 1);
+        assert_eq!(annotations(&harness)[0].cells_covered(), 3);
+
+        let canvas = &harness.state().solve_gui.as_ref().unwrap().canvas;
+        assert_eq!(canvas.version, before);
+        assert!(canvas.undo_stack.is_empty());
+        assert_eq!(canvas.document.try_solution().unwrap().cells(), grid);
+    }
+
+    /// Holding shift borrows the annotate tool for the length of one drag without giving up the
+    /// tool that's actually selected, and Escape clears whatever the marks were.
+    #[test]
+    fn test_shift_annotates_without_switching_tools() {
+        use number_loom::gui::Tool;
+
+        let (mut harness, rect, cell) = solving_harness();
+        // The line tool is the solver's default, and the one shift is meant to be borrowed from.
+        assert_eq!(
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .canvas
+                .current_tool,
+            Tool::LineAlongLane
+        );
+
+        let y = rect.min.y + 2.5 * cell.y;
+        let at = |cells: f32| Pos2::new(rect.min.x + cells * cell.x + 0.05 * cell.x, y);
+        drag(&mut harness, at(0.0), at(2.0), Modifiers::SHIFT);
+
+        assert_eq!(annotations(&harness).len(), 1);
+        assert_eq!(annotations(&harness)[0].cells_covered(), 2);
+        // Shift is momentary: the line tool is still the one that's selected.
+        assert_eq!(
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .canvas
+                .current_tool,
+            Tool::LineAlongLane
+        );
+        // ...and shift-dragging painted nothing, since annotating never touches the picture.
+        assert!(
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .canvas
+                .undo_stack
+                .is_empty()
+        );
+
+        // The clear button only exists while there's something to clear, and Escape does the
+        // same job.
+        harness.get_by_label("Clear annotations");
+        press_key(&mut harness, egui::Key::Escape);
+        assert!(annotations(&harness).is_empty());
     }
 }
