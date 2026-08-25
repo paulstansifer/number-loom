@@ -95,8 +95,8 @@ use crate::{
     // grid space, and only the painter converts.
     layout::Point,
     puzzle::{
-        BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynSolution, PuzzleDynOps,
-        Solution, UNSOLVED,
+        BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynSolution, Palette,
+        PuzzleDynOps, Solution, UNSOLVED,
     },
     user_settings::{UserSettings, consts},
 };
@@ -395,7 +395,32 @@ pub enum ActionMood {
     Redo,
 }
 
+/// Find a color that's definitely safe, at least.
+pub fn default_color(palette: &Palette) -> Color {
+    if palette.contains_key(&Color(1)) {
+        Color(1)
+    } else {
+        BACKGROUND
+    }
+}
+
 impl CanvasGui {
+    /// Sync `self.current_color` and `self.drag_start_color` to the document, for safety.
+    fn clamp_colors_to_palette(&mut self) {
+        let Some(picture) = self.document.try_solution() else {
+            return;
+        };
+        let palette = picture.palette();
+        let fallback = default_color(palette);
+
+        if !palette.contains_key(&self.current_color) {
+            self.current_color = fallback;
+        }
+        if !palette.contains_key(&self.drag_start_color) {
+            self.drag_start_color = fallback;
+        }
+    }
+
     fn reversed(&self, action: &Action) -> Action {
         match action {
             Action::ChangeColor { changes } => {
@@ -488,6 +513,8 @@ impl CanvasGui {
                     // A mask means nothing against a picture that was swapped out from under it,
                     // and a floating layer belongs to the picture it was lifted from.
                     self.selection = None;
+                    // The new palette may not have the color the old one did.
+                    self.clamp_colors_to_palette();
                 } else {
                     self.status
                         .set(StatusMessage::error("That puzzle has no solution"));
@@ -1106,6 +1133,16 @@ impl CanvasGui {
                     BACKGROUND
                 } else if picture.cells()[cell as usize] != self.current_color {
                     self.current_color
+                } else {
+                    BACKGROUND
+                };
+                // Paranoia, since it would cause a crash.
+                debug_assert!(
+                    picture.palette().contains_key(&paint_color),
+                    "painting with {paint_color:?}, which is not in the palette"
+                );
+                let paint_color = if picture.palette().contains_key(&paint_color) {
+                    paint_color
                 } else {
                     BACKGROUND
                 };
@@ -1835,10 +1872,7 @@ impl NonogramGui {
         let picture = document.try_solution().expect("just ensured there is one");
         let solved_mask = vec![true; picture.cells().len()];
 
-        let mut current_color = BACKGROUND;
-        if picture.palette().contains_key(&Color(1)) {
-            current_color = Color(1);
-        }
+        let current_color = default_color(picture.palette());
 
         if document.author.is_empty() {
             if let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME) {
@@ -3474,5 +3508,56 @@ mod line_tool_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+    use crate::puzzle::Solution;
+
+    fn doc(sol: Solution<crate::geometry::Square>) -> Document {
+        Document::from_solution(DynSolution::Square(sol), "test".to_string())
+    }
+
+    #[test]
+    fn swapping_the_document_cant_leave_the_color_dangling() {
+        let mut fancy = Solution::blank_bw(3, 3);
+        fancy
+            .palette
+            .insert(Color(3), ColorInfo::default_fg(Color(3)));
+
+        let mut gui = NonogramGui::new(doc(fancy)).editor_gui;
+        gui.current_color = Color(3);
+        gui.drag_start_color = Color(3);
+
+        // The black-and-white palette has no `Color(3)`.
+        gui.perform(
+            Action::ReplaceDocument {
+                document: doc(Solution::blank_bw(3, 3)),
+            },
+            ActionMood::Normal,
+        );
+
+        let palette = gui.document.try_solution().unwrap().palette();
+        assert!(palette.contains_key(&gui.current_color));
+        assert!(palette.contains_key(&gui.drag_start_color));
+    }
+
+    #[test]
+    fn a_color_the_new_palette_still_has_is_left_alone() {
+        let mut gui = NonogramGui::new(doc(Solution::blank_bw(3, 3))).editor_gui;
+        gui.current_color = BACKGROUND;
+        gui.drag_start_color = BACKGROUND;
+
+        gui.perform(
+            Action::ReplaceDocument {
+                document: doc(Solution::blank_bw(4, 4)),
+            },
+            ActionMood::Normal,
+        );
+
+        assert_eq!(gui.current_color, BACKGROUND);
+        assert_eq!(gui.drag_start_color, BACKGROUND);
     }
 }

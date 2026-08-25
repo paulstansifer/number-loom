@@ -1,7 +1,7 @@
 use crate::{
     grid_solve::LineStatus,
-    gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool},
-    puzzle::{BACKGROUND, Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
+    gui::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool, default_color},
+    puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
@@ -73,14 +73,7 @@ impl SolveGui {
                 corner: None,
             },
         );
-        let mut current_color = BACKGROUND;
-        if working_doc
-            .solution_mut()
-            .palette_mut()
-            .contains_key(&Color(1))
-        {
-            current_color = Color(1)
-        }
+        let current_color = default_color(working_doc.solution_mut().palette());
 
         let clues = document.puzzle().clone();
         let solved_mask = vec![true; document.solution_mut().cells().len()];
@@ -1046,7 +1039,7 @@ pub fn draw_dyn_clues(
 mod replay_tests {
     use super::*;
     use crate::gui::NonogramGui;
-    use crate::puzzle::Solution;
+    use crate::puzzle::{BACKGROUND, Solution};
 
     fn canvas() -> CanvasGui {
         NonogramGui::new(Document::from_solution(
