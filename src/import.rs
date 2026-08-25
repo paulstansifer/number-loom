@@ -135,6 +135,7 @@ pub fn image_to_solution(image: &DynamicImage) -> Solution<Square> {
 pub fn char_grid_to_solution(char_grid: &str) -> Solution<Square> {
     let mut palette = HashMap::<char, ColorInfo>::new();
 
+    let mut any_uppercase = false;
     // We want deterministic behavior
     let mut unused_chars = BTreeSet::<char>::new();
     for ch in char_grid.chars() {
@@ -142,12 +143,16 @@ pub fn char_grid_to_solution(char_grid: &str) -> Solution<Square> {
             continue;
         }
         unused_chars.insert(ch);
+        if ch.is_ascii_uppercase() {
+            // the characters this matters for are in ASCII
+            any_uppercase = true;
+        }
     }
 
     let mut bg_ch: Option<char> = None;
 
     // Look for a character that seems to represent a white background.
-    for possible_bg in [' ', '.', '_', 'w', 'W', '·', '☐', '0', '⬜'] {
+    for possible_bg in [' ', '.', '_', 'w', 'W', '·', '☐', '0', 'x', '⬜'] {
         if unused_chars.contains(&possible_bg) {
             bg_ch = Some(possible_bg);
         }
@@ -176,7 +181,7 @@ pub fn char_grid_to_solution(char_grid: &str) -> Solution<Square> {
     let mut next_color: u8 = 1;
 
     // Look for a character that might be black (but it's not required to exist).
-    for possible_black in ['#', 'B', 'b', '.', '■', '█', '1', '⬛'] {
+    for possible_black in ['#', '.', '■', '█', '1', '⬛', 'B', 'b'] {
         if unused_chars.contains(&possible_black) {
             palette.insert(possible_black, ColorInfo::default_fg(Color(next_color)));
             next_color += 1;
@@ -197,14 +202,23 @@ pub fn char_grid_to_solution(char_grid: &str) -> Solution<Square> {
 
     // By default, use primary and secondary colors:
     let mut unused_colors = BTreeMap::<char, (u8, u8, u8)>::new();
-    unused_colors.insert('r', (255, 0, 0));
-    unused_colors.insert('g', (0, 255, 0));
-    unused_colors.insert('b', (0, 0, 255));
+    if any_uppercase {
+        unused_colors.insert('R', (255, 0, 0));
+        unused_colors.insert('G', (0, 255, 0));
+        unused_colors.insert('B', (0, 0, 255));
 
-    unused_colors.insert('y', (255, 255, 0));
-    unused_colors.insert('c', (0, 255, 255));
-    unused_colors.insert('m', (255, 0, 255));
+        unused_colors.insert('Y', (255, 255, 0));
+        unused_colors.insert('C', (0, 255, 255));
+        unused_colors.insert('M', (255, 0, 255));
+    } else {
+        unused_colors.insert('r', (255, 0, 0));
+        unused_colors.insert('g', (0, 255, 0));
+        unused_colors.insert('b', (0, 0, 255));
 
+        unused_colors.insert('y', (255, 255, 0));
+        unused_colors.insert('c', (0, 255, 255));
+        unused_colors.insert('m', (255, 0, 255));
+    }
     // Using '🟥' and 'r' in the same puzzle (etc.) will cause a warning.
     unused_colors.insert('🟥', (255, 0, 0));
     unused_colors.insert('🟩', (0, 255, 0));
