@@ -426,5 +426,4 @@ impl NonogramGui {
             }
         }
     }
-
 }
