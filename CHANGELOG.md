@@ -5,7 +5,10 @@
  - Added support for triddlers (triangles on a hex grid)
  - Added lasso select-and-move
  - Added a status bar to the GUI
- - Added a replay of the solve process on completion
+ - Added a replay of the solve process on completion in solve mode
+ - Added a count of the whole contiguous line in the clue gutter in solve mode
+    (this was inspired by the Webpbn solver)
+    
 ### Fixed
  - Loading an unsolveable puzzle would cause a crash.
  - Removed various panics on malformed input.

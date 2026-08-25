@@ -590,13 +590,14 @@ impl CanvasGui {
                 egui::RichText::new(icons::ICON_LINE_START).size(24.0),
             )
             .on_hover_text("Line along a row, column or diagonal");
-            ui.selectable_value(
-                &mut self.current_tool,
-                Tool::FloodFill,
-                egui::RichText::new(icons::ICON_FORMAT_COLOR_FILL).size(24.0),
-            )
-            .on_hover_text("Flood Fill");
             if editing {
+                ui.selectable_value(
+                    &mut self.current_tool,
+                    Tool::FloodFill,
+                    egui::RichText::new(icons::ICON_FORMAT_COLOR_FILL).size(24.0),
+                )
+                .on_hover_text("Flood Fill");
+
                 ui.selectable_value(
                     &mut self.current_tool,
                     Tool::Lasso,
