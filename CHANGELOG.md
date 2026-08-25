@@ -8,13 +8,13 @@
  - Added a replay of the solve process on completion in solve mode
  - Added a count of the whole contiguous line in the clue gutter in solve mode
     (this was inspired by the Webpbn solver)
-    
 ### Fixed
  - Loading an unsolveable puzzle would cause a crash.
  - Removed various panics on malformed input.
- - Substantial performance improvements
 ### Internal improvements
- - Improved solve speed by not generating error messages unless there's an error.
+ - Substantial solver performance improvements
+    (some algorithmic improvements, but mostly avoiding unnecessary text and console operations)
+ - Changed the WOVEN format (since nobody is using it yet) to be backwards-compatible in the future
 
 ## 0.4.2 - 2025-12-18
 ### Fixed
