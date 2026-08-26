@@ -310,7 +310,6 @@ pub struct NonogramGui {
     auto_solve: bool,
     lines_to_affect_string: String,
     solve_report: String,
-    pub solve_mode: bool,
     pub solve_gui: Option<SolveGui>,
     show_save_share_window: bool,
     share_string: String,
@@ -634,7 +633,6 @@ impl NonogramGui {
             auto_solve: UserSettings::get_bool(consts::EDITOR_AUTO_SOLVE),
             lines_to_affect_string: "5".to_string(),
             solve_report: "".to_string(),
-            solve_mode: false,
             solve_gui: None,
             show_save_share_window: false,
             share_string: "".to_string(),
@@ -793,13 +791,16 @@ impl NonogramGui {
     }
 
     fn enter_solve_mode(&mut self) {
-        self.solve_mode = true;
-
         self.solve_gui = Some(SolveGui::new(
             self.editor_gui.document.clone(),
             Rc::clone(&self.editor_gui.status),
             Rc::clone(&self.editor_gui.progress),
         ));
+    }
+
+    /// Back to the editor, discarding whatever solving progress was on the board.
+    fn exit_solve_mode(&mut self) {
+        self.solve_gui = None;
     }
 }
 

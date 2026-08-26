@@ -43,7 +43,6 @@ mod tests {
         harness.run();
 
         let nonogram_gui = harness.state();
-        assert!(nonogram_gui.solve_mode);
         assert!(nonogram_gui.solve_gui.is_some());
     }
 
@@ -298,7 +297,7 @@ mod tests {
 
         harness.get_by_label("Puzzle").click();
         harness.run();
-        assert!(harness.state().solve_mode);
+        assert!(harness.state().solve_gui.is_some());
 
         // The solver offers the pencil and the line tool, but not flood fill or the lasso.
         press_key(&mut harness, egui::Key::L);
@@ -685,7 +684,6 @@ mod tests {
         harness.run();
 
         let gui = harness.state();
-        assert!(gui.solve_mode);
         let solve_gui = gui.solve_gui.as_ref().expect("solve mode is on");
         // Solve mode blanks the picture (bar whatever background it can infer immediately), so
         // most of it should still be undecided.
@@ -805,7 +803,7 @@ mod tests {
 
         harness.get_by_label("Puzzle").click();
         harness.run();
-        assert!(harness.state().solve_mode);
+        assert!(harness.state().solve_gui.is_some());
         assert_eq!(
             harness.query_all_by_label(LASSO).count(),
             0,

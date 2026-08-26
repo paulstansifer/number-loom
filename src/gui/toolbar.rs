@@ -21,12 +21,14 @@ enum NewPuzzleShape {
 pub(super) struct NewPuzzleDialog {
     shape: NewPuzzleShape,
     clue_style: crate::puzzle::ClueStyle,
-    x_size: usize,
-    y_size: usize,
-    /// Hexagon side length, used only when `shape` is `Triangular`. Doesn't cover every possible
-    /// triddler outline (see `Outline`) — just a reasonable default shape to start editing from.
-    tri_side: i32,
 }
+
+/// A new square puzzle's dimensions. The dialog offers no size controls at all; resizing from
+/// the sidebar is the way to get to any other shape.
+const NEW_SQUARE_SIZE: (usize, usize) = (20, 20);
+
+/// Hexagon side length for a new triddler: 5 is equivalent to a
+const NEW_TRI_SIDE: i32 = 5;
 
 impl NonogramGui {
     /// The document-wide controls across the top: zoom, the New/Library/Open/Save dialogs, and
@@ -50,24 +52,15 @@ impl NonogramGui {
             }
             if ui.button("New").clicked() {
                 let clue_style = self.editor_gui.document.solution_mut().clue_style();
-                // Only a square puzzle has a width/height to seed the dialog's (square-shaped)
-                // defaults from; a triddler's own dimensions don't map onto this at all.
-                let (x_size, y_size) = self
-                    .editor_gui
-                    .document
-                    .try_solution()
-                    .and_then(|s| s.as_square())
-                    .map(|sq| (sq.x_size(), sq.y_size()))
-                    .unwrap_or((10, 10));
                 self.new_dialog = Some(NewPuzzleDialog {
                     shape: NewPuzzleShape::Square,
                     clue_style,
-                    x_size,
-                    y_size,
-                    tri_side: 3,
                 });
             }
             let mut new_document = None;
+            // A new puzzle is something to draw, so it always lands in the editor. Deferred,
+            // rather than done in the button handler, because `dialog` borrows out of `self`.
+            let mut leave_solve_mode = false;
             if let Some(dialog) = self.new_dialog.as_mut() {
                 egui::Window::new("New puzzle").show(ctx, |ui| {
                     ui.horizontal(|ui| {
@@ -75,56 +68,41 @@ impl NonogramGui {
                         ui.radio_value(&mut dialog.shape, NewPuzzleShape::Triangular, "Triddler");
                     });
 
-                    match dialog.shape {
-                        NewPuzzleShape::Square => {
-                            ui.add(
-                                egui::Slider::new(&mut dialog.x_size, 5..=100)
-                                    .step_by(5.0)
-                                    .text("x size"),
-                            );
-                            ui.add(
-                                egui::Slider::new(&mut dialog.y_size, 5..=100)
-                                    .step_by(5.0)
-                                    .text("y size"),
-                            );
-                            ui.radio_value(
-                                &mut dialog.clue_style,
-                                crate::puzzle::ClueStyle::Nono,
-                                "Nonogram",
-                            );
-                            ui.radio_value(
-                                &mut dialog.clue_style,
-                                crate::puzzle::ClueStyle::Triano,
-                                "Trianogram",
-                            );
-                        }
-                        NewPuzzleShape::Triangular => {
-                            // Trianogram clues on a triddler are rejected at construction, so
-                            // there's nothing to choose here — a triddler is always a nonogram.
-                            ui.add(
-                                egui::Slider::new(&mut dialog.tri_side, 1..=10)
-                                    .text("hexagon side"),
-                            );
-                        }
+                    // Trianogram clues on a triddler are rejected at construction, so the clue
+                    // style is only a choice for a square puzzle.
+                    if dialog.shape == NewPuzzleShape::Square {
+                        ui.radio_value(
+                            &mut dialog.clue_style,
+                            crate::puzzle::ClueStyle::Nono,
+                            "Nonogram",
+                        );
+                        ui.radio_value(
+                            &mut dialog.clue_style,
+                            crate::puzzle::ClueStyle::Triano,
+                            "Trianogram",
+                        );
                     }
 
                     if ui.button("Ok").clicked() {
                         let new_solution = match dialog.shape {
-                            NewPuzzleShape::Square => DynSolution::Square(Solution::new(
-                                dialog.clue_style,
-                                match dialog.clue_style {
-                                    ClueStyle::Nono => import::bw_palette(),
-                                    ClueStyle::Triano => import::triano_palette(),
-                                },
-                                crate::geometry::Geometry::new(crate::geometry::Rect {
-                                    width: dialog.x_size,
-                                    height: dialog.y_size,
-                                }),
-                                vec![BACKGROUND; dialog.x_size * dialog.y_size],
-                            )),
+                            NewPuzzleShape::Square => {
+                                let (x_size, y_size) = NEW_SQUARE_SIZE;
+                                DynSolution::Square(Solution::new(
+                                    dialog.clue_style,
+                                    match dialog.clue_style {
+                                        ClueStyle::Nono => import::bw_palette(),
+                                        ClueStyle::Triano => import::triano_palette(),
+                                    },
+                                    crate::geometry::Geometry::new(crate::geometry::Rect {
+                                        width: x_size,
+                                        height: y_size,
+                                    }),
+                                    vec![BACKGROUND; x_size * y_size],
+                                ))
+                            }
                             NewPuzzleShape::Triangular => {
                                 let geometry = crate::geometry::Geometry::new(
-                                    crate::geometry::Outline::hexagon(dialog.tri_side),
+                                    crate::geometry::Outline::hexagon(NEW_TRI_SIDE),
                                 );
                                 let cells = vec![BACKGROUND; geometry.cell_count()];
                                 DynSolution::Tri(Solution::new(
@@ -139,7 +117,7 @@ impl NonogramGui {
                             new_solution,
                             "blank.xml".to_owned(),
                         ));
-                        self.solve_mode = false;
+                        leave_solve_mode = true;
                     }
                 });
             }
@@ -363,19 +341,17 @@ impl NonogramGui {
                 self.library_dialog = None;
                 self.show_save_share_window = false;
             }
+            if leave_solve_mode {
+                self.exit_solve_mode();
+            }
 
             ui.separator();
-            if ui
-                .selectable_value(&mut self.solve_mode, false, "Edit")
-                .clicked()
-            {
-                self.solve_gui = None;
+
+            let solving = self.solve_gui.is_some();
+            if ui.selectable_label(!solving, "Edit").clicked() {
+                self.exit_solve_mode();
             }
-            if ui
-                .selectable_value(&mut self.solve_mode, true, "Puzzle")
-                .clicked()
-                || next_enter_solve_mode
-            {
+            if ui.selectable_label(solving, "Puzzle").clicked() || next_enter_solve_mode {
                 self.enter_solve_mode();
             }
         });
