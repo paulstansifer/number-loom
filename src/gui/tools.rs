@@ -32,70 +32,98 @@ fn tool_appearance(tool: Tool) -> (&'static str, egui::Key, char) {
 
 /// One entry in the tool row: a toggle button that its key also reaches. `typing` suppresses the
 /// key while a `TextEdit` has the keyboard. Grouped like this so that hiding a tool also disables its shortcut
+///
+/// Returns whether the tool's key was pressed. The button picks the tool itself, but the key
+/// means "toggle", which only the caller can act on — it's the one that knows what came before.
 fn tool_button(
     ui: &mut egui::Ui,
     current_tool: &mut Tool,
     tool: Tool,
     typing: bool,
     description: &str,
-) {
+) -> bool {
     let (icon, key, ch) = tool_appearance(tool);
     ui.selectable_value(current_tool, tool, egui::RichText::new(icon).size(24.0))
         .on_hover_text(if tool == Tool::Annotate {
-            format!("{description} (press {ch} or hold Shift)")
+            format!("{description} (press {ch} or hold Shift, press again to go back)")
         } else {
-            format!("{description} (press {ch})")
+            format!("{description} (press {ch}, again to go back)")
         });
-    if !typing && ui.input(|i| i.key_pressed(key)) {
-        *current_tool = tool;
-    }
+    !typing && ui.input(|i| i.key_pressed(key))
 }
 
 impl CanvasGui {
-    pub(super) fn tool_selector(&mut self, ui: &mut egui::Ui, editing: bool) {
+    pub(super) fn tool_selector(&mut self, ui: &mut egui::Ui) {
         let was = self.current_tool;
+        let editing = !self.solving;
 
         // Same story as in `common_sidebar_items`: no modifiers here either.
         let typing = ui.ctx().wants_keyboard_input();
 
+        // Which tool a key asked for this frame, acted on once the row is done: asking for the
+        // tool you're already in means going back to the one before it, and only `self` knows
+        // which that was.
+        let mut requested = None;
+
         centered_row(ui, "tools", |ui| {
-            if editing {
-                tool_button(ui, &mut self.current_tool, Tool::Pencil, typing, "Pencil");
+            if editing && tool_button(ui, &mut self.current_tool, Tool::Pencil, typing, "Pencil") {
+                requested = Some(Tool::Pencil);
             }
-            tool_button(
+            if tool_button(
                 ui,
                 &mut self.current_tool,
                 Tool::LineAlongLane,
                 typing,
                 "Line along a lane",
-            );
+            ) {
+                requested = Some(Tool::LineAlongLane);
+            }
             if editing {
-                tool_button(
+                if tool_button(
                     ui,
                     &mut self.current_tool,
                     Tool::FloodFill,
                     typing,
                     "Flood Fill",
-                );
+                ) {
+                    requested = Some(Tool::FloodFill);
+                }
 
-                tool_button(
+                if tool_button(
                     ui,
                     &mut self.current_tool,
                     Tool::Lasso,
                     typing,
                     "Lasso select: draw a loop, then drag to move what's inside",
-                );
+                ) {
+                    requested = Some(Tool::Lasso);
+                }
             } else {
                 // Likewise, annotate is solve-only
-                tool_button(
+                if tool_button(
                     ui,
                     &mut self.current_tool,
                     Tool::Annotate,
                     typing,
                     "Annotate: click to mark one cell, drag to measure a span",
-                );
+                ) {
+                    requested = Some(Tool::Annotate);
+                }
             }
         });
+
+        if let Some(tool) = requested {
+            self.current_tool = if was == tool {
+                self.previous_tool
+            } else {
+                tool
+            };
+        }
+        // `previous_tool` starts out equal to `current_tool`, so the toggle above is a no-op
+        // until there has actually been something to go back to.
+        if was != self.current_tool {
+            self.previous_tool = was;
+        }
 
         // Leaving the lasso commits whatever it was holding, so no other tool ever has to think
         // about a floating layer.
@@ -114,7 +142,7 @@ impl CanvasGui {
             Tool::Annotate
         } else if self.line_tool_state.is_some() {
             Tool::LineAlongLane
-        } else if self.allow_annotations && ui.input(|i| i.modifiers.shift) {
+        } else if self.solving && ui.input(|i| i.modifiers.shift) {
             Tool::Annotate
         } else {
             self.current_tool
@@ -156,16 +184,30 @@ impl CanvasGui {
     /// grid, so `canvas_with_clues` deals with it before there is a cell to speak of.
     pub(super) fn pointer_tool_input(&mut self, cell: u32, pointer: &egui::PointerState) {
         let picture = self.document.solution_mut();
+        // What "no idea yet" looks like: the solver's own marker where there is one, and plain
+        // background in the editor, whose palette has no such entry.
+        let unknown = if picture.palette().contains_key(&UNSOLVED) {
+            UNSOLVED
+        } else {
+            BACKGROUND
+        };
+        let under_pointer = picture.cells()[cell as usize];
         let paint_color = if pointer.middle_down() {
-            if picture.palette().contains_key(&UNSOLVED) {
-                UNSOLVED
+            unknown
+        } else if pointer.secondary_down() {
+            // While solving, a cell that's already been ruled out goes back to undecided, so the
+            // same button both makes and unmakes the mark. In the editor there's nothing to go
+            // back to: `unknown` is background there, which is what this said all along.
+            if self.solving && under_pointer == BACKGROUND {
+                unknown
             } else {
                 BACKGROUND
             }
-        } else if pointer.secondary_down() {
-            BACKGROUND
-        } else if picture.cells()[cell as usize] != self.current_color {
+        } else if under_pointer != self.current_color {
             self.current_color
+        } else if self.solving {
+            // Likewise for the color the user is painting with — undecided, not ruled out.
+            unknown
         } else {
             BACKGROUND
         };

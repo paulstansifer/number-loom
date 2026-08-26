@@ -146,11 +146,15 @@ impl CanvasGui {
         // started it, so nothing below this line may consult `current_tool` directly.
         let tool = self.effective_tool(ui);
 
+        // While there's room to pan, a middle-drag belongs to the scroll area (see `main_ui`),
+        // so it mustn't also reach whatever tool happens to be selected.
+        let panning = self.middle_pans && ui.input(|i| i.pointer.middle_down());
+
         if tool == Tool::Lasso {
             // The lasso is the one tool that must keep tracking the pointer once it leaves the
             // grid — a loop drawn around the outside of a shape is perfectly ordinary — so it
             // works from the abstract-unit position directly, not from a cell.
-            if let Some(pointer_pos) = response.interact_pointer_pos() {
+            if !panning && let Some(pointer_pos) = response.interact_pointer_pos() {
                 let p = from_screen * pointer_pos;
                 let pointer = LassoPointer::from_egui(&ui.input(|i| i.pointer.clone()));
                 self.lasso_input(pointer, Point::new(p.x, p.y));
@@ -161,7 +165,7 @@ impl CanvasGui {
             // A mark is anchored on the cell the drag started from, but it swings around that
             // cell as the pointer moves — so, like the lasso, this wants the abstract-unit
             // position and not just a cell index.
-            if let Some(pointer_pos) = response.interact_pointer_pos() {
+            if !panning && let Some(pointer_pos) = response.interact_pointer_pos() {
                 let p = from_screen * pointer_pos;
                 let pointer = AnnotatePointer::from_egui(&ui.input(|i| i.pointer.clone()));
                 self.annotate_input(pointer, Point::new(p.x, p.y));
@@ -183,7 +187,8 @@ impl CanvasGui {
 
         // The lasso and the annotate tool are handled above, where the pointer is still allowed
         // to be somewhere other than on a cell.
-        if let Some(pointer_pos) = response.interact_pointer_pos()
+        if !panning
+            && let Some(pointer_pos) = response.interact_pointer_pos()
             && !matches!(tool, Tool::Lasso | Tool::Annotate)
             && let Some(cell) = cell_under(self.document.solution_mut(), pointer_pos)
         {

@@ -171,6 +171,160 @@ mod tests {
         assert_eq!(solve_tool(&harness), Tool::Annotate);
     }
 
+    /// A tool's own key, pressed while that tool is already up, goes back to whatever was in use
+    /// before it — so one key both reaches a tool and leaves it again.
+    #[test]
+    fn test_tool_key_toggles_back() {
+        use number_loom::gui::Tool;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+
+        let tool = |harness: &Harness<NonogramGui>| harness.state().editor_gui.current_tool;
+
+        assert_eq!(tool(&harness), Tool::Pencil);
+
+        press_key(&mut harness, egui::Key::L);
+        assert_eq!(tool(&harness), Tool::LineAlongLane);
+        press_key(&mut harness, egui::Key::L);
+        assert_eq!(tool(&harness), Tool::Pencil, "L again should go back");
+
+        // "Before" means whatever was up last, not whatever the tool started as.
+        press_key(&mut harness, egui::Key::F);
+        press_key(&mut harness, egui::Key::L);
+        assert_eq!(tool(&harness), Tool::LineAlongLane);
+        press_key(&mut harness, egui::Key::L);
+        assert_eq!(tool(&harness), Tool::FloodFill);
+    }
+
+    /// Over the canvas the wheel steps through the palette rather than scrolling — panning is
+    /// the middle button's job — and it comes back around at the end of the list.
+    #[test]
+    fn test_wheel_cycles_the_palette() {
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+
+        // The wheel only steps the palette while the pointer is over the canvas, and where the
+        // pointer is only settles once a frame has hit-tested it.
+        let center = canvas_point(harness.state());
+        harness.input_mut().events.push(Event::PointerMoved(center));
+        harness.run();
+
+        let notch = |harness: &mut Harness<NonogramGui>| {
+            harness.input_mut().events.push(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, -1.0),
+                modifiers: Modifiers::NONE,
+            });
+            // A single frame: egui spreads a wheel notch over the next few, and `run` would
+            // treat that as a UI that never settles.
+            harness.step();
+        };
+
+        assert_eq!(
+            harness.state().editor_gui.current_color,
+            number_loom::puzzle::Color(1)
+        );
+
+        // A black-and-white palette holds just the background and the one drawing color.
+        notch(&mut harness);
+        assert_eq!(
+            harness.state().editor_gui.current_color,
+            number_loom::puzzle::BACKGROUND
+        );
+        notch(&mut harness);
+        assert_eq!(
+            harness.state().editor_gui.current_color,
+            number_loom::puzzle::Color(1)
+        );
+    }
+
+    /// Middle-drag pans a picture that's too big for the window — and while it does, the middle
+    /// button belongs to the pan, so it must not also paint.
+    #[test]
+    fn test_middle_drag_pans_instead_of_painting() {
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+
+        // Zoom right in, so that this 10x15 picture is taller than the window.
+        for _ in 0..20 {
+            press_key(&mut harness, egui::Key::Equals);
+        }
+        harness.run();
+
+        let picture_rect = |harness: &Harness<NonogramGui>| {
+            harness
+                .state()
+                .editor_gui
+                .picture_rect
+                .expect("the canvas hasn't been drawn yet")
+        };
+        let cells = |harness: &Harness<NonogramGui>| {
+            harness
+                .state()
+                .editor_gui
+                .document
+                .try_solution()
+                .unwrap()
+                .cells()
+                .to_vec()
+        };
+
+        let before_rect = picture_rect(&harness);
+        let before_cells = cells(&harness);
+        let start = before_rect.center();
+
+        // A frame with the pointer merely resting on the canvas: where it is only settles once
+        // a frame has hit-tested it, and a pan won't start anywhere else.
+        harness.input_mut().events.push(Event::PointerMoved(start));
+        harness.run();
+
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: start,
+            button: PointerButton::Middle,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+
+        harness
+            .input_mut()
+            .events
+            .push(Event::PointerMoved(start - egui::vec2(0.0, 50.0)));
+        harness.step();
+        // The scroll area applies the pan after its contents have been laid out, so the picture
+        // lands in its new place on the following frame.
+        harness.step();
+
+        assert!(
+            picture_rect(&harness).min.y < before_rect.min.y - 40.0,
+            "dragging up should have pulled the picture up with it"
+        );
+        assert_eq!(
+            cells(&harness),
+            before_cells,
+            "a middle-drag that pans must not paint as well"
+        );
+    }
+
     /// `A` belongs to the solver, so it does nothing in the editor — where there's no annotate
     /// button to go with it.
     #[test]
@@ -503,6 +657,77 @@ mod tests {
             harness.query_all_by_label(LASSO).count(),
             0,
             "the solver should not offer the lasso"
+        );
+    }
+
+    /// While solving, clicking a cell that already holds the color you're painting with takes it
+    /// back to undecided, rather than to background: the same click both makes and unmakes a
+    /// guess, and "ruled out" is a different claim from "no idea yet".
+    #[test]
+    fn test_solve_click_goes_back_to_unknown() {
+        use number_loom::puzzle::{Color, UNSOLVED};
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+
+        let solve_cells = |harness: &Harness<NonogramGui>| {
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .canvas
+                .document
+                .try_solution()
+                .unwrap()
+                .cells()
+                .to_vec()
+        };
+        let click_at = |harness: &mut Harness<NonogramGui>, pos: Pos2| {
+            for pressed in [true, false] {
+                harness.input_mut().events.push(Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+            harness.run();
+        };
+
+        let center = harness
+            .state()
+            .solve_gui
+            .as_ref()
+            .unwrap()
+            .canvas
+            .picture_rect
+            .expect("the solver's canvas hasn't been drawn yet")
+            .center();
+
+        let before = solve_cells(&harness);
+        click_at(&mut harness, center);
+        let after = solve_cells(&harness);
+
+        // Whichever cell the click landed on. (Background inference may have filled in others,
+        // so this looks for the one that took the drawing color.)
+        let painted: Vec<usize> = (0..after.len())
+            .filter(|i| after[*i] == Color(1) && before[*i] != Color(1))
+            .collect();
+        assert_eq!(painted.len(), 1, "one click should paint one cell");
+
+        click_at(&mut harness, center);
+        assert_eq!(
+            solve_cells(&harness)[painted[0]],
+            UNSOLVED,
+            "clicking the same cell again should take it back to undecided"
         );
     }
 

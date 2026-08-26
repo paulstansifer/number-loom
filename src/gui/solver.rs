@@ -89,11 +89,13 @@ impl SolveGui {
                 undo_stack: vec![],
                 redo_stack: vec![],
                 current_tool: Tool::LineAlongLane,
+                previous_tool: Tool::LineAlongLane,
                 line_tool_state: None,
                 selection: None,
                 annotations: vec![],
                 annotate_drag: None,
-                allow_annotations: true,
+                solving: true,
+                middle_pans: false,
                 picture_rect: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
@@ -189,7 +191,7 @@ impl SolveGui {
                 }
             }
 
-            self.canvas.common_sidebar_items(ui, true, false);
+            self.canvas.common_sidebar_items(ui);
 
             ui.separator();
             let scale = 20.0;

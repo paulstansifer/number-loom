@@ -32,7 +32,43 @@ fn palette_shortcut(index: usize) -> Option<(egui::Key, char)> {
 }
 
 impl CanvasGui {
-    pub(super) fn palette_editor(&mut self, ui: &mut egui::Ui, read_only: bool) {
+    /// The palette entries the sidebar offers, in the order it shows them — which is the order
+    /// the number keys and the wheel step through as well.
+    ///
+    /// TODO: actually paint a palette entry for unsolved, in case the user doesn't have a middle
+    /// button.
+    fn palette_order(&self) -> Vec<Color> {
+        use itertools::Itertools;
+
+        let Some(picture) = self.document.try_solution() else {
+            return vec![];
+        };
+        picture
+            .palette()
+            .keys()
+            .copied()
+            .filter(|color| !(*color == UNSOLVED && self.solving))
+            .sorted()
+            .collect()
+    }
+
+    /// Move `steps` entries along the palette, wrapping around at either end.
+    pub(super) fn cycle_color(&mut self, steps: i32) {
+        let order = self.palette_order();
+        if order.is_empty() {
+            return;
+        }
+        let at = order
+            .iter()
+            .position(|color| *color == self.current_color)
+            .unwrap_or(0) as i32;
+        self.current_color = order[(at + steps).rem_euclid(order.len() as i32) as usize];
+    }
+
+    pub(super) fn palette_editor(&mut self, ui: &mut egui::Ui) {
+        // The solver's palette is the puzzle's, so it's shown but not edited.
+        let read_only = self.solving;
+
         let mut picked_color = self.current_color;
         let mut removed_color = None;
         let mut add_color = false;
@@ -41,19 +77,14 @@ impl CanvasGui {
         // have to stand down by hand while a `TextEdit` has the keyboard.
         let typing = ui.ctx().wants_keyboard_input();
 
-        use itertools::Itertools;
+        for (index, color) in self.palette_order().into_iter().enumerate() {
+            let color_info = self
+                .document
+                .solution_mut()
+                .palette_mut()
+                .get_mut(&color)
+                .expect("just read out of this palette");
 
-        for (index, (color, color_info)) in self
-            .document
-            .solution_mut()
-            .palette_mut()
-            .iter_mut()
-            .sorted_by_key(|(color, _)| *color)
-            // TODO: actually paint a palette entry for unsolved,
-            // in case the user doesn't have a middle button.
-            .filter(|(color, _)| !(**color == UNSOLVED && read_only))
-            .enumerate()
-        {
             let shortcut = palette_shortcut(index);
             let (r, g, b) = color_info.rgb;
             let button_text = if color_info.corner.is_some() {
@@ -64,7 +95,7 @@ impl CanvasGui {
 
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icons::ICON_CHEVRON_FORWARD).size(24.0).color(
-                    Color32::from_black_alpha(if *color == picked_color { 255 } else { 0 }),
+                    Color32::from_black_alpha(if color == picked_color { 255 } else { 0 }),
                 ));
 
                 let color_text = RichText::new(button_text)
@@ -82,7 +113,7 @@ impl CanvasGui {
                     || (!typing
                         && shortcut.is_some_and(|(key, _)| ui.input(|i| i.key_pressed(key))))
                 {
-                    picked_color = *color;
+                    picked_color = color;
                 };
 
                 if !read_only {
@@ -110,15 +141,15 @@ impl CanvasGui {
                     );
                     if edit.on_hover_text("Edit this color").changed() {
                         // TODO: this should probably also be undoable
-                        picked_color = *color;
+                        picked_color = color;
                         color_info.rgb = (
                             (edited_color[0] * 256.0) as u8,
                             (edited_color[1] * 256.0) as u8,
                             (edited_color[2] * 256.0) as u8,
                         );
                     }
-                    if *color != BACKGROUND && ui.button(icons::ICON_DELETE).clicked() {
-                        removed_color = Some(*color);
+                    if color != BACKGROUND && ui.button(icons::ICON_DELETE).clicked() {
+                        removed_color = Some(color);
                     }
                 }
             });
@@ -203,6 +234,56 @@ mod palette_tests {
         let palette = gui.document.try_solution().unwrap().palette();
         assert!(palette.contains_key(&gui.current_color));
         assert!(palette.contains_key(&gui.drag_start_color));
+    }
+
+    /// The wheel walks the palette in the order the sidebar lists it, and comes back around at
+    /// either end.
+    #[test]
+    fn cycling_wraps_around_the_palette() {
+        let mut fancy = Solution::blank_bw(3, 3);
+        fancy
+            .palette
+            .insert(Color(2), ColorInfo::default_fg(Color(2)));
+
+        // In color order: the background, then 1, then 2.
+        let mut gui = NonogramGui::new(doc(fancy)).editor_gui;
+        assert_eq!(gui.current_color, Color(1));
+
+        gui.cycle_color(1);
+        assert_eq!(gui.current_color, Color(2));
+        gui.cycle_color(1);
+        assert_eq!(gui.current_color, BACKGROUND);
+        gui.cycle_color(-1);
+        assert_eq!(gui.current_color, Color(2));
+
+        // More than a lap around still lands where a single step would.
+        gui.cycle_color(-4);
+        assert_eq!(gui.current_color, Color(1));
+    }
+
+    /// "Unknown" is a state a solver's cell can be in, not a color to paint with — the palette
+    /// doesn't offer it, so neither does the wheel.
+    #[test]
+    fn cycling_steps_past_unknown_while_solving() {
+        let mut solving = Solution::blank_bw(3, 3);
+        solving.palette.insert(
+            UNSOLVED,
+            ColorInfo {
+                ch: '?',
+                name: "unknown".to_string(),
+                rgb: (128, 128, 128),
+                color: UNSOLVED,
+                corner: None,
+            },
+        );
+
+        let mut gui = NonogramGui::new(doc(solving)).editor_gui;
+        gui.solving = true;
+
+        gui.cycle_color(1);
+        assert_eq!(gui.current_color, BACKGROUND);
+        gui.cycle_color(1);
+        assert_eq!(gui.current_color, Color(1));
     }
 
     #[test]

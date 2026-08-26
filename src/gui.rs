@@ -265,6 +265,9 @@ pub struct CanvasGui {
     pub undo_stack: Vec<Action>,
     pub redo_stack: Vec<Action>,
     pub current_tool: Tool,
+    /// Whatever was current before `current_tool`, so that a tool's own key, pressed again, goes
+    /// back to it. Starts out equal to `current_tool`, which makes that first press a no-op.
+    pub previous_tool: Tool,
     pub line_tool_state: Option<u32>,
     /// The lasso tool's selection, if any. Outlives switching tools only long enough to be
     /// flattened; see `flatten_selection`.
@@ -274,10 +277,14 @@ pub struct CanvasGui {
     pub annotations: Vec<Annotation>,
     /// The annotation being dragged out right now, if any.
     pub annotate_drag: Option<AnnotateDrag>,
-    /// Whether this canvas offers the annotate tool at all — true only in the solver, the way
-    /// flood fill and the lasso are editor-only. Gates the button, the `A` key and the shift
-    /// momentary alike.
-    pub allow_annotations: bool,
+    /// Whether this canvas is solving a puzzle rather than editing one. That decides which tools
+    /// it offers (annotate is solver-only, the way flood fill and the lasso are editor-only),
+    /// whether the palette can be edited, and whether a cell has an "unknown" state to go back
+    /// to when a click undoes itself.
+    pub solving: bool,
+    /// Whether the view has somewhere to pan to, in which case a middle-drag pans it and so must
+    /// not also reach a tool. `main_ui` sets this from the scroll area's own measurements.
+    pub middle_pans: bool,
     /// Indexed by dense cell index, like `Solution::cells`.
     pub solved_mask: Staleable<(String, Vec<bool>)>,
     pub disambiguator: Staleable<Disambiguator>,
@@ -309,6 +316,13 @@ pub struct NonogramGui {
     share_string: String,
     pasted_string: String,
     quality_warnings: Vec<String>,
+    /// Whether the picture is too big for the space it's shown in, and so has somewhere to pan
+    /// to. Measured from the scroll area as it was drawn last frame.
+    pannable: bool,
+    /// Whether a middle-drag pan is in flight right now.
+    panning: bool,
+    /// Wheel motion that hasn't yet added up to a whole step through the palette.
+    wheel_remainder: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -491,14 +505,9 @@ impl CanvasGui {
         }
     }
 
-    /// `editing` is false in the solver, which shares this sidebar but must not offer the tools
-    /// that rearrange the picture.
-    pub fn common_sidebar_items(
-        &mut self,
-        ui: &mut egui::Ui,
-        palette_read_only: bool,
-        editing: bool,
-    ) {
+    /// The part of the sidebar the editor and the solver share. `self.solving` says which of
+    /// the two is asking, and so which tools and palette controls to offer.
+    pub fn common_sidebar_items(&mut self, ui: &mut egui::Ui) {
         // A focused `TextEdit` reads its key events without consuming them, so a bare-key
         // shortcut still fires while the user is typing into one. Nothing here uses a modifier,
         // so every one of them has to be suppressed by hand.
@@ -527,11 +536,11 @@ impl CanvasGui {
 
         ui.separator();
 
-        self.tool_selector(ui, editing);
+        self.tool_selector(ui);
 
         // Annotations aren't part of the picture, so undo can't take them back — this is the only
         // way to be rid of them, and it only appears when there's something to clear.
-        if self.allow_annotations && !self.annotations.is_empty() {
+        if self.solving && !self.annotations.is_empty() {
             centered_row(ui, "clear_annotations", |ui| {
                 if ui
                     .button("Clear annotations")
@@ -547,7 +556,7 @@ impl CanvasGui {
 
         ui.separator();
 
-        self.palette_editor(ui, palette_read_only);
+        self.palette_editor(ui);
     }
 }
 
@@ -587,11 +596,13 @@ impl NonogramGui {
                 undo_stack: vec![],
                 redo_stack: vec![],
                 current_tool: Tool::Pencil,
+                previous_tool: Tool::Pencil,
                 line_tool_state: None,
                 selection: None,
                 annotations: vec![],
                 annotate_drag: None,
-                allow_annotations: false,
+                solving: false,
+                middle_pans: false,
                 picture_rect: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
@@ -629,6 +640,9 @@ impl NonogramGui {
             share_string: "".to_string(),
             pasted_string: "".to_string(),
             quality_warnings: vec![],
+            pannable: false,
+            panning: false,
+            wheel_remainder: 0.0,
         }
     }
 
@@ -650,7 +664,7 @@ impl NonogramGui {
 
             ui.separator();
 
-            self.editor_gui.common_sidebar_items(ui, false, true);
+            self.editor_gui.common_sidebar_items(ui);
 
             ui.separator();
 
@@ -770,6 +784,14 @@ impl NonogramGui {
             });
         });
     }
+    /// The canvas the user is working in right now.
+    fn current_canvas(&mut self) -> &mut CanvasGui {
+        match &mut self.solve_gui {
+            Some(solve_gui) => &mut solve_gui.canvas,
+            None => &mut self.editor_gui,
+        }
+    }
+
     fn enter_solve_mode(&mut self) {
         self.solve_mode = true;
 
@@ -848,6 +870,48 @@ fn bar_frame(ctx: &egui::Context, separator_on: Edge) -> egui::Frame {
 
 /// Breathing room between the canvas and the panels around it.
 const CANVAS_MARGIN: i8 = 16;
+
+/// This frame's wheel motion over the canvas, in notches, with the events taken away from the
+/// scroll area beneath — over the canvas the wheel steps through the palette instead of
+/// scrolling. Positive is a notch rolled away from the user.
+///
+/// Read from the events rather than from `raw_scroll_delta` so that one notch is one step
+/// whatever the platform's scroll speed happens to be set to.
+fn take_wheel_notches(ctx: &egui::Context) -> f32 {
+    // Trackpads report points instead of lines; converting at egui's own rate makes a swipe
+    // that would have scrolled one line's worth count as one notch.
+    let points_per_line = ctx.options(|o| o.line_scroll_speed).max(1.0);
+
+    ctx.input_mut(|i| {
+        let mut notches = 0.0;
+        i.events.retain(|event| match event {
+            egui::Event::MouseWheel {
+                unit,
+                delta,
+                modifiers,
+            } => {
+                // ctrl/cmd-wheel is egui's zoom gesture; that one belongs to `zoom_delta`.
+                if modifiers.ctrl || modifiers.mac_cmd || modifiers.command {
+                    return true;
+                }
+                // Whichever axis moved: shift-wheel arrives as horizontal motion on some
+                // platforms, and there's only the one palette to step through either way.
+                let amount = if delta.y != 0.0 { delta.y } else { delta.x };
+                notches += match unit {
+                    egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => amount,
+                    egui::MouseWheelUnit::Point => amount / points_per_line,
+                };
+                false
+            }
+            _ => true,
+        });
+        // egui spreads a mouse notch over the next few frames, so the leftovers have to go as
+        // well — and they arrive on frames that carry no event of their own.
+        i.raw_scroll_delta = Vec2::ZERO;
+        i.smooth_scroll_delta = Vec2::ZERO;
+        notches
+    })
+}
 
 impl eframe::App for NonogramGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -930,23 +994,68 @@ impl NonogramGui {
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(CANVAS_MARGIN))
             .show(ctx, |ui| {
-                // egui routes ctrl-scroll (and trackpad pinch) into `zoom_delta` rather than into
-                // the scroll offset, so the scroll area below pans on a plain wheel and leaves
-                // this alone. Only zoom when the pointer is actually over the canvas, so the
-                // gesture doesn't fire while the user is over the sidebar.
-                let zoom_here = ui.rect_contains_pointer(ui.max_rect());
+                // Everything below only applies while the pointer is over the canvas: the wheel
+                // and the middle button still mean what they usually do over the sidebar.
+                let pointer_here = ui.rect_contains_pointer(ui.max_rect());
+
+                // A plain wheel steps through the palette rather than scrolling — panning is the
+                // middle button's job below — so the events have to be taken away from the
+                // scroll area before it draws.
+                if pointer_here {
+                    self.wheel_remainder += take_wheel_notches(ctx);
+                    let steps = self.wheel_remainder.trunc();
+                    self.wheel_remainder -= steps;
+                    if steps != 0.0 {
+                        // A notch away from the user goes *up* the palette, the way it would move
+                        // up any other list.
+                        self.current_canvas().cycle_color(-steps as i32);
+                    }
+                }
+
+                // Middle-drag pans, but only when there's somewhere to pan to; otherwise the
+                // middle button keeps its painting job. A pan that has started holds on until
+                // the button comes up, even if the pointer wanders off the canvas.
+                let (middle_pressed, middle_down, pointer_delta) = ctx.input(|i| {
+                    (
+                        i.pointer.button_pressed(egui::PointerButton::Middle),
+                        i.pointer.middle_down(),
+                        i.pointer.delta(),
+                    )
+                });
+                self.panning = middle_down && (self.panning || (middle_pressed && pointer_here));
+
+                let (pannable, panning) = (self.pannable, self.panning);
 
                 // A zoomed-in puzzle is routinely bigger than the window in both directions.
-                egui::ScrollArea::both().show(ui, |ui| {
+                // `animated(false)` because the only thing that scrolls this programmatically is
+                // the pan below, which has to keep up with the pointer exactly.
+                let scrolled = egui::ScrollArea::both().animated(false).show(ui, |ui| {
+                    if panning {
+                        ui.scroll_with_delta(pointer_delta);
+                    }
                     if let Some(solve_gui) = &mut self.solve_gui {
+                        solve_gui.canvas.middle_pans = pannable;
                         solve_gui.body(ui, self.scale);
                     } else {
+                        self.editor_gui.middle_pans = pannable;
                         self.editor_gui
                             .canvas(ui, self.scale, RenderStyle::Experimental);
                     }
                 });
 
-                if zoom_here {
+                // What the scroll area just measured decides whether the *next* frame's
+                // middle-drag pans. A frame of lag is invisible beside how long a zoom lasts.
+                self.pannable = scrolled.content_size.x > scrolled.inner_rect.width() + 0.5
+                    || scrolled.content_size.y > scrolled.inner_rect.height() + 0.5;
+
+                // After the canvas, which sets a cursor of its own for whichever tool is up.
+                if panning {
+                    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
+
+                // egui routes ctrl-scroll (and trackpad pinch) into `zoom_delta` rather than
+                // into the scroll offset, and `take_wheel_notches` leaves those events alone.
+                if pointer_here {
                     let zoom = ui.input(|i| i.zoom_delta());
                     if zoom != 1.0 {
                         self.scale = (self.scale * zoom).clamp(1.0, 50.0);

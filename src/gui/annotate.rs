@@ -614,7 +614,7 @@ mod annotate_tests {
         ))
         .editor_gui;
         gui.current_tool = Tool::Annotate;
-        gui.allow_annotations = true;
+        gui.solving = true;
         gui
     }
 
@@ -886,7 +886,7 @@ mod annotate_tests {
         ))
         .editor_gui;
         gui.current_tool = Tool::Annotate;
-        gui.allow_annotations = true;
+        gui.solving = true;
 
         for family in 0..3 {
             for lane_idx in lane_map.family(family) {
