@@ -79,6 +79,159 @@ mod tests {
         );
     }
 
+    /// Each palette row carries a text field for the color's name, and typing in it renames the
+    /// color. Editor-only: the solver shows the puzzle's palette but doesn't rewrite it.
+    #[test]
+    fn test_renaming_a_palette_color() {
+        use egui::accesskit::Role;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+
+        let name_of = |harness: &Harness<NonogramGui>| {
+            harness
+                .state()
+                .editor_gui
+                .document
+                .try_solution()
+                .unwrap()
+                .palette()[&number_loom::puzzle::BACKGROUND]
+                .name
+                .clone()
+        };
+
+        // The background's own name field, found by what it currently holds. A `TextEdit` shows
+        // up in the tree twice — the input and the run of text inside it — so the role picks out
+        // the one that can be typed into.
+        assert_eq!(name_of(&harness), "white");
+        harness
+            .get_all_by_value("white")
+            .find(|node| node.role() == Role::TextInput)
+            .expect("the background should have a name field")
+            .type_text("ish");
+        harness.run();
+
+        let renamed = name_of(&harness);
+        assert!(
+            renamed.contains("ish"),
+            "typing in the name field should rename the color, got {renamed:?}"
+        );
+
+        // The solver shows the same palette, but with no name fields to type into.
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+        assert_eq!(
+            harness
+                .query_all_by_value(&renamed)
+                .filter(|node| node.role() == Role::TextInput)
+                .count(),
+            0,
+            "the solver should not offer a name field"
+        );
+    }
+
+    /// The sidebar's shortcuts are bare keys, so a name field with the keyboard has to shut them
+    /// all up — otherwise naming a color "sea green" would reach for the lasso halfway through.
+    #[test]
+    fn test_typing_a_name_doesnt_fire_shortcuts() {
+        use egui::accesskit::Role;
+        use number_loom::gui::Tool;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+
+        harness
+            .get_all_by_value("white")
+            .find(|node| node.role() == Role::TextInput)
+            .expect("the background should have a name field")
+            .focus();
+        harness.run();
+
+        // `S` is the lasso and `1` is the background swatch, both of them bare keys.
+        press_key(&mut harness, egui::Key::S);
+        press_key(&mut harness, egui::Key::Num1);
+
+        assert_eq!(
+            harness.state().editor_gui.current_tool,
+            Tool::Pencil,
+            "typing a name shouldn't switch tools"
+        );
+        assert_eq!(
+            harness.state().editor_gui.current_color,
+            number_loom::puzzle::Color(1),
+            "typing a name shouldn't repaint the palette choice"
+        );
+    }
+
+    /// The name field trails the rest of its row and takes whatever width is left, so it's the
+    /// one that has to stay inside the sidebar rather than spilling out under the canvas. The
+    /// background's row has no delete button, but pads the gap, so every field starts level.
+    #[test]
+    fn test_palette_row_fits_the_sidebar() {
+        use egui::accesskit::Role;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+
+        // Everything in the sidebar has to stay left of the canvas beside it.
+        let canvas_left = harness
+            .state()
+            .editor_gui
+            .picture_rect
+            .expect("the canvas hasn't been drawn yet")
+            .min
+            .x as f64;
+
+        // By what they hold: the sidebar has other text fields (the resizer's, the metadata
+        // section's), and only these two are palette names.
+        let fields: Vec<_> = ["white", "black"]
+            .iter()
+            .map(|name| {
+                harness
+                    .get_all_by_value(name)
+                    .find(|node| node.role() == Role::TextInput)
+                    .unwrap_or_else(|| panic!("no name field holding {name:?}"))
+                    .raw_bounds()
+                    .expect("the name field has no bounds")
+            })
+            .collect();
+
+        for field in &fields {
+            assert!(
+                field.x1 < canvas_left,
+                "a name field (to {}) spilled out of the sidebar, which ends at {canvas_left}",
+                field.x1
+            );
+            assert!(
+                field.x1 - field.x0 >= 24.0,
+                "a name field came out only {} wide",
+                field.x1 - field.x0
+            );
+        }
+        assert_eq!(
+            fields[0].x0, fields[1].x0,
+            "the background's row pads the missing delete button, so the fields start level"
+        );
+    }
+
     /// The number keys pick palette entries by their position in the palette editor, so `1` is
     /// the background and `2` is the first drawing color — not `Color(1)` and `Color(2)`.
     #[test]
