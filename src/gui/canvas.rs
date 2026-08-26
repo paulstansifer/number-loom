@@ -4,7 +4,7 @@
 //! Everything else — the tools, undo, the overlays — works in dense cell indices and is the same
 //! for every shape.
 
-use super::annotate::{AnnotatePointer, Border, borders_near};
+use super::annotate::AnnotatePointer;
 use super::selection::{LassoPointer, marching_ants, selection_outline};
 use super::*;
 
@@ -145,7 +145,6 @@ impl CanvasGui {
         // Shift is a momentary switch to the annotate tool and a drag holds on to whichever tool
         // started it, so nothing below this line may consult `current_tool` directly.
         let tool = self.effective_tool(ui);
-        let mut preview_border: Option<Border> = None;
 
         if tool == Tool::Lasso {
             // The lasso is the one tool that must keep tracking the pointer once it leaves the
@@ -159,17 +158,9 @@ impl CanvasGui {
             self.lasso_keys(ui);
             self.lasso_cursor(ui, hovered_cell);
         } else if tool == Tool::Annotate {
-            // Also a question about a *position* rather than a cell — which border the pointer is
-            // nearest — so, like the lasso, this works in abstract units.
-            if self.annotate_drag.is_none()
-                && let Some(pointer_pos) = response.hover_pos()
-            {
-                let p = from_screen * pointer_pos;
-                preview_border =
-                    borders_near(self.document.try_solution().unwrap(), Point::new(p.x, p.y))
-                        .first()
-                        .copied();
-            }
+            // A mark is anchored on the cell the drag started from, but it swings around that
+            // cell as the pointer moves — so, like the lasso, this wants the abstract-unit
+            // position and not just a cell index.
             if let Some(pointer_pos) = response.interact_pointer_pos() {
                 let p = from_screen * pointer_pos;
                 let pointer = AnnotatePointer::from_egui(&ui.input(|i| i.pointer.clone()));
@@ -308,7 +299,7 @@ impl CanvasGui {
 
         // After the picture's own shapes, so the marks land on top of the cells, the grid guides
         // and the lasso's ants.
-        self.draw_annotations(ui, &painter, scale, &to_screen, preview_border);
+        self.draw_annotations(ui, &painter, scale, &to_screen);
 
         response.mark_changed();
 

@@ -702,14 +702,14 @@ mod tests {
             .cells()
             .to_vec();
 
-        // Just inside the left edge of column 0, along the middle of row 2, over to just inside
-        // the left edge of column 3: three cells.
+        // From inside column 0, along the middle of row 2, to inside column 3. A mark runs cell
+        // to cell, so that covers columns 0 through 3 inclusive: four cells.
         let y = rect.min.y + 2.5 * cell.y;
-        let at = |cells: f32| Pos2::new(rect.min.x + cells * cell.x + 0.05 * cell.x, y);
+        let at = |column: f32| Pos2::new(rect.min.x + (column + 0.5) * cell.x, y);
         drag(&mut harness, at(0.0), at(3.0), Modifiers::NONE);
 
         assert_eq!(annotations(&harness).len(), 1);
-        assert_eq!(annotations(&harness)[0].cells_covered(), 3);
+        assert_eq!(annotations(&harness)[0].cells_covered(), 4);
 
         let canvas = &harness.state().solve_gui.as_ref().unwrap().canvas;
         assert_eq!(canvas.version, before);
@@ -737,11 +737,11 @@ mod tests {
         );
 
         let y = rect.min.y + 2.5 * cell.y;
-        let at = |cells: f32| Pos2::new(rect.min.x + cells * cell.x + 0.05 * cell.x, y);
+        let at = |column: f32| Pos2::new(rect.min.x + (column + 0.5) * cell.x, y);
         drag(&mut harness, at(0.0), at(2.0), Modifiers::SHIFT);
 
         assert_eq!(annotations(&harness).len(), 1);
-        assert_eq!(annotations(&harness)[0].cells_covered(), 2);
+        assert_eq!(annotations(&harness)[0].cells_covered(), 3);
         // Shift is momentary: the line tool is still the one that's selected.
         assert_eq!(
             harness

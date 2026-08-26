@@ -1,26 +1,38 @@
 //! The annotate tool, to help counting-out lines during a solve.
 //!
-//! A click ticks the border nearest the pointer; a lane-constrained drag ticks both ends and
-//! writes how many cells lie between them. This doesn't affect the puzzle, and is invisible to
-//! the undo system.
+//! A drag runs cell to cell along a lane: it ticks the border past each end and writes how many
+//! cells it covered. It's anchored on the *cell* the drag started from rather than on a border,
+//! so it can swing to any lane through that cell — four directions on a square grid, six on a
+//! triddler — and reversing the drag flips the origin's tick to that cell's other side. A click
+//! clears every mark covering the cell clicked on, or marks that one cell if there was nothing
+//! there to clear.
+//!
+//! This doesn't affect the puzzle, and is invisible to the undo system.
 //!
 //! Everything is stated in terms of lanes rather than coordinates, the way `grid_solve` is, so a
-//! triddler needs no special handling: the cell count of a span is just how far apart its two
-//! border positions are.
+//! triddler needs no special handling: the cell count of a mark is just how far apart its two
+//! ends are.
 
 use super::*;
 
 /// A boundary within a lane: the gap just before `lane.cells[index]`, with `index == len` meaning
 /// the far end. A lane of n cells therefore has n + 1 borders.
+///
+/// Only ever reached through an `Annotation`'s two ends; the tool itself snaps to cells.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Border {
-    pub lane: usize,
-    pub index: usize,
+struct Border {
+    lane: usize,
+    index: usize,
 }
 
-/// One scratch mark. `from == to` is a bare tick on a single border; otherwise the mark spans
-/// `|to - from|` cells, and its wave goes on the right-hand side of `from -> to` — so which way
-/// the drag ran is worth keeping, and the two ends are *not* sorted.
+/// One scratch mark, running cell to cell along a lane.
+///
+/// Stored as the pair of *borders* enclosing the run — positions in `0..=lane.cells.len()`, never
+/// equal, so a mark always covers at least one cell. Borders rather than the cells themselves,
+/// because the pair also carries the direction the drag ran, which a one-cell mark would
+/// otherwise lose: `from` is the border past the origin cell on the far side from where the drag
+/// was heading, and the wave goes on the right-hand side of `from -> to`. So the two ends are
+/// deliberately not sorted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Annotation {
     lane: usize,
@@ -29,50 +41,74 @@ pub struct Annotation {
 }
 
 impl Annotation {
-    fn tick(border: Border) -> Annotation {
-        Annotation {
-            lane: border.lane,
-            from: border.index,
-            to: border.index,
-        }
-    }
-
-    fn start(&self) -> Border {
-        Border {
+    /// The two borders the mark is drawn between, in drag order.
+    fn ends(&self) -> (Border, Border) {
+        let border = |index| Border {
             lane: self.lane,
-            index: self.from,
-        }
+            index,
+        };
+        (border(self.from), border(self.to))
     }
 
-    fn end(&self) -> Border {
-        Border {
-            lane: self.lane,
-            index: self.to,
-        }
+    /// A mark on a single cell, as a click leaves.
+    ///
+    /// One cell has no direction, so the lane this ends up filed under is only a way of naming
+    /// the cell — any lane through it would do, and the drawing ignores the choice entirely.
+    fn lone(picture: &DynSolution, cell: u32) -> Option<Annotation> {
+        let membership = picture.lane_map().memberships(cell).first()?;
+        let position = membership.position as usize;
+        Some(Annotation {
+            lane: membership.lane as usize,
+            from: position,
+            to: position + 1,
+        })
     }
 
-    /// How many cells this mark spans; zero for a bare tick.
+    /// The one cell this mark covers, if it covers only the one.
+    ///
+    /// Such a mark is drawn as a box around that cell rather than as a run between two ticks:
+    /// with nothing to count along, the direction it was made in isn't worth showing, and a
+    /// click — which is how most of them are made — has no direction to show in the first place.
+    fn lone_cell(&self, picture: &DynSolution) -> Option<u32> {
+        if self.cells_covered() != 1 {
+            return None;
+        }
+        let lane = picture.lane_map().lanes().get(self.lane)?;
+        lane.cells.get(self.from.min(self.to)).copied()
+    }
+
+    /// How many cells this mark covers; always at least one.
     pub fn cells_covered(&self) -> usize {
         self.from.abs_diff(self.to)
     }
 
-    /// Whether either end of this mark sits on the edge whose midpoint is `spot`.
-    fn touches(&self, picture: &DynSolution, spot: Point) -> bool {
-        [self.start(), self.end()]
-            .into_iter()
-            .any(|b| border_midpoint(picture, b).is_some_and(|m| same_spot(m, spot)))
+    /// Whether `cell` is one of the cells this mark covers — what a click tests against.
+    ///
+    /// Cell `i` of a lane sits between borders `i` and `i + 1`, so the covered cells are the
+    /// half-open range between the two ends.
+    fn covers(&self, picture: &DynSolution, cell: u32) -> bool {
+        picture
+            .lane_map()
+            .memberships(cell)
+            .iter()
+            .find(|m| m.lane as usize == self.lane)
+            .is_some_and(|m| {
+                let position = m.position as usize;
+                self.from.min(self.to) <= position && position < self.from.max(self.to)
+            })
     }
 }
 
 /// An annotation being dragged out right now.
 pub struct AnnotateDrag {
-    /// Every `Border` naming the edge the drag started on — one on a square grid, two on a
-    /// triddler (see `borders_near`). Which one the drag ends up on is settled by its direction.
-    anchors: Vec<Border>,
-    /// Where the press landed, in abstract units; the drag is measured from here.
+    /// The cell the drag started on. The mark swings around this one.
+    origin: u32,
+    /// Where the press landed, in abstract units. The drag is measured from here rather than
+    /// from the origin cell's centre, so the mark answers to the pointer directly.
     press: Point,
-    /// What would be committed if the pointer were released right now. Drawn as it goes.
-    live: Annotation,
+    /// What would be committed if the pointer were released right now — `None` until the pointer
+    /// has moved far enough for this to be a drag rather than a click.
+    live: Option<Annotation>,
 }
 
 /// What the annotate tool needs to know about the pointer in a frame. It doesn't care *which*
@@ -82,6 +118,8 @@ pub(super) struct AnnotatePointer {
     pressed: bool,
     down: bool,
     released: bool,
+    /// egui's own verdict on whether this has become a drag rather than a click.
+    dragging: bool,
 }
 
 impl AnnotatePointer {
@@ -90,6 +128,7 @@ impl AnnotatePointer {
             pressed: pointer.any_pressed(),
             down: pointer.any_down(),
             released: pointer.any_released(),
+            dragging: pointer.is_decidedly_dragging(),
         }
     }
 }
@@ -148,114 +187,69 @@ fn midpoint((a, b): (Point, Point)) -> Point {
     Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)
 }
 
-fn border_midpoint(picture: &DynSolution, border: Border) -> Option<Point> {
-    border_edge(picture, border).map(midpoint)
-}
-
-/// Whether two edge midpoints are the same spot. Distinct edges are at least a quarter of a cell
-/// apart, so the only thing this ever conflates is the two names a triangular grid gives one edge.
-fn same_spot(a: Point, b: Point) -> bool {
-    (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3
-}
-
-/// Every `Border` naming the cell edge nearest `p`; empty when `p` isn't over the grid.
+/// The point on a tick's edge that sits `WAVE_INSET` to the `right` of the lane's centre line —
+/// where the wave running along that lane should meet it.
 ///
-/// The hovered cell's own borders are ranked by how far `p` is from each edge's *midpoint*. Over
-/// a square's four edges that carves the cell up along its diagonals — exactly the snapping
-/// wanted — and the same holds around a triangle's centroid.
-///
-/// A triangular grid names each edge twice: a cell has three edges but three families of two
-/// in-lane neighbours each, so every edge divides two lanes from different families. Both names
-/// come back, since a bare tick looks identical either way and only a drag has to choose.
-pub(super) fn borders_near(picture: &DynSolution, p: Point) -> Vec<Border> {
-    let Some(cell) = picture.cell_at(p).and_then(|coord| picture.cell_of(coord)) else {
-        return vec![];
-    };
-
-    let mut ranked: Vec<(f32, Border, Point)> = vec![];
-    for membership in picture.lane_map().memberships(cell) {
-        let position = membership.position as usize;
-        for index in [position, position + 1] {
-            let border = Border {
-                lane: membership.lane as usize,
-                index,
-            };
-            let Some(mid) = border_midpoint(picture, border) else {
-                continue;
-            };
-            let (dx, dy) = (mid.x - p.x, mid.y - p.y);
-            ranked.push((dx * dx + dy * dy, border, mid));
-        }
+/// The inset is measured *across* the lane, but a tick lies along its own cell edge, and those
+/// two directions only coincide where the edge is square to the lane. On a square grid it always
+/// is; on a triddler a row's ticks are slanted 30° off, so stepping `WAVE_INSET` straight across
+/// the lane from the edge's midpoint lands beside the tick rather than on it, and the wave stops
+/// short. Slide along the edge instead, by however far it takes to gain `WAVE_INSET` across.
+fn inset_along((a, b): (Point, Point), right: crate::layout::Vec2) -> Point {
+    let mid = midpoint((a, b));
+    let edge = crate::layout::Vec2::new(b.x - a.x, b.y - a.y);
+    // How much of the edge's length is gained across the lane. A border always crosses its lane,
+    // so this is never zero; guard it anyway rather than dividing by it blind.
+    let across = edge.x * right.x + edge.y * right.y;
+    if across.abs() <= f32::EPSILON {
+        return Point::new(mid.x + right.x * WAVE_INSET, mid.y + right.y * WAVE_INSET);
     }
-    ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-    let Some(&(_, _, nearest)) = ranked.first() else {
-        return vec![];
-    };
-    ranked
-        .into_iter()
-        .filter(|(_, _, mid)| same_spot(*mid, nearest))
-        .map(|(_, border, _)| border)
-        .collect()
+    // Never past the edge's own end, however wide the inset is set.
+    let t = (WAVE_INSET / across).clamp(-0.5, 0.5);
+    Point::new(mid.x + edge.x * t, mid.y + edge.y * t)
 }
 
-/// The mark a drag of `drag` from `anchors` describes: the anchor whose lane best matches the
-/// drag's direction, carried along that lane by however many cells the drag covered.
+/// How far the pointer must travel, as a fraction of a cell, before a press counts as a drag
+/// rather than a click.
 ///
-/// The lane-picking and the projection are the same trick the line tool uses (see
-/// `tools::line_between`): compare the drag against each candidate lane's first-cell-to-last-cell
-/// span, which averages out the zigzag a triangular lane's centroids make.
+/// egui's own click/drag threshold is consulted too, but it can't carry this alone: it also
+/// promotes a *slow* press to a drag once `max_click_duration` is up, so holding still for a
+/// moment before letting go would leave a stray one-cell mark instead of clearing the cell.
+const DRAG_MINIMUM: f32 = 0.2;
+
+/// The mark a drag of `drag` away from `origin` describes.
+///
+/// Anchoring on a cell rather than on a border is what lets a mark rotate: every lane through the
+/// cell is a candidate, and `tools::lane_along_drag` — which the line tool asks the same question
+/// of — picks among them afresh on every frame of the drag.
 fn span_from_drag(
     picture: &DynSolution,
-    anchors: &[Border],
+    origin: u32,
     drag: crate::layout::Vec2,
 ) -> Option<Annotation> {
-    let first_anchor = *anchors.first()?;
-    let drag_len = (drag.x * drag.x + drag.y * drag.y).sqrt();
-    if drag_len <= f32::EPSILON {
-        return Some(Annotation::tick(first_anchor));
-    }
+    let along = super::tools::lane_along_drag(picture, origin, drag)?;
+    let target = along.target(picture.lane_map().lane(along.lane).cells.len());
 
-    let lanes = picture.lane_map();
-    let center = |cell: u32| picture.cell_shape(cell).center(picture.cell_origin(cell));
-
-    // (anchor, |cos angle| to the drag, how many cells along the lane the drag reached)
-    let mut best: Option<(Border, f32, f32)> = None;
-    for anchor in anchors {
-        let lane = lanes.lane(anchor.lane);
-        if lane.cells.len() < 2 {
-            continue; // No direction to compare against.
-        }
-        let first = center(lane.cells[0]);
-        let last = center(*lane.cells.last().unwrap());
-        let span = crate::layout::Vec2::new(last.x - first.x, last.y - first.y);
-        let span_len = (span.x * span.x + span.y * span.y).sqrt();
-        let avg_spacing = span_len / (lane.cells.len() - 1) as f32;
-
-        let cos_angle = ((span.x * drag.x + span.y * drag.y) / (span_len * drag_len)).abs();
-        let steps = (drag.x * span.x + drag.y * span.y) / span_len / avg_spacing;
-        if best.is_none_or(|(_, best_cos, _)| cos_angle > best_cos) {
-            best = Some((*anchor, cos_angle, steps));
-        }
-    }
-
-    let Some((anchor, _, steps)) = best else {
-        return Some(Annotation::tick(first_anchor)); // No usable lane; leave a bare tick.
+    // Border `i` is the near side of cell `i`, so enclosing a run means taking the border before
+    // its first cell and the one after its last. Which of the two is the origin's depends on
+    // which way the drag ran — that's what makes the mark rotate about the origin cell rather
+    // than pivot on one of its edges, and it holds even for a nudge that never leaves that cell.
+    let (from, to) = if along.forward() {
+        (along.from, target + 1)
+    } else {
+        (along.from + 1, target)
     };
-    // Borders, not cells: a lane of n cells has borders 0..=n, so this clamps one higher than the
-    // line tool's equivalent does.
-    let border_count = lanes.lane(anchor.lane).cells.len() as isize;
-    let to = (anchor.index as isize + steps.round() as isize).clamp(0, border_count) as usize;
     Some(Annotation {
-        lane: anchor.lane,
-        from: anchor.index,
+        lane: along.lane,
+        from,
         to,
     })
 }
 
 impl CanvasGui {
     /// Drive the annotate tool from the pointer. Takes an abstract-unit position rather than a
-    /// cell, since "which border is nearest" is a question about a point.
+    /// cell, so that the mark answers to where the pointer actually is rather than snapping
+    /// between cell centres.
     ///
     /// Deliberately calls neither `perform` nor anything that bumps `version`: annotations are
     /// scratch, invisible both to undo and to every cache `version` guards.
@@ -265,42 +259,53 @@ impl CanvasGui {
         };
 
         if pointer.pressed {
-            let anchors = borders_near(picture, p);
-            if let Some(&first) = anchors.first() {
-                self.annotate_drag = Some(AnnotateDrag {
-                    anchors,
+            self.annotate_drag = picture
+                .cell_at(p)
+                .and_then(|coord| picture.cell_of(coord))
+                .map(|origin| AnnotateDrag {
+                    origin,
                     press: p,
-                    live: Annotation::tick(first),
+                    live: None,
                 });
+            // Press and release usually land in separate frames, but a fast enough click — or a
+            // slow enough frame — delivers both at once. Fall through and let that settle as the
+            // click it is, rather than dropping it.
+            if !pointer.released {
+                return;
             }
-            return;
         }
 
         let Some(drag) = &self.annotate_drag else {
             return;
         };
+        let origin = drag.origin;
         let motion = crate::layout::Vec2::new(p.x - drag.press.x, p.y - drag.press.y);
-        let live = span_from_drag(picture, &drag.anchors, motion).unwrap_or(drag.live);
+        let far_enough =
+            pointer.dragging && (motion.x * motion.x + motion.y * motion.y).sqrt() >= DRAG_MINIMUM;
+        // Once a drag is under way it keeps its last mark, so wandering back to exactly where the
+        // press landed doesn't make the mark vanish mid-drag.
+        let live = far_enough
+            .then(|| span_from_drag(picture, origin, motion))
+            .flatten()
+            .or(drag.live);
 
         if pointer.released {
-            if live.from == live.to {
-                // The pointer never left the border it started on, so this was a click: it
-                // removes whatever is already marked here, and only leaves a tick if there was
-                // nothing to remove. Matching is by *position*, so a span's endpoint is fair
-                // game, and so is a tick a triddler happens to have filed under the other lane.
-                let removed = match border_midpoint(picture, live.start()) {
-                    Some(spot) => {
-                        let before = self.annotations.len();
-                        self.annotations.retain(|a| !a.touches(picture, spot));
-                        self.annotations.len() != before
+            match live {
+                // Drags are purely additive; clearing is the click's job alone.
+                Some(annotation) => self.annotations.push(annotation),
+                None => {
+                    // A click clears every mark covering the cell — and if there was nothing to
+                    // clear, marks that single cell instead. Dragging out a one-cell mark means
+                    // keeping the pointer inside one cell, which is fiddly enough that the click
+                    // is the way to reach the commonest count of all.
+                    let before = self.annotations.len();
+                    self.annotations.retain(|a| !a.covers(picture, origin));
+                    if self.annotations.len() == before
+                        && let Some(mark) = Annotation::lone(picture, origin)
+                    {
+                        self.annotations.push(mark);
                     }
-                    None => false,
-                };
-                if !removed {
-                    self.annotations.push(live);
                 }
-            } else {
-                self.annotations.push(live);
             }
             self.annotate_drag = None;
         } else if pointer.down {
@@ -308,7 +313,7 @@ impl CanvasGui {
         }
     }
 
-    /// Paint the annotations, plus a ghost of the tick a click would leave right now.
+    /// Paint the annotations, including whichever one is being dragged out right now.
     ///
     /// Called after the picture's own shapes have gone to the painter, so these land on top of
     /// the cells, the grid guides and the lasso's ants.
@@ -318,23 +323,12 @@ impl CanvasGui {
         painter: &egui::Painter,
         scale: f32,
         to_screen: &egui::emath::RectTransform,
-        preview: Option<Border>,
     ) {
         let Some(picture) = self.document.try_solution() else {
             return;
         };
 
-        // Under the marks themselves: this is a ghost of one, not one.
-        if let Some(border) = preview
-            && let Some(edge) = border_edge(picture, border)
-        {
-            painter.add(egui::Shape::line_segment(
-                screen_edge(edge, to_screen),
-                egui::Stroke::new(mark_width(scale), Color32::from_black_alpha(96)),
-            ));
-        }
-
-        let live = self.annotate_drag.as_ref().map(|drag| drag.live);
+        let live = self.annotate_drag.as_ref().and_then(|drag| drag.live);
         let mut marks = Marks::default();
         for annotation in self.annotations.iter().copied().chain(live) {
             marks.collect(ui, picture, scale, to_screen, annotation);
@@ -414,20 +408,51 @@ struct Label {
 /// stay readable however crowded the marks around it get.
 #[derive(Default)]
 struct Marks {
-    /// Polylines, with the thickness of their black cores.
-    lines: Vec<(Vec<Pos2>, f32)>,
+    lines: Vec<MarkLine>,
     labels: Vec<Label>,
+}
+
+/// One stroked path, with the thickness of its black core.
+struct MarkLine {
+    points: Vec<Pos2>,
+    width: f32,
+    /// A closed loop joins back to its own start, so it has no caps for the halo to run past.
+    closed: bool,
 }
 
 impl Marks {
     fn line(&mut self, points: Vec<Pos2>, width: f32) {
+        self.push(points, width, false);
+    }
+
+    /// A path that joins back to its own start, like the box round a single-cell mark.
+    fn closed_line(&mut self, points: Vec<Pos2>, width: f32) {
+        self.push(points, width, true);
+    }
+
+    fn push(&mut self, points: Vec<Pos2>, width: f32, closed: bool) {
         if points.len() >= 2 {
-            self.lines.push((points, width));
+            self.lines.push(MarkLine {
+                points,
+                width,
+                closed,
+            });
         }
     }
 
-    /// Gather one annotation: a tick at each end, plus — for a span — the wave running between
-    /// them and the count it carries.
+    /// A cell count, to be written over everything else once the marks are down.
+    fn label(&mut self, ui: &egui::Ui, scale: f32, center: Pos2, count: usize) {
+        let text = count.to_string();
+        self.labels.push(Label {
+            font: solver::clue_font(ui, &text, scale, LABEL_FONT_SCALE),
+            center,
+            text,
+            offset: (scale * 0.09).max(1.5),
+        });
+    }
+
+    /// Gather one annotation: a tick past each end, plus the wave running between them and the
+    /// count it carries.
     fn collect(
         &mut self,
         ui: &egui::Ui,
@@ -436,28 +461,36 @@ impl Marks {
         to_screen: &egui::emath::RectTransform,
         annotation: Annotation,
     ) {
+        let width = mark_width(scale);
+
+        // A single cell gets a box round it and a bare "1", since there's no run to lay a wave
+        // along and no direction to point it in.
+        if let Some(cell) = annotation.lone_cell(picture) {
+            let shape = picture.cell_shape(cell);
+            let origin = picture.cell_origin(cell);
+            let (corners, n) = shape.vertices(origin);
+            self.closed_line(
+                corners[..n]
+                    .iter()
+                    .map(|corner| to_screen * Pos2::new(corner.x, corner.y))
+                    .collect(),
+                width,
+            );
+            let center = shape.center(origin);
+            self.label(ui, scale, to_screen * Pos2::new(center.x, center.y), 1);
+            return;
+        }
+
+        let (start, end) = annotation.ends();
         // A mark left over from a differently-shaped picture simply doesn't draw.
-        let (Some(start), Some(end)) = (
-            border_edge(picture, annotation.start()),
-            border_edge(picture, annotation.end()),
-        ) else {
+        let (Some(start), Some(end)) = (border_edge(picture, start), border_edge(picture, end))
+        else {
             return;
         };
 
-        let width = mark_width(scale);
         self.line(screen_edge(start, to_screen).to_vec(), width);
-        if annotation.from == annotation.to {
-            return; // A bare tick: both ends name the same border.
-        }
         self.line(screen_edge(end, to_screen).to_vec(), width);
-        self.wave(
-            ui,
-            scale,
-            to_screen,
-            midpoint(start),
-            midpoint(end),
-            annotation.cells_covered(),
-        );
+        self.wave(ui, scale, to_screen, start, end, annotation.cells_covered());
     }
 
     /// The wave marking out a span: a sine from `from` to `to`, pushed `WAVE_INSET` toward the
@@ -468,10 +501,13 @@ impl Marks {
         ui: &egui::Ui,
         scale: f32,
         to_screen: &egui::emath::RectTransform,
-        from: Point,
-        to: Point,
+        start: (Point, Point),
+        end: (Point, Point),
         count: usize,
     ) {
+        // The lane's own direction, taken between the two ticks' midpoints, is what "the
+        // right-hand side" is measured against.
+        let (from, to) = (midpoint(start), midpoint(end));
         let along = crate::layout::Vec2::new(to.x - from.x, to.y - from.y);
         let length = (along.x * along.x + along.y * along.y).sqrt();
         if length <= f32::EPSILON {
@@ -479,13 +515,23 @@ impl Marks {
         }
         let right = crate::layout::Vec2::new(-along.y / length, along.x / length);
 
-        // `t` runs 0..1 along the span; `swing` is the sine's offset across it, in abstract units.
+        // Where the wave meets each tick, found *on that tick's own edge* rather than by stepping
+        // across the lane from its midpoint and hoping to land on it.
+        let (head, tail) = (inset_along(start, right), inset_along(end, right));
+        let span = crate::layout::Vec2::new(tail.x - head.x, tail.y - head.y);
+        let length = (span.x * span.x + span.y * span.y).sqrt();
+        if length <= f32::EPSILON {
+            return;
+        }
+        let swing_dir = crate::layout::Vec2::new(-span.y / length, span.x / length);
+
+        // `t` runs 0..1 from one tick to the other; `swing` is the sine's offset across it, in
+        // abstract units. The inset is already baked into `head` and `tail`.
         let at = |t: f32, swing: f32| -> Pos2 {
-            let offset = WAVE_INSET + swing;
             to_screen
                 * Pos2::new(
-                    from.x + along.x * t + right.x * offset,
-                    from.y + along.y * t + right.y * offset,
+                    head.x + span.x * t + swing_dir.x * swing,
+                    head.y + span.y * t + swing_dir.y * swing,
                 )
         };
 
@@ -504,13 +550,7 @@ impl Marks {
 
         // The count goes at the midpoint, on the wave's own centre line. Nothing is cut out of
         // the wave for it: the number is painted last, and its outline carves its own hole.
-        let text = count.to_string();
-        self.labels.push(Label {
-            font: solver::clue_font(ui, &text, scale, LABEL_FONT_SCALE),
-            center: at(0.5, 0.0),
-            text,
-            offset: (scale * 0.09).max(1.5),
-        });
+        self.label(ui, scale, at(0.5, 0.0), count);
     }
 
     /// Every white halo, then every black core on top of it, then the counts above both — each
@@ -521,17 +561,21 @@ impl Marks {
     /// contrast against the *panel*, and black on the panel looks perfectly legible right up
     /// until the number lands on a black cell.)
     fn paint(&self, painter: &egui::Painter) {
-        for (points, width) in &self.lines {
-            painter.add(egui::Shape::line(
-                extended(points, HALO),
-                egui::Stroke::new(width + 2.0 * HALO, Color32::WHITE),
-            ));
+        for line in &self.lines {
+            let stroke = egui::Stroke::new(line.width + 2.0 * HALO, Color32::WHITE);
+            painter.add(if line.closed {
+                egui::Shape::closed_line(line.points.clone(), stroke)
+            } else {
+                egui::Shape::line(extended(&line.points, HALO), stroke)
+            });
         }
-        for (points, width) in &self.lines {
-            painter.add(egui::Shape::line(
-                points.clone(),
-                egui::Stroke::new(*width, Color32::BLACK),
-            ));
+        for line in &self.lines {
+            let stroke = egui::Stroke::new(line.width, Color32::BLACK);
+            painter.add(if line.closed {
+                egui::Shape::closed_line(line.points.clone(), stroke)
+            } else {
+                egui::Shape::line(line.points.clone(), stroke)
+            });
         }
 
         // The same white-before-black split again, so that two counts crowding each other behave
@@ -582,7 +626,13 @@ mod annotate_tests {
         gui
     }
 
-    fn at(gui: &mut CanvasGui, phase: AnnotatePointer, x: f32, y: f32) {
+    /// The middle of cell `(x, y)`, which is where a press is aimed: a mark is anchored on the
+    /// cell it started in, so anywhere inside will do.
+    fn cell(x: f32, y: f32) -> (f32, f32) {
+        (x + 0.5, y + 0.5)
+    }
+
+    fn at(gui: &mut CanvasGui, phase: AnnotatePointer, (x, y): (f32, f32)) {
         gui.annotate_input(phase, Point::new(x, y));
     }
 
@@ -590,112 +640,226 @@ mod annotate_tests {
         pressed: true,
         down: true,
         released: false,
+        dragging: false,
     };
+    /// Moving and releasing once egui has decided this is a drag rather than a click.
     const MOVE: AnnotatePointer = AnnotatePointer {
         pressed: false,
         down: true,
         released: false,
+        dragging: true,
     };
+    const DROP: AnnotatePointer = AnnotatePointer {
+        pressed: false,
+        down: false,
+        released: true,
+        dragging: true,
+    };
+    /// Releasing without egui ever calling it a drag: a click.
     const RELEASE: AnnotatePointer = AnnotatePointer {
         pressed: false,
         down: false,
         released: true,
+        dragging: false,
     };
 
-    fn click(gui: &mut CanvasGui, x: f32, y: f32) {
-        at(gui, PRESS, x, y);
-        at(gui, RELEASE, x, y);
+    fn click(gui: &mut CanvasGui, spot: (f32, f32)) {
+        at(gui, PRESS, spot);
+        at(gui, RELEASE, spot);
     }
 
     fn drag(gui: &mut CanvasGui, from: (f32, f32), to: (f32, f32)) {
-        at(gui, PRESS, from.0, from.1);
-        at(gui, MOVE, to.0, to.1);
-        at(gui, RELEASE, to.0, to.1);
+        at(gui, PRESS, from);
+        at(gui, MOVE, to);
+        at(gui, DROP, to);
     }
 
-    /// The border nearest a point is the one whose edge midpoint is closest, which carves each
-    /// square cell up along its diagonals: near the right edge of `(2, 3)` that's the *row*'s
-    /// border, and near the bottom edge it's the *column*'s.
+    /// A mark covers every cell from the one the drag started in to the one it ended in, and its
+    /// two ticks sit on the borders enclosing that run.
     #[test]
-    fn snapping_picks_the_nearest_edge() {
-        let gui = canvas();
-        let picture = gui.document.try_solution().unwrap();
-
-        assert_eq!(
-            borders_near(picture, Point::new(2.9, 3.5)),
-            vec![Border { lane: 3, index: 3 }]
-        );
-        assert_eq!(
-            borders_near(picture, Point::new(2.5, 3.9)),
-            vec![Border {
-                lane: 6 + 2,
-                index: 4
-            }]
-        );
-        // The far side of the last cell in a lane is a border too.
-        assert_eq!(
-            borders_near(picture, Point::new(5.9, 3.5)),
-            vec![Border { lane: 3, index: 6 }]
-        );
-        assert!(borders_near(picture, Point::new(9.0, 9.0)).is_empty());
-    }
-
-    /// Clicking a border marks it; clicking the same border again takes the mark away.
-    #[test]
-    fn clicking_a_border_toggles_a_tick() {
+    fn a_drag_covers_the_cells_it_ran_over() {
         let mut gui = canvas();
 
-        click(&mut gui, 2.9, 3.5);
+        drag(&mut gui, cell(1.0, 3.0), cell(4.0, 3.0));
         assert_eq!(
             gui.annotations,
             vec![Annotation {
                 lane: 3,
-                from: 3,
-                to: 3
-            }]
-        );
-
-        // Somewhere else in the same cell, but still nearest the same edge.
-        click(&mut gui, 2.95, 3.4);
-        assert!(gui.annotations.is_empty());
-    }
-
-    /// A drag spans as many cells as it covered, in the direction it ran — so dragging the same
-    /// stretch backwards is a different annotation, and puts the wave on the other side.
-    #[test]
-    fn dragging_measures_the_cells_it_covers() {
-        let mut gui = canvas();
-
-        drag(&mut gui, (0.1, 3.5), (4.1, 3.5));
-        assert_eq!(
-            gui.annotations,
-            vec![Annotation {
-                lane: 3,
-                from: 0,
-                to: 4
+                from: 1,
+                to: 5
             }]
         );
         assert_eq!(gui.annotations[0].cells_covered(), 4);
+    }
 
-        gui.annotations.clear();
-        drag(&mut gui, (4.1, 3.5), (0.1, 3.5));
+    /// The whole point of anchoring on a cell rather than a border: from one origin, a drag can
+    /// set off in any direction the grid offers — four on a square grid — and the origin's own
+    /// tick swaps to the far side each time, so the run always encloses the origin cell.
+    #[test]
+    fn a_drag_rotates_around_its_origin() {
+        let origin = cell(3.0, 3.0);
+        // (where the drag went, which lane it should land on, the two borders it should enclose)
+        let cases = [
+            (cell(5.0, 3.0), 3, (3, 6)),     // right, along row 3
+            (cell(1.0, 3.0), 3, (4, 1)),     // left, same row, origin's tick flipped
+            (cell(3.0, 5.0), 6 + 3, (3, 6)), // down, along column 3
+            (cell(3.0, 1.0), 6 + 3, (4, 1)), // up, same column
+        ];
+
+        for (target, lane, (from, to)) in cases {
+            let mut gui = canvas();
+            drag(&mut gui, origin, target);
+            assert_eq!(
+                gui.annotations,
+                vec![Annotation { lane, from, to }],
+                "dragging from {origin:?} to {target:?}"
+            );
+            // Whichever way it ran, it covers the origin cell and the two beyond it.
+            assert_eq!(gui.annotations[0].cells_covered(), 3);
+            assert!(gui.annotations[0].covers(gui.document.try_solution().unwrap(), 3 * 6 + 3));
+        }
+    }
+
+    /// A nudge that never leaves the origin cell still marks it — one cell, pointing whichever
+    /// way the nudge went. Without that, the commonest clue of all would be unmarkable, since a
+    /// click is spoken for.
+    #[test]
+    fn a_nudge_inside_one_cell_marks_that_cell() {
+        let origin = cell(3.0, 3.0);
+
+        let mut rightward = canvas();
+        drag(&mut rightward, origin, (origin.0 + 0.3, origin.1));
         assert_eq!(
-            gui.annotations,
+            rightward.annotations,
+            vec![Annotation {
+                lane: 3,
+                from: 3,
+                to: 4
+            }]
+        );
+        assert_eq!(rightward.annotations[0].cells_covered(), 1);
+
+        // The same nudge the other way is the same single cell, but running the other way — so
+        // its wave lands on the opposite side. This is what a cell-position pair couldn't say.
+        let mut leftward = canvas();
+        drag(&mut leftward, origin, (origin.0 - 0.3, origin.1));
+        assert_eq!(
+            leftward.annotations,
             vec![Annotation {
                 lane: 3,
                 from: 4,
-                to: 0
+                to: 3
             }]
         );
+        assert_eq!(leftward.annotations[0].cells_covered(), 1);
     }
 
-    /// A drag off the end of a lane stops at the lane's last border rather than running past it.
-    /// A lane of six cells has *seven* borders, so the limit is 6, not 5.
+    /// A click on an unmarked cell marks that one cell — the one count a drag can't comfortably
+    /// reach, since staying inside a single cell is fiddly. Clicking it again takes it away.
+    #[test]
+    fn clicking_an_empty_cell_marks_it() {
+        let mut gui = canvas();
+
+        click(&mut gui, cell(3.0, 3.0));
+        assert_eq!(gui.annotations.len(), 1);
+        assert_eq!(gui.annotations[0].cells_covered(), 1);
+        assert!(gui.annotations[0].covers(gui.document.try_solution().unwrap(), 3 * 6 + 3));
+
+        click(&mut gui, cell(3.0, 3.0));
+        assert!(gui.annotations.is_empty());
+    }
+
+    /// Press and release usually arrive in separate frames, but both can land in one — a fast
+    /// click, or a slow frame. That still has to register as a click rather than vanishing.
+    #[test]
+    fn a_press_and_release_in_one_frame_is_still_a_click() {
+        let mut gui = canvas();
+
+        at(
+            &mut gui,
+            AnnotatePointer {
+                pressed: true,
+                down: false,
+                released: true,
+                dragging: false,
+            },
+            cell(3.0, 3.0),
+        );
+        assert_eq!(gui.annotations.len(), 1);
+        assert_eq!(gui.annotations[0].cells_covered(), 1);
+    }
+
+    /// A single-cell mark is drawn as a box round its cell rather than as a run, so it needs to
+    /// name that cell whichever lane it happened to be filed under — and a run of two or more
+    /// never claims to be one.
+    #[test]
+    fn a_single_cell_mark_knows_its_cell() {
+        let mut gui = canvas();
+        let picture = gui.document.try_solution().unwrap().clone();
+
+        click(&mut gui, cell(2.0, 4.0));
+        assert_eq!(gui.annotations[0].lone_cell(&picture), Some(4 * 6 + 2));
+
+        gui.annotations.clear();
+        drag(&mut gui, cell(2.0, 4.0), cell(3.0, 4.0));
+        assert_eq!(gui.annotations[0].cells_covered(), 2);
+        assert_eq!(gui.annotations[0].lone_cell(&picture), None);
+    }
+
+    /// Clicking destroys every mark covering that cell — anywhere along it, not just at an end —
+    /// and leaves marks that merely pass nearby alone.
+    #[test]
+    fn a_click_destroys_what_covers_the_cell() {
+        let mut gui = canvas();
+
+        drag(&mut gui, cell(1.0, 3.0), cell(4.0, 3.0)); // row 3, cells 1..=4
+        drag(&mut gui, cell(3.0, 1.0), cell(3.0, 4.0)); // column 3, cells 1..=4
+        drag(&mut gui, cell(1.0, 5.0), cell(4.0, 5.0)); // row 5, nowhere near
+        assert_eq!(gui.annotations.len(), 3);
+
+        // Cell (3, 3) is in the middle of both the row mark and the column mark. Clearing takes
+        // priority over marking, so this destroys two and creates nothing.
+        click(&mut gui, cell(3.0, 3.0));
+        assert_eq!(gui.annotations.len(), 1);
+        assert_eq!(gui.annotations[0].lane, 5);
+
+        click(&mut gui, cell(2.0, 5.0));
+        assert!(gui.annotations.is_empty());
+    }
+
+    /// A cell just past the end of a mark isn't covered by it, so clicking there marks that cell
+    /// instead of clearing the mark: border 5 is the far end of a run of cells 1..=4.
+    #[test]
+    fn a_click_past_the_end_of_a_mark_does_not_clear_it() {
+        let mut gui = canvas();
+
+        drag(&mut gui, cell(1.0, 3.0), cell(4.0, 3.0));
+        click(&mut gui, cell(5.0, 3.0));
+
+        assert_eq!(gui.annotations.len(), 2);
+        assert_eq!(gui.annotations[0].cells_covered(), 4);
+        assert_eq!(gui.annotations[1].cells_covered(), 1);
+    }
+
+    /// Drags stack rather than replacing: two marks may cover the same run, so a block can be
+    /// picked out inside a longer one. Clearing is the click's job alone.
+    #[test]
+    fn drags_are_additive() {
+        let mut gui = canvas();
+
+        drag(&mut gui, cell(0.0, 3.0), cell(5.0, 3.0));
+        drag(&mut gui, cell(1.0, 3.0), cell(2.0, 3.0));
+        assert_eq!(gui.annotations.len(), 2);
+        assert_eq!(gui.annotations[0].cells_covered(), 6);
+        assert_eq!(gui.annotations[1].cells_covered(), 2);
+    }
+
+    /// A drag off the end of a lane stops at the last cell rather than running past it.
     #[test]
     fn a_drag_stops_at_the_end_of_the_lane() {
         let mut gui = canvas();
 
-        drag(&mut gui, (2.1, 3.5), (40.0, 3.5));
+        drag(&mut gui, cell(2.0, 3.0), (40.0, 3.5));
         assert_eq!(
             gui.annotations,
             vec![Annotation {
@@ -704,26 +868,14 @@ mod annotate_tests {
                 to: 6
             }]
         );
+        assert_eq!(gui.annotations[0].cells_covered(), 4);
     }
 
-    /// Clicking either end of a span removes the whole thing — the click is matched by position,
-    /// so it doesn't matter that the span wasn't a tick.
+    /// On a triddler, anchoring on a cell means all three lane families are reachable from any
+    /// press — which is exactly what the old border anchor couldn't manage, since an edge only
+    /// ever divides two of the three. Dragging the length of any lane should mark that whole lane.
     #[test]
-    fn clicking_an_end_of_a_span_removes_it() {
-        let mut gui = canvas();
-
-        drag(&mut gui, (0.1, 3.5), (4.1, 3.5));
-        assert_eq!(gui.annotations.len(), 1);
-
-        click(&mut gui, 3.9, 3.5); // The border at index 4: the span's far end.
-        assert!(gui.annotations.is_empty());
-    }
-
-    /// On a triangular grid every edge divides two lanes from *different* families, so a click
-    /// alone can't say which lane is meant — but a drag can. Dragging along a `/` lane must
-    /// annotate that lane, not the row that shares the edge it started on.
-    #[test]
-    fn a_triddler_drag_picks_the_lane_it_ran_along() {
+    fn a_triddler_drag_reaches_every_family() {
         use crate::geometry::{Geometry, Outline, Tri};
         use crate::puzzle::ClueStyle;
 
@@ -744,57 +896,109 @@ mod annotate_tests {
         gui.current_tool = Tool::Annotate;
         gui.allow_annotations = true;
 
-        // Every "/" lane (family 1) long enough to drag along: press just inside the border at
-        // one end and release just inside the border at the other, and the whole lane should come
-        // out marked. Aiming at the borders rather than at the end cells' centroids matters —
-        // from a centroid the nearest edge may well be one that doesn't divide this lane at all.
-        for lane_idx in lane_map.family(1) {
-            let lane = lane_map.lane(lane_idx);
-            if lane.cells.len() < 2 {
-                continue;
+        for family in 0..3 {
+            for lane_idx in lane_map.family(family) {
+                let lane = lane_map.lane(lane_idx);
+                if lane.cells.len() < 2 {
+                    continue;
+                }
+                let picture = gui.document.try_solution().unwrap();
+                let center = |c: u32| picture.cell_shape(c).center(picture.cell_origin(c));
+                let (first, last) = (center(lane.cells[0]), center(*lane.cells.last().unwrap()));
+
+                gui.annotations.clear();
+                drag(&mut gui, (first.x, first.y), (last.x, last.y));
+
+                let got = gui.annotations[0];
+                assert_eq!(
+                    got.lane, lane_idx,
+                    "a drag along family {family} lane {lane_idx} landed on lane {} instead",
+                    got.lane
+                );
+                assert_eq!(
+                    got.cells_covered(),
+                    lane.cells.len(),
+                    "family {family} lane {lane_idx} came out measuring {} cells",
+                    got.cells_covered()
+                );
             }
-            let picture = gui.document.try_solution().unwrap();
-            // A third of the way from a border toward the cell beside it: unambiguously inside
-            // that cell, and unambiguously nearest that border.
-            let just_inside = |border: Border, cell: u32| {
-                let mid = border_midpoint(picture, border).unwrap();
-                let center = picture.cell_shape(cell).center(picture.cell_origin(cell));
-                (
-                    mid.x + (center.x - mid.x) / 3.0,
-                    mid.y + (center.y - mid.y) / 3.0,
-                )
-            };
-            let start = just_inside(
-                Border {
-                    lane: lane_idx,
-                    index: 0,
-                },
-                lane.cells[0],
-            );
-            let end = just_inside(
-                Border {
-                    lane: lane_idx,
-                    index: lane.cells.len(),
-                },
-                *lane.cells.last().unwrap(),
-            );
+        }
+    }
 
-            gui.annotations.clear();
-            drag(&mut gui, start, end);
+    /// The wave has to meet each of its ticks *on* that tick, not beside it.
+    ///
+    /// Its inset is measured across the lane, but a tick lies along its own cell edge. On a
+    /// square grid those two directions coincide and stepping straight across the lane lands on
+    /// the edge by luck; a triddler's row ticks are slanted 30° off, so the same step lands
+    /// beside the tick and the wave stops short of it.
+    #[test]
+    fn the_wave_meets_its_ticks_on_their_own_edges() {
+        use crate::geometry::{Geometry, Outline, Tri};
+        use crate::puzzle::ClueStyle;
 
-            let got = gui.annotations[0];
-            assert_eq!(
-                got.lane, lane_idx,
-                "a drag along lane {lane_idx} landed on lane {} instead",
-                got.lane
-            );
-            assert_eq!(
-                got.cells_covered(),
-                lane.cells.len(),
-                "lane {lane_idx} (len {}) came out measuring {} cells",
-                lane.cells.len(),
-                got.cells_covered()
-            );
+        let square = DynSolution::Square(Solution::blank_bw(6, 5));
+        let geometry = Geometry::<Tri>::new(Outline::hexagon(2));
+        let cell_count = geometry.cell_count();
+        let tri = DynSolution::Tri(Solution::new(
+            ClueStyle::Nono,
+            HashMap::from([(BACKGROUND, ColorInfo::default_bg())]),
+            geometry,
+            vec![BACKGROUND; cell_count],
+        ));
+
+        for (shape, picture) in [("square", &square), ("triddler", &tri)] {
+            let lanes = picture.lane_map();
+            for (lane_idx, lane) in lanes.lanes().iter().enumerate() {
+                if lane.cells.len() < 2 {
+                    continue;
+                }
+                // A mark running the whole lane, and the same one run backwards — the inset
+                // switches sides with the direction, so both are worth checking.
+                for (from, to) in [(0, lane.cells.len()), (lane.cells.len(), 0)] {
+                    let annotation = Annotation {
+                        lane: lane_idx,
+                        from,
+                        to,
+                    };
+                    let (start, end) = annotation.ends();
+                    let start = border_edge(picture, start).unwrap();
+                    let end = border_edge(picture, end).unwrap();
+
+                    let (a, b) = (midpoint(start), midpoint(end));
+                    let along = crate::layout::Vec2::new(b.x - a.x, b.y - a.y);
+                    let length = (along.x * along.x + along.y * along.y).sqrt();
+                    let right = crate::layout::Vec2::new(-along.y / length, along.x / length);
+
+                    for edge in [start, end] {
+                        let point = inset_along(edge, right);
+                        let (e0, e1) = edge;
+
+                        // On the tick: `point` is a convex combination of the edge's two ends.
+                        let edge_vec = (e1.x - e0.x, e1.y - e0.y);
+                        let to_point = (point.x - e0.x, point.y - e0.y);
+                        let cross = edge_vec.0 * to_point.1 - edge_vec.1 * to_point.0;
+                        let t = (to_point.0 * edge_vec.0 + to_point.1 * edge_vec.1)
+                            / (edge_vec.0 * edge_vec.0 + edge_vec.1 * edge_vec.1);
+                        assert!(
+                            cross.abs() < 1e-4,
+                            "{shape} lane {lane_idx} ({from} -> {to}): the wave meets the tick {cross} off it"
+                        );
+                        assert!(
+                            (0.0..=1.0).contains(&t),
+                            "{shape} lane {lane_idx} ({from} -> {to}): the wave meets the tick past its end (t = {t})"
+                        );
+
+                        // ...and at the inset the wave is actually drawn at, measured across the
+                        // lane rather than along the edge.
+                        let mid = midpoint(edge);
+                        let across = (point.x - mid.x) * right.x + (point.y - mid.y) * right.y;
+                        assert!(
+                            (across - WAVE_INSET).abs() < 1e-4,
+                            "{shape} lane {lane_idx} ({from} -> {to}): inset came out {across}, wanted {WAVE_INSET}"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -878,8 +1082,8 @@ mod annotate_tests {
         );
         let (version, undos) = (gui.version, gui.undo_stack.len());
 
-        drag(&mut gui, (0.1, 3.5), (4.1, 3.5));
-        click(&mut gui, 2.5, 0.1);
+        drag(&mut gui, cell(1.0, 3.0), cell(4.0, 3.0));
+        click(&mut gui, cell(2.0, 0.0));
 
         assert_eq!(gui.annotations.len(), 2);
         assert_eq!(gui.version, version);

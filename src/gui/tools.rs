@@ -227,13 +227,8 @@ impl CanvasGui {
     }
 
     /// The cells between two points along whichever lane best matches the drag.
-    ///
-    /// A square grid offers two directions through a cell; a triddler offers three. Picking the
-    /// family whose lane actually contains both endpoints generalizes the old "is this drag more
-    /// horizontal than vertical?" test.
     fn line_between(&mut self, start: u32, end: u32) -> HashMap<u32, Color> {
         let picture = self.document.solution_mut();
-        let lanes = picture.lane_map();
 
         let mut changes = HashMap::new();
         if start == end {
@@ -245,60 +240,15 @@ impl CanvasGui {
         // different offset for ▲ than ▼, so mixing origins would misjudge lane direction
         // whenever a lane's cells alternate orientation.
         let center = |cell: u32| picture.cell_shape(cell).center(picture.cell_origin(cell));
-
-        let start_center = center(start);
-        let end_center = center(end);
+        let (start_center, end_center) = (center(start), center(end));
         let drag =
             crate::layout::Vec2::new(end_center.x - start_center.x, end_center.y - start_center.y);
-        let drag_len = (drag.x * drag.x + drag.y * drag.y).sqrt();
 
-        // A lane's cells zigzag between ▲ and ▼ centroids on a triangular grid, so the step to
-        // an immediate neighbor is not representative of the lane's direction — e.g. from a ▲,
-        // the very next step is purely vertical even on a "/" lane. Use the span from the lane's
-        // first cell to its last instead, which averages the zigzag out into the lane's true
-        // on-screen direction, and gives a stable average per-cell spacing along it.
-        let mut best: Option<(usize, f32)> = None; // (lane, |cos angle| to drag)
-        for membership in lanes.memberships(start) {
-            let lane = lanes.lane(membership.lane as usize);
-            if lane.cells.len() < 2 {
-                continue; // No direction to compare against.
-            }
-            let first = center(lane.cells[0]);
-            let last = center(*lane.cells.last().unwrap());
-            let span = crate::layout::Vec2::new(last.x - first.x, last.y - first.y);
-            let span_len = (span.x * span.x + span.y * span.y).sqrt();
-            // Angle between the lane's direction and the drag, ignoring which way along the
-            // lane it points, so dragging toward either end still snaps to that lane.
-            let cos_angle = ((span.x * drag.x + span.y * drag.y) / (span_len * drag_len)).abs();
-            if best.is_none_or(|(_, best_cos)| cos_angle > best_cos) {
-                best = Some((membership.lane as usize, cos_angle));
-            }
-        }
-
-        match best {
-            Some((lane_idx, _)) => {
-                let lane = lanes.lane(lane_idx);
-                let from_pos = lanes
-                    .memberships(start)
-                    .iter()
-                    .find(|m| m.lane as usize == lane_idx)
-                    .unwrap()
-                    .position as usize;
-
-                let first = center(lane.cells[0]);
-                let last = center(*lane.cells.last().unwrap());
-                let span = crate::layout::Vec2::new(last.x - first.x, last.y - first.y);
-                let span_len = (span.x * span.x + span.y * span.y).sqrt();
-                let avg_spacing = span_len / (lane.cells.len() - 1) as f32;
-
-                // Distance travelled along the lane, in cell steps, found by projecting the
-                // drag onto the lane's own (first-to-last) direction.
-                let signed_distance = (drag.x * span.x + drag.y * span.y) / span_len;
-                let delta = (signed_distance / avg_spacing).round() as isize;
-
-                let to_pos =
-                    (from_pos as isize + delta).clamp(0, lane.cells.len() as isize - 1) as usize;
-                let (from, to) = (from_pos.min(to_pos), from_pos.max(to_pos));
+        match lane_along_drag(picture, start, drag) {
+            Some(along) => {
+                let lane = picture.lane_map().lane(along.lane);
+                let to = along.target(lane.cells.len());
+                let (from, to) = (along.from.min(to), along.from.max(to));
                 for cell in &lane.cells[from..=to] {
                     changes.insert(*cell, self.drag_start_color);
                 }
@@ -310,6 +260,90 @@ impl CanvasGui {
         }
         changes
     }
+}
+
+/// Which lane a drag away from a cell means, and how far along it the drag got.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct DragAlongLane {
+    /// Index into `LaneMap::lanes()`.
+    pub lane: usize,
+    /// Where the cell the drag started from sits in that lane.
+    pub from: usize,
+    /// How far along the lane the drag reached, in cells: signed, so negative runs back toward
+    /// the lane's start, and *unrounded*, so that a drag too small to reach the next cell still
+    /// says which way it was heading. Nor is it clamped to the lane — see `target`.
+    pub steps: f32,
+}
+
+impl DragAlongLane {
+    /// Where the drag ended up, as a cell position in a lane of `len` cells.
+    pub fn target(&self, len: usize) -> usize {
+        (self.from as isize + self.steps.round() as isize).clamp(0, len as isize - 1) as usize
+    }
+
+    /// Whether the drag ran along the lane's own direction rather than back against it.
+    pub fn forward(&self) -> bool {
+        self.steps >= 0.0
+    }
+}
+
+/// The lane through `cell` whose direction best matches `drag`, and how far along it the drag
+/// reached. `None` if the drag has no direction, or if no lane through `cell` has one.
+///
+/// A square grid offers two directions through a cell; a triddler offers three. Picking the lane
+/// whose direction is closest to the drag generalizes the old "is this drag more horizontal than
+/// vertical?" test. The line tool and the annotate tool ask exactly this same question of a drag,
+/// so they ask it here.
+///
+/// A lane's cells zigzag between ▲ and ▼ centroids on a triangular grid, so the step to an
+/// immediate neighbor is not representative of the lane's direction — e.g. from a ▲, the very
+/// next step is purely vertical even on a "/" lane. Use the span from the lane's first cell to
+/// its last instead, which averages the zigzag out into the lane's true on-screen direction, and
+/// gives a stable average per-cell spacing along it.
+pub(super) fn lane_along_drag(
+    picture: &DynSolution,
+    cell: u32,
+    drag: crate::layout::Vec2,
+) -> Option<DragAlongLane> {
+    let drag_len = (drag.x * drag.x + drag.y * drag.y).sqrt();
+    if drag_len <= f32::EPSILON {
+        return None;
+    }
+
+    let lanes = picture.lane_map();
+    let center = |cell: u32| picture.cell_shape(cell).center(picture.cell_origin(cell));
+
+    let mut best: Option<(DragAlongLane, f32)> = None; // (candidate, |cos angle| to the drag)
+    for membership in lanes.memberships(cell) {
+        let lane = lanes.lane(membership.lane as usize);
+        if lane.cells.len() < 2 {
+            continue; // No direction to compare against.
+        }
+        let first = center(lane.cells[0]);
+        let last = center(*lane.cells.last().unwrap());
+        let span = crate::layout::Vec2::new(last.x - first.x, last.y - first.y);
+        let span_len = (span.x * span.x + span.y * span.y).sqrt();
+        let avg_spacing = span_len / (lane.cells.len() - 1) as f32;
+
+        // Angle between the lane's direction and the drag, ignoring which way along the lane it
+        // points, so dragging toward either end still snaps to that lane.
+        let cos_angle = ((span.x * drag.x + span.y * drag.y) / (span_len * drag_len)).abs();
+        // Distance travelled along the lane, in cell steps, found by projecting the drag onto
+        // the lane's own (first-to-last) direction.
+        let steps = (drag.x * span.x + drag.y * span.y) / span_len / avg_spacing;
+
+        if best.is_none_or(|(_, best_cos)| cos_angle > best_cos) {
+            best = Some((
+                DragAlongLane {
+                    lane: membership.lane as usize,
+                    from: membership.position as usize,
+                    steps,
+                },
+                cos_angle,
+            ));
+        }
+    }
+    best.map(|(along, _)| along)
 }
 
 #[cfg(test)]
