@@ -31,7 +31,7 @@ fn tool_appearance(tool: Tool) -> (&'static str, egui::Key, char) {
 }
 
 /// One entry in the tool row: a toggle button that its key also reaches. `typing` suppresses the
-/// key while a `TextEdit` has the keyboard.
+/// key while a `TextEdit` has the keyboard. Grouped like this so that hiding a tool also disables its shortcut
 fn tool_button(
     ui: &mut egui::Ui,
     current_tool: &mut Tool,
@@ -55,16 +55,16 @@ impl CanvasGui {
         let typing = ui.ctx().wants_keyboard_input();
 
         centered_row(ui, "tools", |ui| {
-            tool_button(ui, &mut self.current_tool, Tool::Pencil, typing, "Pencil");
+            if editing {
+                tool_button(ui, &mut self.current_tool, Tool::Pencil, typing, "Pencil");
+            }
             tool_button(
                 ui,
                 &mut self.current_tool,
                 Tool::LineAlongLane,
                 typing,
-                "Line along a row, column or diagonal",
+                "Line along a lane",
             );
-            // Flood fill and the lasso are editor-only, so their keys are dead in the solver
-            // rather than silently switching to a tool with no button.
             if editing {
                 tool_button(
                     ui,
@@ -88,7 +88,7 @@ impl CanvasGui {
                     &mut self.current_tool,
                     Tool::Annotate,
                     typing,
-                    "Annotate a border: click to mark one, drag to measure a span (or hold shift)",
+                    "Annotate: click to mark one cell, drag to measure a span (or hold shift)",
                 );
             }
         });
