@@ -3322,6 +3322,7 @@ dependencies = [
 name = "number-loom"
 version = "0.5.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "axohtml",
  "base64 0.22.1",
@@ -3336,6 +3337,7 @@ dependencies = [
  "egui_kittest",
  "egui_material_icons",
  "env_logger",
+ "epaint_default_fonts",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "gloo-storage",

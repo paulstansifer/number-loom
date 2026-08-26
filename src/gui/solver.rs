@@ -1,4 +1,6 @@
-use super::{Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool, default_color};
+use super::{
+    Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool, default_color, outline_text,
+};
 use crate::{
     grid_solve::LineStatus,
     puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
@@ -765,7 +767,7 @@ fn luminance(c: Color32) -> f32 {
 ///
 /// A pale color (or, in a dark theme, a dark one) would be all but invisible against the plain
 /// background, so a number that doesn't stand out on its own gets an outline in the opposite
-/// extreme — the same text stamped underneath, offset in each of the eight directions.
+/// extreme, stroked along the digits themselves (see `outline_text`).
 pub(crate) fn draw_bare_number(
     ui: &egui::Ui,
     painter: &egui::Painter,
@@ -789,21 +791,11 @@ pub(crate) fn draw_bare_number(
         } else {
             Color32::WHITE
         };
-        let offset = (scale * 0.05).max(1.0);
-        for dx in [-1.0, 0.0, 1.0] {
-            for dy in [-1.0, 0.0, 1.0] {
-                if (dx, dy) == (0.0, 0.0) {
-                    continue;
-                }
-                painter.text(
-                    center + Vec2::new(dx * offset, dy * offset),
-                    egui::Align2::CENTER_CENTER,
-                    txt,
-                    font.clone(),
-                    outline,
-                );
-            }
-        }
+        // Half the stroke hides under the number, so the border shows `scale * 0.05` wide.
+        let width = 2.0 * (scale * 0.05).max(1.0);
+        painter.extend(outline_text::halo_shapes(
+            ui, center, txt, &font, outline, width,
+        ));
     }
 
     painter.text(center, egui::Align2::CENTER_CENTER, txt, font, fill);

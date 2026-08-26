@@ -1,6 +1,7 @@
 mod annotate;
 mod canvas;
 pub mod gallery;
+mod outline_text;
 mod palette;
 mod resize;
 mod selection;

@@ -351,6 +351,8 @@ const WAVE_STEPS_PER_CYCLE: usize = 12;
 const LABEL_FONT_SCALE: f32 = 0.6;
 /// How far the white halo extends past the black, in screen pixels.
 const HALO: f32 = 1.5;
+/// How far a count's white halo stands out from its digits, as a fraction of a cell.
+const LABEL_HALO: f32 = 0.06;
 
 /// How thick a mark's black core is — the same for a border tick as for a wave, so a span reads
 /// as one drawn line rather than as three. Floored so it doesn't vanish when zoomed out.
@@ -394,8 +396,8 @@ struct Label {
     center: Pos2,
     text: String,
     font: egui::FontId,
-    /// How far the outline stamps sit from the text.
-    offset: f32,
+    /// The white stroked along the digits, ready to paint (see `outline_text`).
+    halo: Vec<egui::Shape>,
 }
 
 /// Everything to be drawn this frame, gathered before any of it is painted.
@@ -443,11 +445,14 @@ impl Marks {
     /// A cell count, to be written over everything else once the marks are down.
     fn label(&mut self, ui: &egui::Ui, scale: f32, center: Pos2, count: usize) {
         let text = count.to_string();
+        let font = solver::clue_font(ui, &text, scale, LABEL_FONT_SCALE);
+        // Only half the stroke shows: the rest goes under the number itself.
+        let width = 2.0 * (scale * LABEL_HALO).max(HALO);
         self.labels.push(Label {
-            font: solver::clue_font(ui, &text, scale, LABEL_FONT_SCALE),
+            halo: outline_text::halo_shapes(ui, center, &text, &font, Color32::WHITE, width),
+            font,
             center,
             text,
-            offset: (scale * 0.09).max(1.5),
         });
     }
 
@@ -554,8 +559,8 @@ impl Marks {
     }
 
     /// Every white halo, then every black core on top of it, then the counts above both — each
-    /// count outlined the same way, its white stamped in all eight directions, which is what
-    /// knocks a hole for it in the wave running underneath.
+    /// count haloed the same way, and it's that white which knocks a hole for it in the wave
+    /// running underneath.
     ///
     /// (`solver::draw_bare_number` won't do for those: it decides whether an outline is needed by
     /// contrast against the *panel*, and black on the panel looks perfectly legible right up
@@ -581,20 +586,7 @@ impl Marks {
         // The same white-before-black split again, so that two counts crowding each other behave
         // the way two crossing marks do.
         for label in &self.labels {
-            for dx in [-1.0, 0.0, 1.0] {
-                for dy in [-1.0, 0.0, 1.0] {
-                    if (dx, dy) == (0.0, 0.0) {
-                        continue;
-                    }
-                    painter.text(
-                        label.center + Vec2::new(dx * label.offset, dy * label.offset),
-                        egui::Align2::CENTER_CENTER,
-                        &label.text,
-                        label.font.clone(),
-                        Color32::WHITE,
-                    );
-                }
-            }
+            painter.extend(label.halo.iter().cloned());
         }
         for label in &self.labels {
             painter.text(

@@ -19,6 +19,7 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
       toolbar.rs - the controls across the top, and the dialogs they open
       solver.rs - the solving view: clue rendering, line analysis, and the solve replay
       gallery.rs - for chosing a puzzle to solve
+      outline_text.rs - overengineered halos for text readability on arbitrary backgrounds
     import.rs, export.rs - support for various file formats
     line_solve.rs - quick ("skim") and exhaustive ("scrub") line-logic implementation
     grid_solve.rs - uses repeated line-logic to solve a puzzle
