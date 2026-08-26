@@ -41,7 +41,11 @@ fn tool_button(
 ) {
     let (icon, key, ch) = tool_appearance(tool);
     ui.selectable_value(current_tool, tool, egui::RichText::new(icon).size(24.0))
-        .on_hover_text(format!("{description} (press {ch})"));
+        .on_hover_text(if tool == Tool::Annotate {
+            format!("{description} (press {ch} or hold Shift)")
+        } else {
+            format!("{description} (press {ch})")
+        });
     if !typing && ui.input(|i| i.key_pressed(key)) {
         *current_tool = tool;
     }
@@ -88,7 +92,7 @@ impl CanvasGui {
                     &mut self.current_tool,
                     Tool::Annotate,
                     typing,
-                    "Annotate: click to mark one cell, drag to measure a span (or hold shift)",
+                    "Annotate: click to mark one cell, drag to measure a span",
                 );
             }
         });
