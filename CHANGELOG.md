@@ -3,6 +3,9 @@
 ## Future
 ### Added
  - Annotation tool during solve to help count out lines
+ - There are now keyboard shortcuts for tools. Scrollwheel selects colors, and middle-drag pans the canvas.
+### Removed
+ - The pencil tool was removed from solve mode; I don't believe it's ever the right choice.
 
 ## 0.5.0 - 2026-08-25
 ### Added
