@@ -8,7 +8,7 @@
  - Triddler sizes are now shown in griddlers.net's notation ("(5+3)x(6+2)" — the lengths of four
     of the outline's six sides, which imply the other two) instead of three lane counts
 ### Removed
- - The pencil tool was removed from solve mode; I don't believe it's ever the right choice.
+ - Removed the pencil tool from solve mode; I don't believe it's ever the right choice.
 
 ## 0.5.0 - 2026-08-25
 ### Added
