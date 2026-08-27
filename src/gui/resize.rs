@@ -20,7 +20,7 @@ impl NonogramGui {
         }
     }
 
-    fn resize(&mut self, top: Option<bool>, left: Option<bool>, add: bool) {
+    fn square_resize(&mut self, top: Option<bool>, left: Option<bool>, add: bool) {
         // This resizer is inherently square: it adds and removes whole rows and columns.
         // Triangular puzzles resize by nudging one of six bounds instead — see `tri_resize`.
         let Some(picture) = self.editor_gui.document.square_solution_mut() else {
@@ -34,6 +34,11 @@ impl NonogramGui {
             return;
         };
         if let Some(left) = left {
+            let lines = if add {
+                lines
+            } else {
+                lines.min(g.len().saturating_sub(1)) // don't remove the last column!
+            };
             if add {
                 g.resize(g.len() + lines, vec![BACKGROUND; g.first().unwrap().len()]);
                 if left {
@@ -46,6 +51,11 @@ impl NonogramGui {
                 g.truncate(g.len() - lines);
             }
         } else if let Some(top) = top {
+            let lines = if add {
+                lines
+            } else {
+                lines.min(g.first().unwrap().len().saturating_sub(1)) // don't remove the last row!
+            };
             if add {
                 for row in g.iter_mut() {
                     row.resize(row.len() + lines, BACKGROUND);
@@ -127,10 +137,10 @@ impl NonogramGui {
                 ui.label("");
                 ui.horizontal(|ui| {
                     if ui.button(icons::ICON_ADD).clicked() {
-                        self.resize(Some(true), None, true);
+                        self.square_resize(Some(true), None, true);
                     }
                     if ui.button(icons::ICON_REMOVE).clicked() {
-                        self.resize(Some(true), None, false);
+                        self.square_resize(Some(true), None, false);
                     }
                 });
                 ui.label("");
@@ -138,20 +148,20 @@ impl NonogramGui {
 
                 ui.vertical(|ui| {
                     if ui.button(icons::ICON_ADD).clicked() {
-                        self.resize(None, Some(true), true);
+                        self.square_resize(None, Some(true), true);
                     }
                     if ui.button(icons::ICON_REMOVE).clicked() {
-                        self.resize(None, Some(true), false);
+                        self.square_resize(None, Some(true), false);
                     }
                 });
                 ui.text_edit_singleline(&mut self.lines_to_affect_string);
 
                 ui.vertical(|ui| {
                     if ui.button(icons::ICON_ADD).clicked() {
-                        self.resize(None, Some(false), true);
+                        self.square_resize(None, Some(false), true);
                     }
                     if ui.button(icons::ICON_REMOVE).clicked() {
-                        self.resize(None, Some(false), false);
+                        self.square_resize(None, Some(false), false);
                     }
                 });
                 ui.end_row();
@@ -159,10 +169,10 @@ impl NonogramGui {
                 ui.label("");
                 ui.horizontal(|ui| {
                     if ui.button(icons::ICON_ADD).clicked() {
-                        self.resize(Some(false), None, true);
+                        self.square_resize(Some(false), None, true);
                     }
                     if ui.button(icons::ICON_REMOVE).clicked() {
-                        self.resize(Some(false), None, false);
+                        self.square_resize(Some(false), None, false);
                     }
                 });
                 ui.label("");
