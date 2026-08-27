@@ -22,6 +22,20 @@
 //!
 //! Note that unlike a square grid, **two lanes from different families may share two cells**:
 //! a ▲ and the ▼ to its right lie in the same row *and* the same `/` line.
+//!
+//! # Size notation
+//!
+//! A triddler's size is written the way griddlers.net writes it: `(5+3)x(6+2)`. The six numbers
+//! that describe an outline are the lengths of the hexagon's six sides, which are also the sizes
+//! of the six clue sets ([`ClueSet`]) — each side is exactly the set of lanes that start on it.
+//! Only four are written, in clue-reading order: the two row clue sets (`TopLeft` + `BottomLeft`,
+//! down the left edge), then the two `/` clue sets (`Top` + `TopRight`, across the top). The `\`
+//! pair is left out because it's implied: a hexagon only closes up if each pair of adjacent
+//! sides is as long as the opposite pair, which pins `Bottom` and `BottomRight` (see
+//! [`Outline::from_griddlers`]).
+//!
+//! griddlers.net appends the color count (`(5+3)x(6+2)x2`); that's not a dimension, and
+//! [`Outline::from_griddlers`] ignores it.
 
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +132,74 @@ impl Outline {
             a: (0, 2 * side - 1),
             b: (0, 2 * side - 1),
             c: (-side, side - 1),
+        }
+    }
+
+    /// Parse the size notation griddlers.net uses for triddlers — `(5+3)x(6+2)`, optionally
+    /// with their trailing color count, `(5+3)x(6+2)x2` — into the outline it describes, in
+    /// [`normalized`](Outline::normalized) position. See the module docs for what it means.
+    ///
+    /// The four written numbers are four of the six clue-set sizes: `topleft` and `bottomleft`
+    /// (the row clues, read down the left edge), then `top` and `topright` (the `/` clues, read
+    /// across the top). The `\` pair isn't written because it's implied — the Olsak identities
+    /// (see `olsak_hexagon_side_identities_hold`) rearrange to give it — after which
+    /// [`Outline::from_clue_set_counts`] does the actual reconstruction.
+    pub fn from_griddlers(text: &str) -> anyhow::Result<Outline> {
+        let parts: Vec<&str> = text.trim().split(['x', 'X', '×']).map(str::trim).collect();
+        // A third group is griddlers.net's color count, which says nothing about the shape.
+        let (rows, slashes) = match parts.as_slice() {
+            [rows, slashes] => (rows, slashes),
+            [rows, slashes, colors] => {
+                colors
+                    .parse::<u32>()
+                    .map_err(|_| anyhow::anyhow!("{colors:?} is not a color count"))?;
+                (rows, slashes)
+            }
+            _ => anyhow::bail!("expected a size like \"(5+3)x(6+2)\", not {text:?}"),
+        };
+
+        let (topleft, bottomleft) = Outline::griddlers_pair(rows)?;
+        let (top, topright) = Outline::griddlers_pair(slashes)?;
+        let bottom = top + topright - bottomleft;
+        let bottomright = topleft + bottomleft - topright;
+        if bottom < 0 || bottomright < 0 {
+            anyhow::bail!(
+                "no hexagon has those sides: closing it up would take sides of {bottom} and \
+                 {bottomright}"
+            );
+        }
+
+        Outline::from_clue_set_counts(ClueSetCounts {
+            topleft: topleft as usize,
+            bottomleft: bottomleft as usize,
+            top: top as usize,
+            topright: topright as usize,
+            bottom: bottom as usize,
+            bottomright: bottomright as usize,
+        })
+    }
+
+    /// One `(2+3)` group of [`from_griddlers`](Outline::from_griddlers). The parentheses are
+    /// optional, and a lone number means `(n+0)`: a corner cut back to a point.
+    fn griddlers_pair(text: &str) -> anyhow::Result<(i32, i32)> {
+        let inner = match (text.strip_prefix('('), text.strip_suffix(')')) {
+            (Some(inner), Some(_)) => &inner[..inner.len() - 1],
+            (Some(_), None) | (None, Some(_)) => {
+                anyhow::bail!("unmatched parenthesis in {text:?}")
+            }
+            (None, None) => text,
+        };
+        let side = |n: &str| -> anyhow::Result<i32> {
+            match n.trim().parse::<i32>() {
+                Ok(n) if n >= 0 => Ok(n),
+                Ok(n) => anyhow::bail!("a side can't be {n} long"),
+                Err(_) => anyhow::bail!("{:?} is not a number", n.trim()),
+            }
+        };
+        match inner.split('+').collect::<Vec<_>>().as_slice() {
+            [near, far] => Ok((side(near)?, side(far)?)),
+            [only] => Ok((side(only)?, 0)),
+            _ => anyhow::bail!("expected two numbers added together, not {text:?}"),
         }
     }
 
@@ -533,6 +615,97 @@ mod tests {
         // `\` lines read top-left to bottom-right, the opposite of the end their clues are
         // labelled from. See the note in `Geometry::<Tri>::new`.
         assert_eq!(backslashes, vec!["FLM", "AGHNO", "BCIJP", "DEK"]);
+    }
+
+    /// The label is four of the hexagon's six side lengths, and `from_griddlers` puts the other
+    /// two back — so the two are inverses for every outline the editor can reach.
+    #[test]
+    fn griddlers_notation_round_trips() {
+        let mut shapes = 0;
+        for a1 in 0..5 {
+            for b0 in -2..6 {
+                for b1 in b0..8 {
+                    for c1 in 0..5 {
+                        let outline = Outline {
+                            a: (0, a1),
+                            b: (b0, b1),
+                            c: (0, c1),
+                        };
+                        let cells = outline.cells();
+                        // A slack bound (one no cell reaches) describes the same shape as the
+                        // tighter one that replaces it, and normalizing doesn't remove it, so
+                        // only shrink-wrapped outlines can come back bound-for-bound.
+                        let tight = |get: fn(&TriCoord) -> i32, bound: (i32, i32)| {
+                            cells.iter().map(get).min() == Some(bound.0)
+                                && cells.iter().map(get).max() == Some(bound.1)
+                        };
+                        if !tight(|t| t.a, outline.a)
+                            || !tight(|t| t.b, outline.b)
+                            || !tight(|t| t.c, outline.c)
+                        {
+                            continue;
+                        }
+
+                        let label = Geometry::<Tri>::new(outline).dims_label();
+                        assert_eq!(
+                            Outline::from_griddlers(&label).unwrap(),
+                            outline.normalized(),
+                            "{outline:?} labelled {label}"
+                        );
+                        shapes += 1;
+                    }
+                }
+            }
+        }
+        assert!(shapes > 100, "only {shapes} shapes tested");
+    }
+
+    /// Sizes copied from griddlers.net puzzles, which is the whole point of matching their
+    /// notation. #1 is a regular hexagon of side 2, and #10 has every side a different length.
+    #[test]
+    fn griddlers_notation_matches_griddlers_net() {
+        assert_eq!(
+            Outline::from_griddlers("(2+2)x(2+2)x2").unwrap(),
+            Outline::hexagon(2).normalized()
+        );
+        assert_eq!(
+            Geometry::<Tri>::new(Outline::hexagon(5)).dims_label(),
+            "(5+5)x(5+5)"
+        );
+        assert_eq!(
+            Geometry::<Tri>::new(doc_example()).dims_label(),
+            "(2+1)x(2+1)"
+        );
+
+        let ten = Geometry::<Tri>::new(Outline::from_griddlers("(5+3)x(6+2)x2").unwrap());
+        assert_eq!(ten.cell_count(), 115);
+        assert_eq!(ten.family(0).len(), 8); // rows: 5 + 3.
+        assert_eq!(ten.family(1).len(), 8); // `/` lines: 6 + 2.
+        assert_eq!(ten.family(2).len(), 11); // `\` lines: the implied 5 + 6.
+    }
+
+    #[test]
+    fn griddlers_notation_rejects_impossible_sizes() {
+        // A lone number is a corner cut to a point: this one is a 9x9 rhombus.
+        assert_eq!(
+            Geometry::<Tri>::new(Outline::from_griddlers("9x(0+9)").unwrap()).cell_count(),
+            81
+        );
+
+        for bad in [
+            "10/10/10",     // the old, meaningless label.
+            "(5+3)",        // only one direction given.
+            "(5+3)x(6+2)x", // a trailing separator, not a color count.
+            "(5+3)x6+2)",   // unmatched parenthesis.
+            "(5+-3)x(6+2)", // negative sides.
+            "(1+9)x(1+1)",  // closing up would need a side of length -7.
+            "(0+1)x(0+1)",  // no `\` lines at all.
+        ] {
+            assert!(
+                Outline::from_griddlers(bad).is_err(),
+                "{bad} should not parse"
+            );
+        }
     }
 
     /// The solver's rosette places each `(back, forward)` count using `arm_directions`, so those
@@ -971,8 +1144,9 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
 
     /// A short, shape-appropriate size label for editor/gallery display. Deliberately not a
     /// fixed `(width, height)` pair: a square puzzle has a coherent width and height, but a
-    /// triddler has three independently resizable families and no single "width" — forcing it
-    /// through a two-number tuple is what used to silently drop its third family's count.
+    /// triddler is a hexagon with six sides to describe (four of which are written down; see
+    /// the module docs) — forcing it through a two-number tuple is what used to silently drop
+    /// most of its shape.
     fn dims_label(dims: &Self::Dims, lanes: &LaneMap) -> String;
 
     fn resized(dims: &Self::Dims, side: Self::Side, delta: i32) -> Option<Self::Dims>;
@@ -1354,13 +1528,15 @@ impl GridKind for Tri {
         }
     }
 
-    /// Rows / `/` lines / `\` lines, in that order — a triddler's three independent extents,
-    /// where a square puzzle only has two.
+    /// griddlers.net's size notation (see the module docs), which
+    /// [`Outline::from_griddlers`] reads back. Counted from the lanes rather than from the
+    /// bounds, so a bound no cell reaches can't inflate a side.
     fn dims_label(_dims: &Outline, lanes: &LaneMap) -> String {
-        (0..lanes.family_count())
-            .map(|f| lanes.family(f).len().to_string())
-            .collect::<Vec<_>>()
-            .join("/")
+        let c = lanes.clue_set_counts();
+        format!(
+            "({}+{})x({}+{})",
+            c.topleft, c.bottomleft, c.top, c.topright
+        )
     }
 
     fn resized(dims: &Outline, side: Side, delta: i32) -> Option<Outline> {

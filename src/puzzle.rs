@@ -1159,8 +1159,8 @@ impl Document {
     }
 
     /// A short, shape-appropriate size label for labels and thumbnails — "8x8" for a square
-    /// puzzle, three numbers for a triddler (see `GridKind::dims_label`), rather than forcing
-    /// every shape through the same fixed-arity pair.
+    /// puzzle, griddlers.net's "(5+3)x(6+2)" for a triddler (see `GridKind::dims_label`),
+    /// rather than forcing every shape through the same fixed-arity pair.
     pub fn dims_label(&self) -> String {
         match (&self.s, &self.p) {
             (Some(s), _) => s.dims_label(),
