@@ -289,24 +289,41 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
 mod tests {
     use super::*;
 
-    use crate::geometry::{Geometry, Rect, Square};
-    use crate::import::{bw_palette, solution_to_puzzle};
+    use crate::geometry::{Geometry, Outline, Rect, Square, Tri};
+    use crate::import::{bw_palette, solution_to_puzzle, solution_to_tri_puzzle};
     use crate::line_solve::Cell;
-    use crate::puzzle::{BACKGROUND, ClueStyle, Nono, Solution};
+    use crate::puzzle::{BACKGROUND, ClueStyle, ColorInfo, Nono, Solution};
 
-    /// A black-and-white picture, written a row at a time: `#` is `Color(1)`, anything else is
-    /// background. `Solution`'s cells are row-major, so the rows go in exactly as written.
+    /// A picture, written a row at a time: `.` is the background, and every other character is a
+    /// foreground color, numbered in the order the characters first appear. The palette is built
+    /// to match, so a two-character picture is black and white and a three-character one isn't.
+    /// `Solution`'s cells are row-major, so the rows go in exactly as written.
     fn picture(rows: &[&str]) -> Solution<Square> {
         let width = rows[0].len();
         assert!(rows.iter().all(|r| r.len() == width), "ragged picture");
+
+        let mut palette = HashMap::from([(BACKGROUND, ColorInfo::default_bg())]);
+        let mut seen: Vec<char> = vec![];
         let cells = rows
             .iter()
             .flat_map(|row| row.chars())
-            .map(|ch| if ch == '#' { Color(1) } else { BACKGROUND })
+            .map(|ch| {
+                if ch == '.' {
+                    return BACKGROUND;
+                }
+                let which = seen.iter().position(|c| *c == ch).unwrap_or_else(|| {
+                    seen.push(ch);
+                    seen.len() - 1
+                });
+                let color = Color(which as u8 + 1);
+                palette.entry(color).or_insert(ColorInfo::default_fg(color));
+                color
+            })
             .collect();
+
         Solution::new(
             ClueStyle::Nono,
-            bw_palette(),
+            palette,
             Geometry::new(Rect {
                 width,
                 height: rows.len(),
@@ -315,7 +332,42 @@ mod tests {
         )
     }
 
-    /// The picture a `UniqueSolution` report describes, rendered the way `picture` reads one.
+    /// The 16-cell triddler from `webpbn_tridder.md`, in rows of 5, 6, and 5 — written the way
+    /// `picture` writes a square one, since a triddler's cells are dense in row order too and so
+    /// the rows simply concatenate. Black and white only; the point here is the shape.
+    fn tri_picture(rows: &[&str; 3]) -> Solution<Tri> {
+        let geometry = Geometry::<Tri>::new(Outline {
+            a: (0, 2),
+            b: (1, 3),
+            c: (-1, 2),
+        });
+        let cells: Vec<Color> = rows
+            .iter()
+            .flat_map(|row| row.chars())
+            .map(|ch| if ch == '.' { BACKGROUND } else { Color(1) })
+            .collect();
+        assert_eq!(
+            cells.len(),
+            geometry.cell_count(),
+            "wrong number of cells for this outline"
+        );
+        Solution::new(ClueStyle::Nono, bw_palette(), geometry, cells)
+    }
+
+    /// One lane's worth of `Nono` clues, all in `Color(1)`, for the tests that write clues out
+    /// directly instead of deriving them from a picture.
+    fn runs(counts: &[u16]) -> Vec<Nono> {
+        counts
+            .iter()
+            .map(|count| Nono {
+                color: Color(1),
+                count: *count,
+            })
+            .collect()
+    }
+
+    /// The picture a `UniqueSolution` report describes, rendered the way `picture` reads one —
+    /// so a solved report can be compared straight against the rows that built the puzzle.
     fn rendered(report: &Report, width: usize) -> Vec<String> {
         report
             .solution
@@ -323,7 +375,7 @@ mod tests {
             .chunks(width)
             .map(|row| {
                 row.iter()
-                    .map(|c| if *c == BACKGROUND { '.' } else { '#' })
+                    .map(|c| ".#o".chars().nth(c.0 as usize).expect("too many colors"))
                     .collect()
             })
             .collect()
@@ -347,7 +399,6 @@ mod tests {
     /// Line logic stalls on this one with 18 of its 25 cells unknown. One guess in the upper-left-hand corner
     /// is sufficient to solve it.
     #[test]
-    #[ignore = "the search doesn't terminate yet; see `an_ambiguous_puzzle_reports_multiple_solutions`"]
     fn a_puzzle_that_needs_a_guess() {
         let want = ["..###", "..#.#", "##...", "....#", ".##.."];
         let puzzle = solution_to_puzzle(&picture(&want));
@@ -372,15 +423,135 @@ mod tests {
         // TODO: Plumb a choice of guessing algorithm in and try both first guesses!
     }
 
-    /// One filled cell per row and per column of a 2x2 grid: the two diagonals both fit.
-    ///
-    /// Ignored along with the test above because neither one returns: `backtrack_solve` records
-    /// its guess with `Cell::is_known_to_be`, which asks a question rather than answering one, so
-    /// every node comes back from `run` exactly as deep in the puzzle as its parent and the
-    /// queue is fed a strictly deeper copy of the same state forever. Un-ignore both once a
-    /// guess actually lands (`SolveState::guess` is the call that makes one stick).
+    /// Bigger, and stalled harder: line logic gets 17 of 49 cells and the rest have to be
+    /// guessed, so the search has to go several levels deep and back out again rather than
+    /// getting there on one lucky assumption.
     #[test]
-    #[ignore = "the search doesn't terminate yet; the guess is never applied to the grid"]
+    fn a_puzzle_that_needs_several_guesses() {
+        let want = [
+            "...##..", ".#.#...", "##..##.", "..##.##", "##.....", "#..#..#", ".##.#.#",
+        ];
+        let puzzle = solution_to_puzzle(&picture(&want));
+
+        let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let line_only = crate::grid_solve::line_logic_solve(
+            &puzzle,
+            &mut None,
+            &SolveOptions::default(),
+            &mut grid,
+        )
+        .unwrap();
+        assert_eq!(line_only.cells_left, 32);
+
+        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
+            UniqueSolution(report) => {
+                assert_eq!(report.cells_left, 0);
+                assert_eq!(rendered(&report, 7), want);
+            }
+            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
+        }
+    }
+
+    /// Three colors, so ruling a cell out doesn't settle it: `suppose`'s `is = false` has to
+    /// leave two possibilities standing where a black-and-white puzzle would be left with one.
+    #[test]
+    fn a_multicolor_puzzle_that_needs_a_guess() {
+        let want = [".##..", "oo.#.", "o..#o", "o...o", "##..#"];
+        let puzzle = solution_to_puzzle(&picture(&want));
+        assert_eq!(
+            puzzle.palette.len(),
+            3,
+            "background and two foreground colors"
+        );
+
+        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
+            UniqueSolution(report) => {
+                assert_eq!(report.cells_left, 0);
+                assert_eq!(rendered(&report, 5), want);
+            }
+            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
+        }
+    }
+
+    /// Clues with no picture behind them at all — but every lane is satisfiable on its own, and
+    /// the row and column totals even agree, so line logic runs out of things to say with 16
+    /// cells still unknown rather than reporting a contradiction. Only the search can find out,
+    /// which means the error has to survive `suppose` unwinding every guess back to the root.
+    #[test]
+    fn a_puzzle_with_no_solution_is_an_error() {
+        let puzzle = Puzzle::square(
+            bw_palette(),
+            vec![runs(&[]), runs(&[1]), runs(&[2]), runs(&[2]), runs(&[2])],
+            vec![
+                runs(&[2]),
+                runs(&[1, 1]),
+                runs(&[1, 1]),
+                runs(&[1]),
+                runs(&[]),
+            ],
+        );
+
+        // Line logic really doesn't notice; if it learns to, this stops testing the search.
+        let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let line_only = crate::grid_solve::line_logic_solve(
+            &puzzle,
+            &mut None,
+            &SolveOptions::default(),
+            &mut grid,
+        )
+        .unwrap();
+        assert_eq!(line_only.cells_left, 16);
+
+        assert!(backtrack_solve(&puzzle, &SolveOptions::default()).is_err());
+    }
+
+    /// `backtrack_solve` is generic over the grid shape, and a triddler is the part of that
+    /// generality a square puzzle can't reach: three clue directions instead of two, and lanes
+    /// of differing lengths that meet in places no row-and-column shortcut would predict. Line
+    /// logic gets 6 of these 16 cells and stops.
+    #[test]
+    fn a_triddler_that_needs_a_guess() {
+        let want = [".#..#", "..##..", "....."];
+        let puzzle = solution_to_tri_puzzle(&tri_picture(&want));
+
+        let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let line_only = crate::grid_solve::line_logic_solve(
+            &puzzle,
+            &mut None,
+            &SolveOptions::default(),
+            &mut grid,
+        )
+        .unwrap();
+        assert_eq!(line_only.cells_left, 10);
+
+        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
+            UniqueSolution(report) => {
+                assert_eq!(report.cells_left, 0);
+                // The lanes are ragged, so `rendered`'s fixed-width rows don't apply; compare
+                // against the picture the clues came from instead.
+                assert_eq!(report.solution.cells(), tri_picture(&want).cells);
+            }
+            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
+        }
+    }
+
+    /// Column 0 wants one filled cell and gets none. What makes this worth its own test is
+    /// where the mistake comes from: line logic fills all four cells from the rows, sees
+    /// `cells_left` reach zero, and reports success without ever looking at the columns — so the
+    /// contradiction is one only the check on the way out can catch.
+    #[test]
+    fn a_grid_that_only_looks_solved_is_an_error() {
+        let puzzle = Puzzle::square(
+            bw_palette(),
+            vec![runs(&[1]), runs(&[1])],
+            vec![runs(&[1]), runs(&[2])],
+        );
+
+        assert!(backtrack_solve(&puzzle, &SolveOptions::default()).is_err());
+    }
+
+    /// One filled cell per row and per column of a 2x2 grid: the two diagonals both fit.
+    #[test]
     fn an_ambiguous_puzzle_reports_multiple_solutions() {
         let puzzle = solution_to_puzzle(&picture(&["#.", ".#"]));
 

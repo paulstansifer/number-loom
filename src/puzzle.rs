@@ -919,6 +919,7 @@ impl<K: GridKind> Solution<K> {
         let cell_count = self.cells.len();
         let lane_count = self.geometry.lane_map().lane_count();
 
+        // TODO: this is wrong if the puzzle wasn't fully solved!
         let bg_squares_found: usize = self.cells.iter().filter(|c| **c == BACKGROUND).count();
 
         if bg_squares_found < lane_count {
