@@ -2,10 +2,12 @@
 name = "number-loom"
 path = "src/bin/number-loom.rs"
 
-# Compares our solver against `pbnsolve`; see the module docs for how to point it at a binary.
+# A benchmarking tool, hidden behind a non-default feature so `cargo install` doesn't
+# install it on user computers.
 [[bin]]
 name = "bench-pbnsolve"
 path = "src/bin/bench-pbnsolve.rs"
+required-features = ["bench-pbnsolve"]
 
 [package]
 name = "number-loom"
@@ -18,6 +20,10 @@ keywords = ["nonogram"]
 readme = "README.md"
 repository = "https://github.com/paulstansifer/number-loom"
 default-run = "number-loom"
+
+# A purely 
+[features]
+bench-pbnsolve = []
 
 [dependencies]
 image = "0.25"

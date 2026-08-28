@@ -54,7 +54,7 @@ survey's puzzle set, in the webpbn XML that `pbnsolve` reads natively — so the
 pointed at exactly the same puzzles. Build `pbnsolve` from source, then:
 
 ```
-cargo run --release --bin bench-pbnsolve -- --pbnsolve /path/to/pbnsolve
+cargo run --release --features bench-pbnsolve --bin bench-pbnsolve -- --pbnsolve /path/to/pbnsolve
 ```
 
 

@@ -2,7 +2,7 @@
 //! from the Survey of Paint-by-Number Puzzle Solvers (<http://webpbn.com/survey/>).
 //!
 //! ```text
-//! cargo run --release --bin bench-pbnsolve -- --pbnsolve ~/others/pbnsolve-1.10/pbnsolve
+//! cargo run --release --features bench-pbnsolve --bin bench-pbnsolve -- --pbnsolve ~/others/pbnsolve-1.10/pbnsolve
 //! ```
 //!
 //! Both sides are timed on the *solve alone*: `number-loom` runs in-process with an `Instant`
