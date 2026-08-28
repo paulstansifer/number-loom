@@ -26,11 +26,11 @@ struct BtSolveState<'p, C: Clue> {
 }
 
 impl<'p, C: Clue> BtSolveState<'p, C> {
-    fn score_at(&self, coord: &HypoCoord) -> Score {
+    fn score_at(&self, coord: &HypoCoord) -> std::cmp::Reverse<Score> {
         let distance_remaining = self.knowledge.cells_left as f32;
         let depth = 5.0 * 2.0_f32.powi(coord.guesses.len() as i32);
         let exhaustion = self.guesses_explored.len() as f32 * 3.0;
-        Score(distance_remaining + depth + exhaustion)
+        std::cmp::Reverse(Score(distance_remaining + depth + exhaustion))
     }
 
     fn fork(
@@ -92,7 +92,7 @@ impl GuessPicker for First {
 // }
 
 /// Lower is better! This is used both to score nodes (`score_at`) and to score possible guesses inside nodes (`rate`)!
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, PartialOrd, Debug)]
 struct Score(f32);
 
 impl Eq for Score {}
@@ -120,6 +120,9 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
         .guess(&mut ctx.linear_ctx, cell_idx, is, color);
     let run_consequence = state.knowledge.run_and_check(&mut ctx.linear_ctx);
 
+    if ctx.linear_ctx.options.trace_solve {
+        println!("Rescoring {coord:?} to {:?}", state.score_at(coord));
+    }
     ctx.q.change_priority(coord, state.score_at(coord)); // Did all that learning make this node look better?
 
     // TODO: the new knowledge at this level *ought* to be applied to all descendant nodes.
@@ -176,7 +179,7 @@ pub enum BtReport {
 }
 
 pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
-    q: PriorityQueue<HypoCoord, Score>,
+    q: PriorityQueue<HypoCoord, std::cmp::Reverse<Score>>,
     possibilities: HashMap<HypoCoord, BtSolveState<'p, C>>,
     linear_ctx: SolveContext<'p, 'x, C, K>,
     puzzle: &'p Puzzle<C, K>,
@@ -209,7 +212,8 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
 
     let root_coord = HypoCoord { guesses: vec![] };
 
-    ctx.q.push(root_coord.clone(), Score(0.0));
+    ctx.q
+        .push(root_coord.clone(), std::cmp::Reverse(Score(0.0)));
     ctx.possibilities.insert(
         root_coord,
         BtSolveState {
