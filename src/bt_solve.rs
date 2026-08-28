@@ -103,6 +103,30 @@ impl Ord for Score {
     }
 }
 
+fn nuke_node<'p, 'x, C: Clue, K: GridKind>(
+    coord: &HypoCoord,
+    parent_will_be_cleared: bool,
+    ctx: &mut BtContext<'p, 'x, C, K>,
+) {
+    nuke_descendants(coord, ctx); // first descend...
+
+    ctx.q.remove(coord).unwrap(); // ...now it's no longer needed
+    ctx.possibilities.remove(coord).unwrap();
+
+    if !parent_will_be_cleared {
+        // TODO: we should really impl stuff on `HypoCoord`
+        let mut parent_coord = coord.clone();
+        let guess_for_us = parent_coord.guesses.pop().unwrap();
+        assert!(
+            ctx.possibilities
+                .get_mut(&parent_coord)
+                .unwrap()
+                .guesses_explored
+                .remove(&guess_for_us)
+        );
+    }
+}
+
 fn nuke_descendants<'p, 'x, C: Clue, K: GridKind>(
     coord: &HypoCoord,
     ctx: &mut BtContext<'p, 'x, C, K>,
@@ -113,10 +137,7 @@ fn nuke_descendants<'p, 'x, C: Clue, K: GridKind>(
         let mut new_coord = coord.clone();
         new_coord.guesses.push(guess);
 
-        nuke_descendants(&new_coord, ctx); // first descend...
-
-        ctx.q.remove(&new_coord).unwrap(); // ...now it's no longer needed
-        ctx.possibilities.remove(&new_coord).unwrap();
+        nuke_node(&new_coord, /*parent_will_be_cleared=*/ true, ctx);
     }
 
     ctx.possibilities
@@ -177,7 +198,6 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                 if ctx.linear_ctx.options.trace_solve {
                     println!("Found a solution, assuming {coord:?}");
                 }
-                ctx.q.remove(coord).unwrap(); // Nothing more to be done on this one!
 
                 if coord.guesses.is_empty() {
                     return Ok(Some(UniqueSolution(state.knowledge.report(ctx.puzzle))));
@@ -186,12 +206,10 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                 if ctx.solutions_found > 1 {
                     return Ok(Some(MultipleSolutions()));
                 }
+
+                nuke_node(coord, /*parent_will_be_cleared=*/ false, ctx);
             }
         }
-    }
-
-    if ctx.linear_ctx.options.trace_solve {
-        println!("...we have {} cells left here", state.knowledge.cells_left);
     }
 
     Ok(None)
