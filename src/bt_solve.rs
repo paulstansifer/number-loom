@@ -12,7 +12,7 @@ use crate::{
     puzzle::{Clue, Color, PartialSolution, Puzzle},
 };
 
-/// A coordinate into the tree of hypotheticals
+/// A coordinate into the tree of hypotheticals (a stack of assumptions)
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 struct HypoCoord {
     guesses: Vec<(usize, Color)>,
@@ -22,11 +22,13 @@ struct HypoCoord {
 #[derive(Clone)]
 struct BtSolveState<'p, C: Clue> {
     knowledge: SolveState<'p, C>,
-    // TODO: add geometry (needs K: GridKind)
     guesses_explored: HashSet<(usize, Color)>,
 }
 
 impl<'p, C: Clue> BtSolveState<'p, C> {
+    /// How much is a node worth searching. Strong penalty for hypothetical depth:
+    /// the goal is to prove a unique solution if possible, and that requires facts
+    /// to filter down to "ground level"
     fn score_at(&self, coord: &HypoCoord) -> std::cmp::Reverse<Score> {
         let distance_remaining = self.knowledge.cells_left as f32;
         let depth = 5.0 * 2.0_f32.powi(coord.guesses.len() as i32);
@@ -57,7 +59,7 @@ trait GuessPicker {
     /// Score guesses against each other. Note that this is totally different than *node* scores!
     fn rate<'p, C: Clue, K: GridKind>(state: &BtSolveState<'p, C>, guess: (usize, Color)) -> Score;
 
-    /// Pick the lowest-scoring choice
+    /// Pick the lowest-scoring choice that's a valid guess
     fn pick<'p, C: Clue, K: GridKind>(state: &BtSolveState<'p, C>) -> (usize, Color) {
         let idxed_cells = state.knowledge.grid.iter().enumerate();
         let uncertain_cells = idxed_cells.filter(|(_, cell)| !cell.is_known());
