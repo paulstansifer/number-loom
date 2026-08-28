@@ -649,6 +649,21 @@ impl<'p, C: Clue> SolveState<'p, C> {
         }
     }
 
+    /// If we don't trust that the puzzle is solveable (crucially, if we've made a guess!),
+    /// we need to check that we haven't broken anything.
+    pub fn run_and_check<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+    ) -> anyhow::Result<Step> {
+        let res = self.run(ctx)?;
+        if res == Step::Solved {
+            validate_lines(ctx.puzzle, &self.grid)?
+            // TODO: could we safely use the invalidation bits to make this faster?
+        }
+
+        Ok(res)
+    }
+
     /// Pick the next lane to attempt, escalating to a more thorough mode once the cheap ones stop
     /// paying off. `None` means every mode up to `max_effort` is exhausted.
     fn choose_lane(&mut self, max_effort: SolveMode) -> Option<(usize, SolveMode)> {
@@ -798,28 +813,32 @@ impl<'p, C: Clue> SolveState<'p, C> {
     /// Assume `cell` is `color` and mark everything that assumption bears on, so that a `step`
     /// after a `Stalled` picks up where the stall left off.
     ///
-    /// Errors if the assumption contradicts what's already known, leaving the state partly
-    /// updated — guess on a clone, and throw the clone away if this fails.
+    /// Panics if the assumption is isn't new information or is impossible
     pub fn guess<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        cell: u32,
+        cell: usize,
+        is: bool,
         color: Color,
-    ) -> anyhow::Result<()> {
+    ) {
         let lane_map = ctx.lane_map();
 
-        let was = self.grid[cell as usize];
-        if self.grid[cell as usize].learn(color)? {
-            self.cells_left -= 1;
-        }
+        let previous = self.grid[cell];
+        let new_info = if is {
+            self.grid[cell].learn(color).unwrap()
+        } else {
+            self.grid[cell].learn_that_not(color).unwrap()
+        };
+        assert!(new_info, "must be new information");
+
+        self.cells_left -= 1;
+
         let Scratch { changes, stale, .. } = &mut ctx.scratch;
         changes.clear();
-        changes.push((cell, was));
+        changes.push((cell as u32, previous)); // TODO: why are use using u32 here at all?
         self.invalidate(changes, None, lane_map, stale);
         // A guess is new information, so it's worth another cheap pass before escalating.
         self.allowed_failures = INITIAL_ALLOWED_FAILURES;
-
-        Ok(())
     }
 
     /// React to a batch of changed cells: fold each one into the counts of every lane holding it,
@@ -953,6 +972,23 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// Check that a solution is consistent
+pub fn validate_lines<C: Clue, K: GridKind>(
+    puzzle: &Puzzle<C, K>,
+    grid: &PartialSolution,
+) -> anyhow::Result<()> {
+    // TODO: this probably could be done fasters
+    let lanes = puzzle.geometry.lane_map();
+    for family in 0..lanes.family_count() {
+        for lane in puzzle.geometry.lane_map().family(family) {
+            let mut gathered = vec![];
+            gather_into(lanes, lane, grid, &mut gathered);
+            skim_line(&puzzle.lines[lane], &mut gathered.to_vec())?;
+        }
+    }
+    Ok(())
 }
 
 pub enum DisambigResult {

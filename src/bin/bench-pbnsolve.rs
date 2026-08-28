@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use clap::Parser;
+use number_loom::bt_solve::{BtReport, backtrack_solve};
 use number_loom::formats::webpbn::as_webpbn;
 use number_loom::grid_solve::SolveOptions;
 use number_loom::puzzle::{DynPuzzle, PuzzleDynOps};
@@ -66,6 +67,20 @@ struct Args {
     /// Also write the results as CSV, for tracking across commits.
     #[arg(long)]
     csv: Option<PathBuf>,
+
+    /// Seconds of wall clock to allow our own backtracker per puzzle, in backtrack mode. Unlike
+    /// pbnsolve's `-x`, this isn't a budget the solver honors: `backtrack_solve` has no deadline
+    /// or guess limit to hand it, so the only way to stop one is to kill the process running it.
+    /// That is also why it runs out-of-process (see `run_loom_backtrack`), and why this default
+    /// is much shorter than `--timeout`: a search that doesn't terminate allocates a fresh copy
+    /// of the grid per node the whole time it runs.
+    #[arg(long, default_value_t = 10)]
+    loom_timeout: u64,
+
+    /// Not for humans: solve one puzzle with `backtrack_solve` and print a line of counters. The
+    /// benchmark re-runs itself this way to bound a search it can't otherwise interrupt.
+    #[arg(long, hide = true)]
+    solve_backtrack: Option<PathBuf>,
 }
 
 impl Args {
@@ -374,6 +389,133 @@ fn run_number_loom(puzzle: &DynPuzzle, reps: u32) -> anyhow::Result<LoomRun> {
     best.context("no repetitions were run")
 }
 
+/// What our own backtracker did with one puzzle.
+struct LoomBt {
+    /// Wall clock around the `backtrack_solve` call in the child, parsing excluded — the same
+    /// thing `pbnsolve`'s `Processing Time` measures.
+    seconds: f64,
+    /// `unique`, `multiple`, or `contradiction`.
+    status: String,
+    cells_left: usize,
+    skims: usize,
+    scrubs: usize,
+}
+
+/// The `--solve-backtrack` half of the binary: one puzzle, one `backtrack_solve`, one line of
+/// counters on stdout for the parent to read back. Nothing here touches `pbnsolve`.
+fn solve_backtrack_child(path: &Path) -> anyhow::Result<()> {
+    let mut document = import::load_path(&path.to_path_buf(), None)
+        .with_context(|| format!("couldn't load {}", path.display()))?;
+    let options = SolveOptions::default();
+
+    let start = Instant::now();
+    let outcome = with_puzzle!(document.puzzle(), |p| { backtrack_solve(p, &options) });
+    let seconds = start.elapsed().as_secs_f64();
+
+    // `LOOM` prefixed so a stray line from anywhere else can't be mistaken for the report.
+    match outcome {
+        Ok(BtReport::UniqueSolution(report)) => println!(
+            "LOOM unique {seconds} {} {} {}",
+            report.cells_left, report.solve_counts.skim, report.solve_counts.scrub
+        ),
+        // `MultipleSolutions` carries no report, so there are no counters to pass along.
+        Ok(BtReport::MultipleSolutions()) => println!("LOOM multiple {seconds} 0 0 0"),
+        Err(_) => println!("LOOM contradiction {seconds} 0 0 0"),
+    }
+    Ok(())
+}
+
+fn parse_loom_backtrack(stdout: &str) -> anyhow::Result<LoomBt> {
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("LOOM "))
+        .with_context(|| format!("no LOOM line in the child's output; got:\n{stdout}"))?;
+    let mut words = line.split_whitespace().skip(1);
+    let status = words
+        .next()
+        .with_context(|| format!("no status in {line:?}"))?
+        .to_string();
+    let seconds: f64 = words
+        .next()
+        .and_then(|w| w.parse().ok())
+        .with_context(|| format!("no time in {line:?}"))?;
+    Ok(LoomBt {
+        seconds,
+        status,
+        cells_left: parse_at(&mut words, line)?,
+        skims: parse_at(&mut words, line)?,
+        scrubs: parse_at(&mut words, line)?,
+    })
+}
+
+/// Runs `backtrack_solve` on one puzzle in a child copy of this binary, killed if it overruns
+/// `--loom-timeout`.
+///
+/// Out-of-process because there is no other way to stop it. `pbnsolve` polices itself with `-x`;
+/// `backtrack_solve` takes no deadline, exposes no guess budget, and never yields, so an
+/// in-process call that doesn't converge takes the whole sweep down with it — and it allocates a
+/// clone of the solve state per search node while it does, so a thread abandoned to run in the
+/// background would exhaust memory rather than merely waste a core. A child can just be killed.
+fn run_loom_backtrack(puzzle: &Path, timeout: u64) -> Result<LoomBt, PbnFailure> {
+    let exe = std::env::current_exe().map_err(|e| PbnFailure::Crashed(e.to_string()))?;
+
+    let mut command = Command::new(exe);
+    // `--pbnsolve` is required by the parser and unused by the child; hand it this binary so the
+    // path exists. The child returns before anything would look at it.
+    command
+        .arg("--pbnsolve")
+        .arg(std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/")))
+        .arg("--solve-backtrack")
+        .arg(puzzle);
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+
+    let start = Instant::now();
+    let mut child = command
+        .spawn()
+        .map_err(|e| PbnFailure::Crashed(e.to_string()))?;
+
+    let deadline = Duration::from_secs(timeout);
+    let mut killed = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(e) => return Err(PbnFailure::Crashed(e.to_string())),
+        }
+        if start.elapsed() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            killed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    if killed {
+        return Err(PbnFailure::Killed);
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| PbnFailure::Crashed(e.to_string()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // A panic (`unreachable!`, an index out of range) and an out-of-memory kill both land
+        // here, and telling them apart matters, so pass along whatever the child said.
+        return Err(PbnFailure::Crashed(match output.status.code() {
+            Some(code) => match complaint(&stderr).or_else(|| complaint(&stdout)) {
+                Some(said) => format!("exit {code}: {said}"),
+                None => format!("exit {code}"),
+            },
+            None => "signal".to_string(),
+        }));
+    }
+
+    parse_loom_backtrack(&stdout).map_err(|e| PbnFailure::Unreadable(e.to_string()))
+}
+
 /// One row of the table: either a measurement or a reason there isn't one.
 enum Row {
     Line {
@@ -389,6 +531,8 @@ enum Row {
         cells: usize,
         pbn: PbnReport,
         pbn_wall: Duration,
+        /// `Err` is the reason there's no measurement — a timeout, a crash, unreadable output.
+        loom: Result<LoomBt, String>,
     },
     Skipped {
         name: String,
@@ -458,6 +602,11 @@ fn webpbn_path_for(
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    // The child half of `run_loom_backtrack`: solve one puzzle and say nothing else.
+    if let Some(puzzle) = &args.solve_backtrack {
+        return solve_backtrack_child(puzzle);
+    }
 
     if !args.pbnsolve.is_file() {
         bail!("no pbnsolve binary at {}", args.pbnsolve.display());
@@ -548,6 +697,9 @@ fn bench_one(
             cells,
             pbn,
             pbn_wall,
+            // `path`, not `xml`: our own loader reads every format, and converting first would
+            // hand the backtracker a puzzle that had made a round trip through webpbn.
+            loom: run_loom_backtrack(path, args.loom_timeout).map_err(|f| f.label()),
         }),
         Mode::Line => {
             let loom_start = Instant::now();
@@ -679,14 +831,25 @@ fn print_backtrack_table(rows: &[Row]) {
         .unwrap_or(20)
         .max(8);
 
-    // When `src/bt_solve.rs` grows a working backtracker, this is where its columns go: time,
-    // guesses, and backtracks beside pbnsolve's, exactly as line mode does it above. It will also
-    // need a deadline or a guess budget in `SolveOptions` before it can be held to `--timeout` the
-    // way `-x` holds pbnsolve.
+    // `backtrack_solve` counts no guesses or backtracks of its own yet, so pbnsolve's two search
+    // counters have no column to sit beside; what it does report is skims and scrubs, the same
+    // pair line mode shows.
     println!(
-        "{:<name_width$} {:>7} {:>12} {:>10} {:>12} {:>12}  status",
-        "puzzle", "cells", "pbn sec", "pbn left", "guesses", "backtracks",
+        "{:<name_width$} {:>7} {:>12} {:>12} {:>8} {:>10} {:>10} {:>13}  {:<14} {}",
+        "puzzle",
+        "cells",
+        "loom sec",
+        "pbn sec",
+        "ratio",
+        "loom left",
+        "pbn left",
+        "skims/scrubs",
+        "loom",
+        "pbn",
     );
+
+    let mut ratios = vec![];
+    let mut solved = 0;
 
     for row in rows {
         match row {
@@ -695,23 +858,70 @@ fn print_backtrack_table(rows: &[Row]) {
                 cells,
                 pbn,
                 pbn_wall,
+                loom,
             } => {
+                let pbn_status = if pbn.status.is_empty() {
+                    format!("(wall {:.3}s)", pbn_wall.as_secs_f64())
+                } else {
+                    pbn.status.clone()
+                };
+
+                let (loom_sec, loom_left, loom_lines, loom_status, ratio) = match loom {
+                    Ok(loom) => {
+                        if loom.cells_left == 0 {
+                            solved += 1;
+                        }
+                        // Only worth a ratio when both clocks actually measured something.
+                        let ratio = match micros(pbn.seconds) {
+                            Some(pbn_us) if loom.seconds > 0.0 => {
+                                let r = pbn_us / (loom.seconds * 1e6);
+                                ratios.push(r);
+                                format!("{r:.2}x")
+                            }
+                            _ => "-".to_string(),
+                        };
+                        (
+                            format!("{:.6}", loom.seconds),
+                            loom.cells_left.to_string(),
+                            format!("{}/{}", loom.skims, loom.scrubs),
+                            loom.status.clone(),
+                            ratio,
+                        )
+                    }
+                    Err(why) => (
+                        "-".to_string(),
+                        "-".to_string(),
+                        "-".to_string(),
+                        why.clone(),
+                        "-".to_string(),
+                    ),
+                };
+
                 println!(
-                    "{name:<name_width$} {cells:>7} {:>12.6} {:>10} {:>12} {:>12}  {}",
+                    "{name:<name_width$} {cells:>7} {loom_sec:>12} {:>12.6} {ratio:>8} \
+                     {loom_left:>10} {:>10} {loom_lines:>13}  {loom_status:<14} {pbn_status}",
                     pbn.seconds,
                     pbn.cells_total.saturating_sub(pbn.cells_solved),
-                    pbn.guesses,
-                    pbn.backtracks,
-                    if pbn.status.is_empty() {
-                        format!("(wall {:.3}s)", pbn_wall.as_secs_f64())
-                    } else {
-                        pbn.status.clone()
-                    },
                 );
             }
             Row::Skipped { name, why } => println!("{name:<name_width$} {why}"),
             Row::Line { .. } => unreachable!("backtrack mode produces no line rows"),
         }
+    }
+
+    println!();
+    println!(
+        "{solved} of {} puzzles fully solved by the backtracker",
+        rows.len()
+    );
+    if !ratios.is_empty() {
+        // Geometric mean, for the same reason line mode uses one.
+        let log_sum: f64 = ratios.iter().map(|r| r.ln()).sum();
+        println!(
+            "geometric mean over the {} comparable puzzle(s): number-loom is {:.2}x pbnsolve's speed",
+            ratios.len(),
+            (log_sum / ratios.len() as f64).exp(),
+        );
     }
 }
 
@@ -742,16 +952,38 @@ fn write_csv(path: &Path, rows: &[Row]) -> anyhow::Result<()> {
                 pbn.status,
             )),
             Row::Backtrack {
-                name, cells, pbn, ..
-            } => out.push_str(&format!(
-                "{name},{cells},,{},,{},,,{},{},{},{}\n",
-                pbn.seconds,
-                pbn.cells_total.saturating_sub(pbn.cells_solved),
-                pbn.lines_processed,
-                pbn.guesses,
-                pbn.backtracks,
-                pbn.status,
-            )),
+                name,
+                cells,
+                pbn,
+                loom,
+                ..
+            } => {
+                let (loom_seconds, loom_left, skims, scrubs, loom_status) = match loom {
+                    Ok(loom) => (
+                        loom.seconds.to_string(),
+                        loom.cells_left.to_string(),
+                        loom.skims.to_string(),
+                        loom.scrubs.to_string(),
+                        loom.status.clone(),
+                    ),
+                    Err(why) => (
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        why.clone(),
+                    ),
+                };
+                out.push_str(&format!(
+                    "{name},{cells},{loom_seconds},{},{loom_left},{},{skims},{scrubs},{},{},{},\"loom: {loom_status}; pbn: {}\"\n",
+                    pbn.seconds,
+                    pbn.cells_total.saturating_sub(pbn.cells_solved),
+                    pbn.lines_processed,
+                    pbn.guesses,
+                    pbn.backtracks,
+                    pbn.status,
+                ))
+            }
             Row::Skipped { name, why } => {
                 out.push_str(&format!("{name},,,,,,,,,,,\"skipped: {why}\"\n"))
             }

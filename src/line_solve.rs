@@ -140,18 +140,22 @@ impl Cell {
         }
     }
 
+    #[must_use]
     pub fn is_known(&self) -> bool {
         self.possible_color_mask.is_power_of_two()
     }
 
+    #[must_use]
     pub fn is_known_to_be(&self, color: Color) -> bool {
         self.possible_color_mask == 1 << color.0
     }
 
+    #[must_use]
     pub fn can_be(&self, color: Color) -> bool {
         (self.possible_color_mask & 1 << color.0) != 0
     }
 
+    #[must_use]
     pub fn can_be_iter(&self) -> impl Iterator<Item = Color> + use<> {
         let mut mask = self.possible_color_mask;
         std::iter::from_fn(move || {
@@ -164,6 +168,7 @@ impl Cell {
         })
     }
 
+    #[must_use]
     pub fn known_or(&self) -> Option<Color> {
         if !self.is_known() {
             None

@@ -524,7 +524,7 @@ impl LaneMap {
     }
 
     pub fn cell_count(&self) -> usize {
-        self.cell_count
+        self.cell_count // TODO: just make the field public! (likewise below)
     }
 
     pub fn family_count(&self) -> usize {
