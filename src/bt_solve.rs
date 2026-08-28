@@ -59,11 +59,11 @@ trait GuessPicker {
     /// Pick the lowest-scoring choice
     fn pick<'p, C: Clue, K: GridKind>(state: &BtSolveState<'p, C>) -> (usize, Color) {
         let idxed_cells = state.knowledge.grid.iter().enumerate();
-        let uncertain_cells =
-            idxed_cells.flat_map(|(idx, cell)| cell.can_be_iter().map(move |color| (idx, color)));
-        let unused_uncertain_cells =
-            uncertain_cells.filter(|guess| !state.guesses_explored.contains(guess));
-        let mut ranked = unused_uncertain_cells
+        let uncertain_cells = idxed_cells.filter(|(_, cell)| !cell.is_known());
+        let options = uncertain_cells
+            .flat_map(|(idx, cell)| cell.can_be_iter().map(move |color| (idx, color)));
+        let unused_options = options.filter(|guess| !state.guesses_explored.contains(guess));
+        let mut ranked = unused_options
             .sorted_by_cached_key(|(idx, color)| Self::rate::<C, K>(state, (*idx, *color)));
         let res = ranked
             .next()
