@@ -3,11 +3,13 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::{collections::HashMap, hash::Hasher};
 
+use crate::bt_solve::{self, BtReport};
 use crate::{
     geometry::{Geometry, GridKind, Outline, Rect, Shape, Square, Tri, TriCoord},
     grid_solve::{self, LineStatus, SolveOptions},
     import::{solution_to_puzzle, solution_to_tri_puzzle, solution_to_triano_puzzle},
 };
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 /// All colors, including `BACKGROUND`.
 pub type Palette = HashMap<Color, ColorInfo>;
@@ -505,15 +507,17 @@ pub trait PuzzleDynOps {
     fn extent(&self) -> crate::layout::Vec2;
     fn solve(
         &self,
+        backtrack: bool,
         options: &crate::grid_solve::SolveOptions,
     ) -> anyhow::Result<crate::grid_solve::Report>;
+    // TODO: we should propogate `backtrack` through these functions:
     fn partial_solve(
         &self,
         partial: &mut PartialSolution,
         options: &crate::grid_solve::SolveOptions,
     ) -> anyhow::Result<crate::grid_solve::Report>;
     fn plain_solve(&self) -> anyhow::Result<crate::grid_solve::Report> {
-        self.solve(&SolveOptions::default())
+        self.solve(/*backtrack=*/ false, &SolveOptions::default())
     }
     /// One `Vec<LineStatus>` per clue family — two for a square puzzle, three for a triddler.
     fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>>;
@@ -544,11 +548,25 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
         grid_solve::line_logic_solve(self, &mut None, options, partial)
     }
 
-    fn solve(&self, options: &SolveOptions) -> anyhow::Result<crate::grid_solve::Report> {
-        let mut partial =
-            vec![crate::line_solve::Cell::new(&self.palette); self.geometry.cell_count()];
+    fn solve(
+        &self,
+        backtrack: bool,
+        options: &SolveOptions,
+    ) -> anyhow::Result<crate::grid_solve::Report> {
+        // TODO: there's no reason for `bt_solve` and `grid_solve` to have different interfaces like this
+        if !backtrack {
+            let mut partial =
+                vec![crate::line_solve::Cell::new(&self.palette); self.geometry.cell_count()];
 
-        grid_solve::line_logic_solve(self, &mut None, options, &mut partial)
+            grid_solve::line_logic_solve(self, &mut None, options, &mut partial)
+        } else {
+            match bt_solve::backtrack_solve(self, options)? {
+                BtReport::UniqueSolution(report) => Ok(report),
+                // TODO: `Report` is not designed for "multiple valid solutions", so return an error for now.
+                // Audit the places where it's used, and then make this `Ok`!
+                BtReport::MultipleSolutions() => Err(anyhow!("multiple valid solutions")),
+            }
+        }
     }
 
     fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>> {
@@ -583,9 +601,10 @@ impl PuzzleDynOps for DynPuzzle {
 
     fn solve(
         &self,
+        backtrack: bool,
         options: &crate::grid_solve::SolveOptions,
     ) -> anyhow::Result<crate::grid_solve::Report> {
-        with_puzzle!(self, |p| p.solve(options))
+        with_puzzle!(self, |p| p.solve(backtrack, options))
     }
 
     fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>> {

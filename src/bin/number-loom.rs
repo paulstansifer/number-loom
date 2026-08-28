@@ -36,8 +36,13 @@ struct Args {
     #[arg(long, default_value_t)]
     gui: bool,
 
+    /// Find possible disambiguations
     #[arg(long, default_value_t)]
     disambiguate: bool,
+
+    /// Use the backtracking solver
+    #[arg(long, default_value_t)]
+    backtrack: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -142,7 +147,7 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             };
 
-            match document.puzzle().solve(&options) {
+            match document.puzzle().solve(args.backtrack, &options) {
                 Ok(grid_solve::Report {
                     solve_counts,
                     cells_left,

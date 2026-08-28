@@ -374,7 +374,7 @@ fn run_number_loom(puzzle: &DynPuzzle, reps: u32) -> anyhow::Result<LoomRun> {
     let mut best: Option<LoomRun> = None;
     for _ in 0..reps {
         let start = Instant::now();
-        let report = puzzle.solve(&options)?;
+        let report = puzzle.solve(/*backtrack=*/ false, &options)?;
         let solve = start.elapsed();
 
         if best.as_ref().is_none_or(|b| solve < b.solve) {

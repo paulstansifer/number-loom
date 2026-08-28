@@ -113,18 +113,12 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     color: Color,
     ctx: &mut BtContext<'p, 'x, C, K>,
 ) -> anyhow::Result<Option<BtReport>> {
-    println!("### at {coord:?}, learning that {cell_idx} = {color:?} is {is}");
     let state = ctx.possibilities.get_mut(&coord).unwrap();
 
     state
         .knowledge
         .guess(&mut ctx.linear_ctx, cell_idx, is, color);
     let run_consequence = state.knowledge.run_and_check(&mut ctx.linear_ctx);
-    println!(
-        "### ran! c_l: {}, rq: {}",
-        state.knowledge.cells_left,
-        run_consequence.is_ok()
-    );
 
     ctx.q.change_priority(coord, state.score_at(coord)); // Did all that learning make this node look better?
 
@@ -134,9 +128,11 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
 
     match run_consequence {
         Err(e) => {
-            println!("### learned a contradiction!");
             let mut higher_coord = coord.clone();
             if let Some((prev_cell_idx, prev_color)) = higher_coord.guesses.pop() {
+                if ctx.linear_ctx.options.trace_solve {
+                    println!("Assumption {coord:?} wasn't true! So {prev_cell_idx} isn't {color:?}")
+                }
                 return suppose(
                     &higher_coord,
                     prev_cell_idx,
@@ -151,8 +147,9 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
         }
         Ok(_) => {
             if state.knowledge.cells_left == 0 {
-                println!("### {:?}", state.knowledge.grid);
-                println!("### removing {:?}; we're done with it", coord);
+                if ctx.linear_ctx.options.trace_solve {
+                    println!("Found a solution, assuming {coord:?}");
+                }
                 ctx.q.remove(coord).unwrap(); // Nothing more to be done on this one!
 
                 if coord.guesses.is_empty() {
@@ -164,6 +161,10 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                 }
             }
         }
+    }
+
+    if ctx.linear_ctx.options.trace_solve {
+        println!("...we have {} cells left here", state.knowledge.cells_left);
     }
 
     Ok(None)
@@ -219,15 +220,13 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
 
     while let Some((coord, _score)) = ctx.q.peek() {
         let state = ctx.possibilities.get_mut(&coord).unwrap();
-        println!("### cells_left {}", state.knowledge.cells_left);
         let (cell_idx, color) = First::pick::<C, K>(state);
 
         let (new_coord, new_state) = state.fork(&coord, (cell_idx, color));
 
-        println!(
-            "### Guessing: {:?} (was {:?})",
-            new_coord, new_state.knowledge.cells_left
-        );
+        if ctx.linear_ctx.options.trace_solve {
+            println!("Guessing {new_coord:?}.")
+        }
 
         // `suppose` expects to find `new_state` at `new_coord`
         ctx.q
