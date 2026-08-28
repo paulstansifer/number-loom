@@ -32,6 +32,10 @@ struct Args {
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     trace_solve: bool,
 
+    /// Explain the backtracking search: guesses made, and backing out of bad ones.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    trace_backtrack: bool,
+
     /// Opens the GUI editor
     #[arg(long, default_value_t)]
     gui: bool,
@@ -143,6 +147,7 @@ fn main() -> anyhow::Result<()> {
         None => {
             let options = grid_solve::SolveOptions {
                 trace_solve: args.trace_solve,
+                trace_backtrack: args.trace_backtrack,
                 display_cli_progress: true,
                 ..Default::default()
             };

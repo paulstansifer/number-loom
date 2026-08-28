@@ -17,7 +17,10 @@ use crate::{
 };
 
 pub struct SolveOptions {
+    /// Trace each line-logic step (a lane attempted, what it learned).
     pub trace_solve: bool,
+    /// Trace the backtracking search (guesses, their consequences, and backing out of a bad one).
+    pub trace_backtrack: bool,
     pub display_cli_progress: bool,
     pub only_solve_color: Option<Color>,
     pub max_effort: SolveMode,
@@ -27,6 +30,7 @@ impl Default for SolveOptions {
     fn default() -> Self {
         SolveOptions {
             trace_solve: false,
+            trace_backtrack: false,
             display_cli_progress: false,
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
@@ -530,7 +534,8 @@ impl<'p, 'x, C: Clue, K: GridKind> SolveContext<'p, 'x, C, K> {
         line_cache: &'x mut Option<LineCache<C>>,
         options: &'x SolveOptions,
     ) -> SolveContext<'p, 'x, C, K> {
-        let progress_live = !options.trace_solve && options.display_cli_progress;
+        let progress_live =
+            !options.trace_solve && !options.trace_backtrack && options.display_cli_progress;
 
         let progress = if progress_live {
             indicatif::ProgressBar::new_spinner()

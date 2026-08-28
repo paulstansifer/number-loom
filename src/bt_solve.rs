@@ -159,7 +159,7 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
         .guess(&mut ctx.linear_ctx, cell_idx, is, color);
     let run_consequence = state.knowledge.run_and_check(&mut ctx.linear_ctx);
 
-    if ctx.linear_ctx.options.trace_solve {
+    if ctx.linear_ctx.options.trace_backtrack {
         println!("Rescoring {coord:?} to {:?}", state.score_at(coord));
     }
     ctx.q.change_priority(coord, state.score_at(coord)); // Did all that learning make this node look better?
@@ -168,7 +168,7 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
         Err(e) => {
             let mut higher_coord = coord.clone();
             if let Some((prev_cell_idx, prev_color)) = higher_coord.guesses.pop() {
-                if ctx.linear_ctx.options.trace_solve {
+                if ctx.linear_ctx.options.trace_backtrack {
                     println!("Assumption {coord:?} wasn't true! So {prev_cell_idx} isn't {color:?}")
                 }
 
@@ -190,7 +190,7 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
         }
         Ok(_) => {
             if state.knowledge.cells_left == 0 {
-                if ctx.linear_ctx.options.trace_solve {
+                if ctx.linear_ctx.options.trace_backtrack {
                     println!("Found a solution, assuming {coord:?}");
                 }
 
@@ -269,7 +269,7 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
 
         let (new_coord, new_state) = state.fork(&coord, (cell_idx, color));
 
-        if ctx.linear_ctx.options.trace_solve {
+        if ctx.linear_ctx.options.trace_backtrack {
             println!("Guessing {new_coord:?}.")
         }
 
