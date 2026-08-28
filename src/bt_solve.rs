@@ -103,6 +103,29 @@ impl Ord for Score {
     }
 }
 
+fn nuke_descendants<'p, 'x, C: Clue, K: GridKind>(
+    coord: &HypoCoord,
+    ctx: &mut BtContext<'p, 'x, C, K>,
+) {
+    let state = &ctx.possibilities[&coord];
+    let guesses_here = state.guesses_explored.clone();
+    for guess in guesses_here {
+        let mut new_coord = coord.clone();
+        new_coord.guesses.push(guess);
+
+        nuke_descendants(&new_coord, ctx); // first descend...
+
+        ctx.q.remove(&new_coord).unwrap(); // ...now it's no longer needed
+        ctx.possibilities.remove(&new_coord).unwrap();
+    }
+
+    ctx.possibilities
+        .get_mut(coord)
+        .unwrap()
+        .guesses_explored
+        .clear();
+}
+
 /// Learn that (assuming `coord`) the cell at `cell_idx` is [not] `color`.
 /// Errors on top-level contradiction. (Note that if `.run_and_check` is an error, we pop a guess and recur!)
 /// Returns `None` if the search is still incomplete
@@ -125,10 +148,6 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     }
     ctx.q.change_priority(coord, state.score_at(coord)); // Did all that learning make this node look better?
 
-    // TODO: the new knowledge at this level *ought* to be applied to all descendant nodes.
-    // ...or those nodes should be cleared out.
-    // ...or we should apply it lazily (but maybe give them a score boost since they might be advanceable?)
-
     match run_consequence {
         Err(e) => {
             let mut higher_coord = coord.clone();
@@ -136,6 +155,11 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                 if ctx.linear_ctx.options.trace_solve {
                     println!("Assumption {coord:?} wasn't true! So {prev_cell_idx} isn't {color:?}")
                 }
+
+                // Perhaps we instead ought to (lazily?) apply our knowledge to our descendents?
+                // ...but they also might not be very valuable any more.
+                nuke_descendants(&higher_coord, ctx);
+
                 return suppose(
                     &higher_coord,
                     prev_cell_idx,
