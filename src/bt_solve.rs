@@ -9,7 +9,7 @@ use crate::{
     geometry::GridKind,
     grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
     line_solve::Cell,
-    puzzle::{Clue, Color, Puzzle},
+    puzzle::{Clue, Color, PartialSolution, Puzzle},
 };
 
 /// A coordinate into the tree of hypotheticals
@@ -17,6 +17,7 @@ use crate::{
 struct HypoCoord {
     guesses: Vec<(usize, Color)>,
 }
+// TODO: we should really impl push/pop on `HypoCoord`
 
 #[derive(Clone)]
 struct BtSolveState<'p, C: Clue> {
@@ -103,51 +104,42 @@ impl Ord for Score {
     }
 }
 
-fn nuke_node<'p, 'x, C: Clue, K: GridKind>(
-    coord: &HypoCoord,
-    parent_will_be_cleared: bool,
-    ctx: &mut BtContext<'p, 'x, C, K>,
-) {
-    nuke_descendants(coord, ctx); // first descend...
+fn nuke_node<'p, 'x, C: Clue, K: GridKind>(coord: &HypoCoord, ctx: &mut BtContext<'p, 'x, C, K>) {
+    nuke_descendants(coord, false, ctx); // first descend...
 
-    ctx.q.remove(coord).unwrap(); // ...now it's no longer needed
-    ctx.possibilities.remove(coord).unwrap();
-
-    if !parent_will_be_cleared {
-        // TODO: we should really impl stuff on `HypoCoord`
-        let mut parent_coord = coord.clone();
-        let guess_for_us = parent_coord.guesses.pop().unwrap();
-        assert!(
-            ctx.possibilities
-                .get_mut(&parent_coord)
-                .unwrap()
-                .guesses_explored
-                .remove(&guess_for_us)
-        );
-    }
+    // Because of tombstones (I think ...), these may not be present
+    ctx.q.remove(coord); // ...now it's no longer needed
+    ctx.possibilities.remove(coord);
+    // The parent may still have an entry in `guesses_explored` as a tombstone!
 }
 
 fn nuke_descendants<'p, 'x, C: Clue, K: GridKind>(
     coord: &HypoCoord,
+    keep_tombstones: bool,
     ctx: &mut BtContext<'p, 'x, C, K>,
 ) {
-    let state = &ctx.possibilities[&coord];
-    let guesses_here = state.guesses_explored.clone();
-    for guess in guesses_here {
-        let mut new_coord = coord.clone();
-        new_coord.guesses.push(guess);
+    // Skip tombstones:
+    if let Some(state) = ctx.possibilities.get(&coord) {
+        let guesses_here = state.guesses_explored.clone();
+        for guess in guesses_here {
+            let mut new_coord = coord.clone();
+            new_coord.guesses.push(guess);
 
-        nuke_node(&new_coord, /*parent_will_be_cleared=*/ true, ctx);
+            nuke_node(&new_coord, ctx);
+        }
+
+        if !keep_tombstones {
+            ctx.possibilities
+                .get_mut(coord)
+                .unwrap()
+                .guesses_explored
+                .clear();
+        }
     }
-
-    ctx.possibilities
-        .get_mut(coord)
-        .unwrap()
-        .guesses_explored
-        .clear();
 }
 
 /// Learn that (assuming `coord`) the cell at `cell_idx` is [not] `color`.
+/// When making a guess, `is` must be `true`, and `(cell_idx, color)` should be at the end of `coord`.
 /// Errors on top-level contradiction. (Note that if `.run_and_check` is an error, we pop a guess and recur!)
 /// Returns `None` if the search is still incomplete
 fn suppose<'p, 'x, C: Clue, K: GridKind>(
@@ -159,6 +151,7 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
 ) -> anyhow::Result<Option<BtReport>> {
     let state = ctx.possibilities.get_mut(&coord).unwrap();
 
+    // TODO: rename `guess` to `learn`
     state
         .knowledge
         .guess(&mut ctx.linear_ctx, cell_idx, is, color);
@@ -177,9 +170,9 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                     println!("Assumption {coord:?} wasn't true! So {prev_cell_idx} isn't {color:?}")
                 }
 
-                // Perhaps we instead ought to (lazily?) apply our knowledge to our descendents?
+                // Perhaps we instead ought to (lazily?) apply our knowledge to our sibling's descenents?
                 // ...but they also might not be very valuable any more.
-                nuke_descendants(&higher_coord, ctx);
+                nuke_descendants(&higher_coord, false, ctx);
 
                 return suppose(
                     &higher_coord,
@@ -202,12 +195,16 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                 if coord.guesses.is_empty() {
                     return Ok(Some(UniqueSolution(state.knowledge.report(ctx.puzzle))));
                 }
-                ctx.solutions_found += 1;
-                if ctx.solutions_found > 1 {
-                    return Ok(Some(MultipleSolutions()));
+
+                if let Some(old_solution) = &ctx.solution_found {
+                    if old_solution != &state.knowledge.grid {
+                        return Ok(Some(MultipleSolutions()));
+                    }
+                } else {
+                    ctx.solution_found = Some(state.knowledge.grid.clone())
                 }
 
-                nuke_node(coord, /*parent_will_be_cleared=*/ false, ctx);
+                nuke_node(coord, ctx);
             }
         }
     }
@@ -225,7 +222,7 @@ pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
     possibilities: HashMap<HypoCoord, BtSolveState<'p, C>>,
     linear_ctx: SolveContext<'p, 'x, C, K>,
     puzzle: &'p Puzzle<C, K>,
-    solutions_found: u8,
+    solution_found: Option<PartialSolution>, // though we know it'll be a complete solution
 }
 
 pub fn backtrack_solve<C: Clue, K: GridKind>(
@@ -239,7 +236,7 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
         possibilities: HashMap::default(),
         linear_ctx: SolveContext::new(puzzle, &mut line_cache, options),
         puzzle,
-        solutions_found: 0,
+        solution_found: None,
     };
 
     let mut init_linear_state = SolveState::new(
