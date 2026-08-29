@@ -524,7 +524,7 @@ pub struct SolveContext<'p, 'x, C: Clue, K: GridKind> {
 impl<'p, C: Clue, K: GridKind> SolveContext<'p, '_, C, K> {
     /// Borrowing the puzzle separately from everything else is what lets a `SolveState` hold
     /// clue references (`'p`) that outlive any particular borrow of the line cache.
-    fn lane_map(&self) -> &'p LaneMap {
+    pub fn lane_map(&self) -> &'p LaneMap {
         self.puzzle.geometry.lane_map()
     }
 }
@@ -663,7 +663,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     ) -> anyhow::Result<Step> {
         let res = self.run(ctx)?;
         if res == Step::Solved {
-            validate_lines(ctx.puzzle, &self.grid)?
+            verify_lines(ctx.puzzle, &self.grid)?
             // TODO: could we safely use the invalidation bits to make this faster?
         }
 
@@ -981,7 +981,7 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
 }
 
 /// Check that a solution is consistent
-pub fn validate_lines<C: Clue, K: GridKind>(
+pub fn verify_lines<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
 ) -> anyhow::Result<()> {

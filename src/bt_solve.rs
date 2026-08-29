@@ -19,6 +19,19 @@ struct HypoCoord {
 }
 // TODO: we should really impl push/pop on `HypoCoord`
 
+pub enum BtReport {
+    MultipleSolutions(), // TODO: provide *some* information
+    UniqueSolution(Report),
+}
+
+pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
+    q: PriorityQueue<HypoCoord, std::cmp::Reverse<Score>>,
+    possibilities: HashMap<HypoCoord, BtSolveState<'p, C>>,
+    linear_ctx: SolveContext<'p, 'x, C, K>,
+    puzzle: &'p Puzzle<C, K>,
+    solution_found: Option<PartialSolution>, // though we know it'll be a complete solution
+}
+
 #[derive(Clone)]
 struct BtSolveState<'p, C: Clue> {
     knowledge: SolveState<'p, C>,
@@ -57,17 +70,25 @@ impl<'p, C: Clue> BtSolveState<'p, C> {
 
 trait GuessPicker {
     /// Score guesses against each other. Note that this is totally different than *node* scores!
-    fn rate<'p, C: Clue, K: GridKind>(state: &BtSolveState<'p, C>, guess: (usize, Color)) -> Score;
+    fn rate<'p, 'x, C: Clue, K: GridKind>(
+        state: &BtSolveState<'p, C>,
+        linear_ctx: &SolveContext<'p, 'x, C, K>,
+        guess: (usize, Color),
+    ) -> Score;
 
     /// Pick the lowest-scoring choice that's a valid guess
-    fn pick<'p, C: Clue, K: GridKind>(state: &BtSolveState<'p, C>) -> Option<(usize, Color)> {
+    fn pick<'p, 'x, C: Clue, K: GridKind>(
+        state: &BtSolveState<'p, C>,
+        linear_ctx: &SolveContext<'p, 'x, C, K>,
+    ) -> Option<(usize, Color)> {
         let idxed_cells = state.knowledge.grid.iter().enumerate();
         let uncertain_cells = idxed_cells.filter(|(_, cell)| !cell.is_known());
         let options = uncertain_cells
             .flat_map(|(idx, cell)| cell.can_be_iter().map(move |color| (idx, color)));
         let unused_options = options.filter(|guess| !state.guesses_explored.contains(guess));
-        let mut ranked = unused_options
-            .sorted_by_cached_key(|(idx, color)| Self::rate::<C, K>(state, (*idx, *color)));
+        let mut ranked = unused_options.sorted_by_cached_key(|(idx, color)| {
+            Self::rate::<C, K>(state, linear_ctx, (*idx, *color))
+        });
         ranked.next()
     }
 }
@@ -75,21 +96,38 @@ trait GuessPicker {
 struct First;
 
 impl GuessPicker for First {
-    fn rate<'p, C: Clue, K: GridKind>(_: &BtSolveState<'p, C>, _: (usize, Color)) -> Score {
+    fn rate<'p, 'x, C: Clue, K: GridKind>(
+        _: &BtSolveState<'p, C>,
+        _: &SolveContext<'p, 'x, C, K>,
+        _: (usize, Color),
+    ) -> Score {
         Score(0.0)
     }
 }
 
-// struct Edge;
+/// Well, this one seems better, but performs worse.
+#[allow(dead_code)]
+struct Edge;
 
-// impl GuessPicker for Edge {
-//     fn rate<'p, C: Clue, K: GridKind>(
-//         state: &BtSolveState<'p, C>,
-//         (idx, col): (usize, Color),
-//     ) -> Score {
-//         todo!()
-//     }
-// }
+impl GuessPicker for Edge {
+    fn rate<'p, 'x, C: Clue, K: GridKind>(
+        _: &BtSolveState<'p, C>,
+        linear_ctx: &SolveContext<'p, 'x, C, K>,
+        (idx, _): (usize, Color),
+    ) -> Score {
+        let mut dists = vec![];
+        for lane in linear_ctx.lane_map().lanes() {
+            for (idx_in_lane, cell_idx) in lane.cells.iter().enumerate() {
+                if *cell_idx as usize != idx {
+                    continue;
+                }
+                dists.push(idx_in_lane.min(lane.cells.len() - (idx_in_lane + 1)))
+            }
+        }
+        dists.sort();
+        Score(dists[0] as f32 + dists[1] as f32 * 0.1)
+    }
+}
 
 /// Lower is better! This is used both to score nodes (`score_at`) and to score possible guesses inside nodes (`rate`)!
 #[derive(PartialEq, PartialOrd, Debug)]
@@ -215,19 +253,6 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     Ok(None)
 }
 
-pub enum BtReport {
-    MultipleSolutions(), // TODO: provide *some* information
-    UniqueSolution(Report),
-}
-
-pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
-    q: PriorityQueue<HypoCoord, std::cmp::Reverse<Score>>,
-    possibilities: HashMap<HypoCoord, BtSolveState<'p, C>>,
-    linear_ctx: SolveContext<'p, 'x, C, K>,
-    puzzle: &'p Puzzle<C, K>,
-    solution_found: Option<PartialSolution>, // though we know it'll be a complete solution
-}
-
 pub fn backtrack_solve<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     options: &SolveOptions,
@@ -272,7 +297,7 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
         let state = ctx.possibilities.get_mut(&coord).unwrap();
 
         // TODO: only scoring protects this unwrap from crashing:
-        let (cell_idx, color) = First::pick::<C, K>(state).unwrap();
+        let (cell_idx, color) = First::pick::<C, K>(state, &ctx.linear_ctx).unwrap();
 
         ctx.q.push(coord.clone(), state.score_at(&coord));
 
