@@ -4,6 +4,7 @@
 ### Added
  - Annotation tool during solve to help count out lines. (Use "A" or shift-drag to activate it.)
  - There are now keyboard shortcuts for tools. Scrollwheel selects colors, and middle-drag pans the canvas.
+ - There is now a backtracking solver, for non-line-logic nonograms
 ### Changed
  - Triddler sizes are now shown in griddlers.net's notation ("(5+3)x(6+2)" — the lengths of four
     of the outline's six sides, which imply the other two) instead of three lane counts

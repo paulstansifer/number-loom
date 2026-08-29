@@ -10,6 +10,10 @@
 //! excludes parsing the file. Comparing whole-process wall clock instead would drown a
 //! microsecond-scale line solve in a millisecond of process startup — `--verbose` shows those
 //! numbers anyway, as a sanity check that the two clocks tell the same story.
+//!
+//! `--mode backtrack` benchmarks a smaller set than `--mode line` does: puzzles line logic
+//! finishes by itself never reach the backtracker's guessing, and the handful in `TOO_DIFFICULT`
+//! only ever spend `--loom-timeout` and report that they did. See `for_backtracking`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -83,6 +87,11 @@ struct Args {
     /// measures the solver as shipped.
     #[arg(long)]
     picker: Option<PickerMix>,
+
+    /// In backtrack mode, benchmark the puzzles in `TOO_DIFFICULT` as well. Off by default: each
+    /// of them costs a full `--loom-timeout` and reports nothing but that it ran out.
+    #[arg(long)]
+    include_difficult: bool,
 
     /// Not for humans: solve one puzzle with `backtrack_solve` and print a line of counters. The
     /// benchmark re-runs itself this way to bound a search it can't otherwise interrupt.
@@ -598,6 +607,82 @@ fn is_puzzle_file(path: &Path) -> bool {
     )
 }
 
+/// Puzzles our backtracker cannot finish in any sensible amount of time yet. Backtrack mode leaves
+/// them out unless `--include-difficult` asks for them; line mode runs them like anything else.
+/// Each pattern is matched against the end of the file stem, so `-09892` catches `webpbn-09892`
+/// without also catching a hypothetical `webpbn-color-09892`.
+const TOO_DIFFICULT: &[&str] = &[
+    "faase",
+    "knotty",
+    "meow",
+    "-09892",
+    "-10088",
+    "-12548",
+    "-18297",
+    "-color-00672",
+    "-color-03620",
+];
+
+fn is_too_difficult(path: &Path) -> bool {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    TOO_DIFFICULT.iter().any(|hard| stem.ends_with(hard))
+}
+
+/// Whether line logic alone finishes the puzzle. A puzzle that won't even load counts as "no", so
+/// that `bench_one` gets to reach it and report why it wouldn't.
+fn solvable_by_line_logic(path: &Path) -> bool {
+    let Ok(mut document) = import::load_path(&path.to_path_buf(), None) else {
+        return false;
+    };
+    document
+        .puzzle()
+        .solve(/*backtrack=*/ false, &SolveOptions::default())
+        .is_ok_and(|report| report.cells_left == 0)
+}
+
+/// Narrows the puzzle list down to the ones with a search worth timing, and says on stderr what it
+/// dropped. Line logic finishing a puzzle on its own means the backtracker never guesses at all,
+/// so timing one measures line logic a second time and pulls the summary toward puzzles that
+/// aren't what backtrack mode is asking about. (Both solvers agree on which eight of
+/// `examples/wolter` those are, so the test costs a line solve rather than a hardcoded list.)
+fn for_backtracking(puzzles: &[PathBuf], include_difficult: bool) -> Vec<PathBuf> {
+    let mut kept = vec![];
+    let mut line_only = vec![];
+    let mut difficult = vec![];
+
+    for path in puzzles {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        // Checked before the line solve, since these are the slow ones to load and skim.
+        if !include_difficult && is_too_difficult(path) {
+            difficult.push(name);
+        } else if solvable_by_line_logic(path) {
+            line_only.push(name);
+        } else {
+            kept.push(path.clone());
+        }
+    }
+
+    if !line_only.is_empty() {
+        eprintln!(
+            "skipping {} line-logic-only puzzle(s): {}",
+            line_only.len(),
+            line_only.join(" ")
+        );
+    }
+    if !difficult.is_empty() {
+        eprintln!(
+            "skipping {} puzzle(s) too hard for the backtracker (--include-difficult keeps them): {}",
+            difficult.len(),
+            difficult.join(" ")
+        );
+    }
+    kept
+}
+
 /// `pbnsolve` reads webpbn XML, so anything else has to be converted first. Returns the path to
 /// feed it, and the temp file keeping that path alive, if we made one.
 fn webpbn_path_for(
@@ -630,7 +715,13 @@ fn main() -> anyhow::Result<()> {
     let algorithm = args.algorithm();
     let reps = args.reps();
 
-    let puzzles = collect_puzzles(&args.puzzles)?;
+    let mut puzzles = collect_puzzles(&args.puzzles)?;
+    if args.mode == Mode::Backtrack {
+        puzzles = for_backtracking(&puzzles, args.include_difficult);
+        if puzzles.is_empty() {
+            bail!("every puzzle named was excluded from backtrack mode");
+        }
+    }
     let temp_dir = std::env::temp_dir().join(format!("number-loom-bench-{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir)?;
 
@@ -1106,6 +1197,64 @@ examples/wolter/knotty.xml:2: I/O warning : failed to load external entity \"htt
             complaint(&refusal).as_deref(),
             Some("Haven't implemented this yet!")
         );
+    }
+
+    #[test]
+    fn the_difficult_list_matches_whole_puzzle_names() {
+        assert!(is_too_difficult(Path::new("examples/wolter/knotty.xml")));
+        assert!(is_too_difficult(Path::new(
+            "examples/wolter/webpbn-09892.xml"
+        )));
+        assert!(is_too_difficult(Path::new(
+            "examples/wolter/webpbn-color-00672.xml"
+        )));
+
+        assert!(!is_too_difficult(Path::new("examples/wolter/meow-two.xml")));
+        assert!(!is_too_difficult(Path::new(
+            "examples/wolter/webpbn-00672.xml"
+        )));
+        assert!(!is_too_difficult(Path::new(
+            "examples/wolter/webpbn-22336.xml"
+        )));
+    }
+
+    /// The eight puzzles both solvers finish with line logic alone, and one they don't, so that a
+    /// line solver that quietly stopped finishing them would be noticed here.
+    #[test]
+    fn line_logic_only_puzzles_are_recognized() {
+        for name in [
+            "webpbn-00001",
+            "webpbn-00006",
+            "webpbn-00016",
+            "webpbn-00021",
+            "webpbn-00529",
+            "webpbn-07604",
+            "webpbn-color-00047",
+            "webpbn-color-00220",
+        ] {
+            let path = PathBuf::from(format!("examples/wolter/{name}.xml"));
+            assert!(solvable_by_line_logic(&path), "{name} should be line-only");
+        }
+        assert!(!solvable_by_line_logic(Path::new(
+            "examples/wolter/webpbn-00023.xml"
+        )));
+    }
+
+    #[test]
+    fn backtrack_mode_drops_the_line_only_and_the_difficult() {
+        let puzzles = collect_puzzles(&[PathBuf::from("examples/wolter")]).unwrap();
+
+        let kept = for_backtracking(&puzzles, /*include_difficult=*/ false);
+        assert_eq!(kept.len(), puzzles.len() - 8 - 9);
+        assert!(!kept.iter().any(|p| p.ends_with("webpbn-00001.xml")));
+        assert!(!kept.iter().any(|p| p.ends_with("knotty.xml")));
+        assert!(kept.iter().any(|p| p.ends_with("webpbn-00023.xml")));
+
+        // `--include-difficult` puts back the nine, and only the nine.
+        let with_hard = for_backtracking(&puzzles, /*include_difficult=*/ true);
+        assert_eq!(with_hard.len(), kept.len() + 9);
+        assert!(with_hard.iter().any(|p| p.ends_with("knotty.xml")));
+        assert!(!with_hard.iter().any(|p| p.ends_with("webpbn-00001.xml")));
     }
 
     #[test]
