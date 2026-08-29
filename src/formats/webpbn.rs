@@ -2,7 +2,10 @@ use anyhow::{Context, bail};
 use std::collections::HashMap;
 
 use crate::geometry::{ClueSet, ClueSetCounts, GridKind, Outline, Shape, Tri};
-use crate::puzzle::{BACKGROUND, Color, ColorInfo, Document, DynPuzzle, Nono, Puzzle};
+use crate::puzzle::{
+    BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynPuzzle, DynSolution, Nono, Puzzle,
+    Solution,
+};
 
 fn get_children<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
@@ -86,6 +89,46 @@ fn triddler_puzzle(
     Ok(Puzzle::triangular(palette, outline, lines))
 }
 
+/// Parses a `<solution><image>` body into cell colors, in dense (row-major) order.
+///
+/// Grid puzzles delimit each row with `|`; triddlers delimit each row with `/` or `\`, chosen
+/// per-row to match the slope of that row's ends (see `webpbn_tridder.md`). We don't need to
+/// know which delimiter means what, though: treating all three characters as row boundaries and
+/// keeping only the non-blank segments between them recovers the rows in top-to-bottom order
+/// either way, and rows read left-to-right — the same order `Geometry`'s dense numbering uses.
+fn parse_solution_image(
+    text: &str,
+    ch_to_color: &HashMap<char, Color>,
+) -> anyhow::Result<Vec<Color>> {
+    let mut cells = vec![];
+    for row in text.split(['|', '/', '\\']) {
+        if row.trim().is_empty() {
+            continue;
+        }
+        for ch in row.chars() {
+            let color = ch_to_color
+                .get(&ch)
+                .with_context(|| format!("solution image uses undefined color char: {ch}"))?;
+            cells.push(*color);
+        }
+    }
+    Ok(cells)
+}
+
+fn solution_from_image<K: GridKind>(
+    palette: HashMap<Color, ColorInfo>,
+    geometry: crate::geometry::Geometry<K>,
+    cells: Vec<Color>,
+) -> anyhow::Result<Solution<K>> {
+    anyhow::ensure!(
+        cells.len() == geometry.cell_count(),
+        "solution image has {} cells but the puzzle has {}",
+        cells.len(),
+        geometry.cell_count()
+    );
+    Ok(Solution::new(ClueStyle::Nono, palette, geometry, cells))
+}
+
 pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
     // Wolter's sample puzzles all declare `<!DOCTYPE pbn SYSTEM "http://webpbn.com/pbn-0.3.dtd">`,
     // which roxmltree rejects unless asked otherwise. It still won't fetch external entities, so
@@ -117,12 +160,16 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
     let mut next_color_index = 1;
 
     let mut named_colors = HashMap::<String, Color>::new();
+    let mut ch_to_color = HashMap::<char, Color>::new();
 
     let mut palette = HashMap::<Color, ColorInfo>::new();
     let mut rows: Vec<Vec<Nono>> = vec![];
     let mut cols: Vec<Vec<Nono>> = vec![];
     // Triddlers split each of their three clue directions across two `<clues>` sets.
     let mut triddler_clues: HashMap<ClueSet, Vec<Vec<Nono>>> = HashMap::new();
+    // The `<solution type="goal">` image, if the file bothered to include one — a puzzle that
+    // isn't line-solvable has no other way for us to learn its answer.
+    let mut goal_solution: Option<Vec<Color>> = None;
 
     let triddler = match puzzle_node.attribute("type") {
         None | Some("grid") => false,
@@ -178,14 +225,16 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
             let g = u8::from_str_radix(g, 16).context("expected hex digits")?;
             let b = u8::from_str_radix(b, 16).context("expected hex digits")?;
 
+            let ch = puzzle_part
+                .attribute("char")
+                .context("color element missing 'char' attribute")?
+                .chars()
+                .next()
+                .context("'char' attribute is empty")?;
+
             let color_info = ColorInfo {
                 // TODO: error if there's more than one char!
-                ch: puzzle_part
-                    .attribute("char")
-                    .context("color element missing 'char' attribute")?
-                    .chars()
-                    .next()
-                    .context("'char' attribute is empty")?,
+                ch,
                 name: color_name.to_string(),
                 rgb: (r, g, b),
                 color,
@@ -194,6 +243,7 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
 
             palette.insert(color, color_info);
             named_colors.insert(color_name.to_string(), color);
+            ch_to_color.insert(ch, color);
         } else if tag_name == "clues" {
             let clue_type = puzzle_part.attribute("type").unwrap_or_default();
             let clue_set = match (triddler, clue_type) {
@@ -235,18 +285,42 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
                 None if clue_type == "rows" => rows = clue_lanes,
                 None => cols = clue_lanes,
             }
+        } else if tag_name == "solution" {
+            // webpbn also allows `type="saved"`/`"solution"` for user snapshots; only the
+            // designer's intended answer is any use to us.
+            let solution_type = puzzle_part.attribute("type").unwrap_or("goal");
+            if solution_type == "goal" {
+                let image = find_first_child(puzzle_part, "image")?;
+                let text: String = image
+                    .children()
+                    .filter(|n| n.is_text())
+                    .filter_map(|n| n.text())
+                    .collect::<Vec<_>>()
+                    .join("");
+                goal_solution = Some(parse_solution_image(&text, &ch_to_color)?);
+            }
         }
     }
 
-    let puzzle: DynPuzzle = if triddler {
-        triddler_puzzle(palette, &triddler_clues)?.into()
+    let (puzzle, solution): (DynPuzzle, Option<DynSolution>) = if triddler {
+        let p = triddler_puzzle(palette.clone(), &triddler_clues)?;
+        let solution = goal_solution
+            .map(|cells| solution_from_image(palette, p.geometry.clone(), cells))
+            .transpose()?
+            .map(DynSolution::Tri);
+        (p.into(), solution)
     } else {
-        Puzzle::square(palette, rows, cols).into()
+        let p = Puzzle::square(palette.clone(), rows, cols);
+        let solution = goal_solution
+            .map(|cells| solution_from_image(palette, p.geometry.clone(), cells))
+            .transpose()?
+            .map(DynSolution::Square);
+        (p.into(), solution)
     };
 
     Ok(Document::new(
         Some(puzzle),
-        None,
+        solution,
         "".to_string(),
         title,
         description,
@@ -536,6 +610,50 @@ mod tests {
     fn a_file_in_webpbn_house_style_solves() {
         let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
         assert_eq!(doc.puzzle().plain_solve().unwrap().cells_left, 0);
+    }
+
+    /// A 2x2 grid where every clue is a lone `1` — line logic alone can't place any of them
+    /// (each line just knows "one cell somewhere in two"), but the diagonal solution is unique
+    /// among the two the clues alone allow, so a file that bothers to include `<solution>` should
+    /// still load as fully solved.
+    const AMBIGUOUS_WITH_SOLUTION: &str = r#"<?xml version="1.0"?>
+        <puzzleset>
+        <puzzle type="grid" backgroundcolor="white" defaultcolor="black">
+        <color name="white" char=".">FFFFFF</color>
+        <color name="black" char="X">000000</color>
+        <clues type="columns">
+        <line><count>1</count></line>
+        <line><count>1</count></line>
+        </clues>
+        <clues type="rows">
+        <line><count>1</count></line>
+        <line><count>1</count></line>
+        </clues>
+        <solution type="goal">
+        <image>
+        |X.|
+        |.X|
+        </image>
+        </solution>
+        </puzzle></puzzleset>"#;
+
+    #[test]
+    fn line_logic_alone_cannot_solve_the_ambiguous_fixture() {
+        let mut doc = webpbn_to_document(AMBIGUOUS_WITH_SOLUTION).unwrap();
+        assert!(doc.puzzle().plain_solve().unwrap().cells_left > 0);
+    }
+
+    #[test]
+    fn reads_the_embedded_solution_for_a_puzzle_line_logic_cant_finish() {
+        let mut doc = webpbn_to_document(AMBIGUOUS_WITH_SOLUTION).unwrap();
+        assert!(doc.has_complete_solution().unwrap());
+
+        let solution = doc.solution().unwrap().as_square().unwrap();
+        let black = palette_color(&solution.palette, "black");
+        assert_eq!(solution.get((0, 0)), Some(black));
+        assert_eq!(solution.get((1, 0)), Some(BACKGROUND));
+        assert_eq!(solution.get((0, 1)), Some(BACKGROUND));
+        assert_eq!(solution.get((1, 1)), Some(black));
     }
 
     fn palette_color(palette: &HashMap<Color, ColorInfo>, name: &str) -> Color {
