@@ -668,11 +668,8 @@ mod tests {
     /// called "white". The background has to survive a round trip anyway.
     #[test]
     fn an_oddly_named_background_survives_a_round_trip() {
-        let solution = crate::import::char_grid_to_solution("##\n#.");
-        let mut document = crate::puzzle::Document::from_solution(
-            crate::puzzle::DynSolution::Square(solution),
-            "t.txt".to_string(),
-        );
+        let solution = crate::import::char_grid_to_solution("##\n#.").unwrap();
+        let mut document = crate::puzzle::Document::from_solution(solution, "t.txt".to_string());
         let original_bg_name = document.puzzle().palette()[&BACKGROUND].name.clone();
 
         let serialized = as_webpbn(&document);
@@ -694,11 +691,8 @@ mod tests {
 
     #[test]
     fn a_square_puzzle_still_says_grid() {
-        let doc = crate::import::char_grid_to_solution("##\n#.");
-        let document = crate::puzzle::Document::from_solution(
-            crate::puzzle::DynSolution::Square(doc),
-            "t.txt".to_string(),
-        );
+        let doc = crate::import::char_grid_to_solution("##\n#.").unwrap();
+        let document = crate::puzzle::Document::from_solution(doc, "t.txt".to_string());
         assert!(as_webpbn(&document).contains(r#"type="grid""#));
     }
 }
