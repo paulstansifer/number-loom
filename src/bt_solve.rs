@@ -60,7 +60,7 @@ trait GuessPicker {
     fn rate<'p, C: Clue, K: GridKind>(state: &BtSolveState<'p, C>, guess: (usize, Color)) -> Score;
 
     /// Pick the lowest-scoring choice that's a valid guess
-    fn pick<'p, C: Clue, K: GridKind>(state: &BtSolveState<'p, C>) -> (usize, Color) {
+    fn pick<'p, C: Clue, K: GridKind>(state: &BtSolveState<'p, C>) -> Option<(usize, Color)> {
         let idxed_cells = state.knowledge.grid.iter().enumerate();
         let uncertain_cells = idxed_cells.filter(|(_, cell)| !cell.is_known());
         let options = uncertain_cells
@@ -68,10 +68,7 @@ trait GuessPicker {
         let unused_options = options.filter(|guess| !state.guesses_explored.contains(guess));
         let mut ranked = unused_options
             .sorted_by_cached_key(|(idx, color)| Self::rate::<C, K>(state, (*idx, *color)));
-        let res = ranked
-            .next()
-            .expect("A node with no unsolved cells shouldn't be examined!");
-        res
+        ranked.next()
     }
 }
 
@@ -160,7 +157,11 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     let run_consequence = state.knowledge.run_and_check(&mut ctx.linear_ctx);
 
     if ctx.linear_ctx.options.trace_backtrack {
-        println!("Rescoring {coord:?} to {:?}", state.score_at(coord));
+        println!(
+            "Rescoring {coord:?} to {:?}. Q len {}",
+            state.score_at(coord),
+            ctx.q.len()
+        );
     }
     ctx.q.change_priority(coord, state.score_at(coord)); // Did all that learning make this node look better?
 
@@ -233,10 +234,14 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
 ) -> anyhow::Result<BtReport> {
     let mut line_cache: Option<LineCache<C>> = Some(LineCache::new());
 
+    let options = SolveOptions {
+        display_cli_progress: false,
+        ..options.clone()
+    };
     let mut ctx = BtContext {
         q: PriorityQueue::new(),
         possibilities: HashMap::default(),
-        linear_ctx: SolveContext::new(puzzle, &mut line_cache, options),
+        linear_ctx: SolveContext::new(puzzle, &mut line_cache, &options),
         puzzle,
         solution_found: None,
     };
@@ -263,9 +268,13 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
         },
     );
 
-    while let Some((coord, _score)) = ctx.q.peek() {
+    while let Some((coord, _score)) = ctx.q.pop() {
         let state = ctx.possibilities.get_mut(&coord).unwrap();
-        let (cell_idx, color) = First::pick::<C, K>(state);
+
+        // TODO: only scoring protects this unwrap from crashing:
+        let (cell_idx, color) = First::pick::<C, K>(state).unwrap();
+
+        ctx.q.push(coord.clone(), state.score_at(&coord));
 
         let (new_coord, new_state) = state.fork(&coord, (cell_idx, color));
 

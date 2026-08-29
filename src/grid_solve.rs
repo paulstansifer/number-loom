@@ -16,6 +16,7 @@ use crate::{
     },
 };
 
+#[derive(Clone)]
 pub struct SolveOptions {
     /// Trace each line-logic step (a lane attempted, what it learned).
     pub trace_solve: bool,
