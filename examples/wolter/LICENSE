@@ -1,1 +1,6 @@
 The authors of the puzzles in this directory have granted permission for their puzzles to be distributed for benchmarking purposes. Jan Wolter didn't request a specific license, so I won't reublish these for puzzle-solving enjoyment; you'll have to go to webpbn.com for that.
+
+To get the complete set of files, `cd` to this directory, and do
+
+ $ wget https://webpbn.com/survey/puzzles/sample-wolter.tgz .
+ $ tar xzf  sample-wolter.tgz --strip-components=1
