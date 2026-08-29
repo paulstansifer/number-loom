@@ -23,6 +23,9 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     import.rs, export.rs - support for various file formats
     line_solve.rs - quick ("skim") and exhaustive ("scrub") line-logic implementation
     grid_solve.rs - uses repeated line-logic to solve a puzzle
+    bt_solve.rs - backtracking search
+    bt_solve/
+      pickers.rs - how to decide where to guess
     geometry.rs - puzzle shapes: what cells exist, what lines they form, where they sit
     layout.rs - abstract drawing geometry (cell shapes, positions, grid lines, clue gutters)
     puzzle.rs - data structures

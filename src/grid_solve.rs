@@ -25,6 +25,9 @@ pub struct SolveOptions {
     pub display_cli_progress: bool,
     pub only_solve_color: Option<Color>,
     pub max_effort: SolveMode,
+    /// How `bt_solve` decides where to guess, and in what rotation. Ignored by line logic,
+    /// which never guesses.
+    pub guess_picker: crate::bt_solve::PickerMix,
 }
 
 impl Default for SolveOptions {
@@ -35,6 +38,7 @@ impl Default for SolveOptions {
             display_cli_progress: false,
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
+            guess_picker: crate::bt_solve::PickerMix::default(),
         }
     }
 }

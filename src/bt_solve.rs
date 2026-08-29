@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
-use itertools::Itertools;
 use priority_queue::PriorityQueue;
 
 use crate::{
@@ -11,6 +10,11 @@ use crate::{
     line_solve::Cell,
     puzzle::{Clue, Color, PartialSolution, Puzzle},
 };
+
+mod pickers;
+
+use pickers::pick_guess;
+pub use pickers::{PickerKind, PickerMix};
 
 /// A coordinate into the tree of hypotheticals (a stack of assumptions)
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -42,11 +46,33 @@ impl<'p, C: Clue> BtSolveState<'p, C> {
     /// How much is a node worth searching. Strong penalty for hypothetical depth:
     /// the goal is to prove a unique solution if possible, and that requires facts
     /// to filter down to "ground level"
-    fn score_at(&self, coord: &HypoCoord) -> std::cmp::Reverse<Score> {
+    ///
+    /// `solution_found` is the solution the search has already turned up, if it has: a node
+    /// whose first guess agrees with it is on its way to rediscovering it, and rediscovering it
+    /// settles nothing. What's wanted is a *second* solution, or the proof that there isn't one.
+    fn score_at(
+        &self,
+        coord: &HypoCoord,
+        solution_found: Option<&PartialSolution>,
+    ) -> std::cmp::Reverse<Score> {
         let distance_remaining = self.knowledge.cells_left as f32;
-        let depth = 5.0 * 2.0_f32.powi(coord.guesses.len() as i32);
+
+        // Doubling per level, but only down to depth 5 — past there every node is buried anyway,
+        // and what's left to do is order them, which a gentle slope does as well as a cliff.
+        let levels = coord.guesses.len();
+        let depth = 5.0 * 2.0_f32.powi(levels.min(5) as i32)
+            + if levels > 5 { levels as f32 * 5.0 } else { 0.0 };
+
+        let rediscovery = match (solution_found, coord.guesses.first()) {
+            (Some(solution), Some((cell_idx, color))) if solution[*cell_idx].can_be(*color) => {
+                500.0
+            }
+            _ => 0.0,
+        };
+
         let exhaustion = self.guesses_explored.len() as f32 * 3.0;
-        std::cmp::Reverse(Score(distance_remaining + depth + exhaustion))
+
+        std::cmp::Reverse(Score(distance_remaining + depth + rediscovery + exhaustion))
     }
 
     fn fork(
@@ -68,68 +94,8 @@ impl<'p, C: Clue> BtSolveState<'p, C> {
     }
 }
 
-trait GuessPicker {
-    /// Score guesses against each other. Note that this is totally different than *node* scores!
-    fn rate<'p, 'x, C: Clue, K: GridKind>(
-        state: &BtSolveState<'p, C>,
-        linear_ctx: &SolveContext<'p, 'x, C, K>,
-        guess: (usize, Color),
-    ) -> Score;
-
-    /// Pick the lowest-scoring choice that's a valid guess
-    fn pick<'p, 'x, C: Clue, K: GridKind>(
-        state: &BtSolveState<'p, C>,
-        linear_ctx: &SolveContext<'p, 'x, C, K>,
-    ) -> Option<(usize, Color)> {
-        let idxed_cells = state.knowledge.grid.iter().enumerate();
-        let uncertain_cells = idxed_cells.filter(|(_, cell)| !cell.is_known());
-        let options = uncertain_cells
-            .flat_map(|(idx, cell)| cell.can_be_iter().map(move |color| (idx, color)));
-        let unused_options = options.filter(|guess| !state.guesses_explored.contains(guess));
-        let mut ranked = unused_options.sorted_by_cached_key(|(idx, color)| {
-            Self::rate::<C, K>(state, linear_ctx, (*idx, *color))
-        });
-        ranked.next()
-    }
-}
-
-struct First;
-
-impl GuessPicker for First {
-    fn rate<'p, 'x, C: Clue, K: GridKind>(
-        _: &BtSolveState<'p, C>,
-        _: &SolveContext<'p, 'x, C, K>,
-        _: (usize, Color),
-    ) -> Score {
-        Score(0.0)
-    }
-}
-
-/// Well, this one seems better, but performs worse.
-#[allow(dead_code)]
-struct Edge;
-
-impl GuessPicker for Edge {
-    fn rate<'p, 'x, C: Clue, K: GridKind>(
-        _: &BtSolveState<'p, C>,
-        linear_ctx: &SolveContext<'p, 'x, C, K>,
-        (idx, _): (usize, Color),
-    ) -> Score {
-        let mut dists = vec![];
-        for lane in linear_ctx.lane_map().lanes() {
-            for (idx_in_lane, cell_idx) in lane.cells.iter().enumerate() {
-                if *cell_idx as usize != idx {
-                    continue;
-                }
-                dists.push(idx_in_lane.min(lane.cells.len() - (idx_in_lane + 1)))
-            }
-        }
-        dists.sort();
-        Score(dists[0] as f32 + dists[1] as f32 * 0.1)
-    }
-}
-
-/// Lower is better! This is used both to score nodes (`score_at`) and to score possible guesses inside nodes (`rate`)!
+/// Lower is better! This is used both to score nodes (`score_at`) and to score possible guesses
+/// inside nodes (`pickers::GuessPicker::rate`)!
 #[derive(PartialEq, PartialOrd, Debug)]
 struct Score(f32);
 
@@ -197,11 +163,13 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     if ctx.linear_ctx.options.trace_backtrack {
         println!(
             "Rescoring {coord:?} to {:?}. Q len {}",
-            state.score_at(coord),
+            state.score_at(coord, ctx.solution_found.as_ref()),
             ctx.q.len()
         );
     }
-    ctx.q.change_priority(coord, state.score_at(coord)); // Did all that learning make this node look better?
+    // Did all that learning make this node look better?
+    ctx.q
+        .change_priority(coord, state.score_at(coord, ctx.solution_found.as_ref()));
 
     match run_consequence {
         Err(e) => {
@@ -293,13 +261,22 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
         },
     );
 
+    // Counts guesses rather than nodes, so a mixed `PickerMix` rotates one picker per guess.
+    let mut guesses_made = 0;
+
     while let Some((coord, _score)) = ctx.q.pop() {
         let state = ctx.possibilities.get_mut(&coord).unwrap();
 
-        // TODO: only scoring protects this unwrap from crashing:
-        let (cell_idx, color) = First::pick::<C, K>(state, &ctx.linear_ctx).unwrap();
+        let kind = ctx.linear_ctx.options.guess_picker.for_guess(guesses_made);
+        guesses_made += 1;
 
-        ctx.q.push(coord.clone(), state.score_at(&coord));
+        // TODO: only scoring protects this unwrap from crashing:
+        let (cell_idx, color) = pick_guess(kind, state, &ctx.linear_ctx).unwrap();
+
+        ctx.q.push(
+            coord.clone(),
+            state.score_at(&coord, ctx.solution_found.as_ref()),
+        );
 
         let (new_coord, new_state) = state.fork(&coord, (cell_idx, color));
 
@@ -308,8 +285,10 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
         }
 
         // `suppose` expects to find `new_state` at `new_coord`
-        ctx.q
-            .push(new_coord.clone(), new_state.score_at(&new_coord));
+        ctx.q.push(
+            new_coord.clone(),
+            new_state.score_at(&new_coord, ctx.solution_found.as_ref()),
+        );
         ctx.possibilities.insert(new_coord.clone(), new_state);
 
         let sup_res = suppose(&new_coord, cell_idx, /*is=*/ true, color, &mut ctx)?;
@@ -417,6 +396,28 @@ mod tests {
             .collect()
     }
 
+    /// A mixed rotation has to solve puzzles too — including one deep enough that the rotation
+    /// actually turns over.
+    #[test]
+    fn a_mixed_rotation_solves_a_puzzle() {
+        let want = [
+            "...##..", ".#.#...", "##..##.", "..##.##", "##.....", "#..#..#", ".##.#.#",
+        ];
+        let puzzle = solution_to_puzzle(&picture(&want));
+
+        let options = SolveOptions {
+            guess_picker: "disagreement:3,random:1".parse().unwrap(),
+            ..SolveOptions::default()
+        };
+        match backtrack_solve(&puzzle, &options).unwrap() {
+            UniqueSolution(report) => {
+                assert_eq!(report.cells_left, 0);
+                assert_eq!(rendered(&report, 7), want);
+            }
+            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
+        }
+    }
+
     /// A hollow box: line logic alone finishes it, so the search should never start.
     #[test]
     fn a_line_solvable_puzzle_needs_no_search() {
@@ -449,14 +450,19 @@ mod tests {
         .unwrap();
         assert_eq!(line_only.cells_left, 18); // Line logic stalled!
 
-        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
-            UniqueSolution(report) => {
-                assert_eq!(report.cells_left, 0);
-                assert_eq!(rendered(&report, 5), want);
+        for picker in PickerKind::ALL {
+            let options = SolveOptions {
+                guess_picker: PickerMix::single(picker),
+                ..SolveOptions::default()
+            };
+            match backtrack_solve(&puzzle, &options).unwrap() {
+                UniqueSolution(report) => {
+                    assert_eq!(report.cells_left, 0, "{picker:?}");
+                    assert_eq!(rendered(&report, 5), want, "{picker:?}");
+                }
+                MultipleSolutions() => panic!("this puzzle has exactly one solution ({picker:?})"),
             }
-            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
         }
-        // TODO: Plumb a choice of guessing algorithm in and try both first guesses!
     }
 
     /// Bigger, and stalled harder: line logic gets 17 of 49 cells and the rest have to be
@@ -479,12 +485,18 @@ mod tests {
         .unwrap();
         assert_eq!(line_only.cells_left, 32);
 
-        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
-            UniqueSolution(report) => {
-                assert_eq!(report.cells_left, 0);
-                assert_eq!(rendered(&report, 7), want);
+        for picker in PickerKind::ALL {
+            let options = SolveOptions {
+                guess_picker: PickerMix::single(picker),
+                ..SolveOptions::default()
+            };
+            match backtrack_solve(&puzzle, &options).unwrap() {
+                UniqueSolution(report) => {
+                    assert_eq!(report.cells_left, 0, "{picker:?}");
+                    assert_eq!(rendered(&report, 7), want, "{picker:?}");
+                }
+                MultipleSolutions() => panic!("this puzzle has exactly one solution ({picker:?})"),
             }
-            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
         }
     }
 
@@ -560,14 +572,24 @@ mod tests {
         .unwrap();
         assert_eq!(line_only.cells_left, 10);
 
-        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
-            UniqueSolution(report) => {
-                assert_eq!(report.cells_left, 0);
-                // The lanes are ragged, so `rendered`'s fixed-width rows don't apply; compare
-                // against the picture the clues came from instead.
-                assert_eq!(report.solution.cells(), tri_picture(&want).cells);
+        for picker in PickerKind::ALL {
+            let options = SolveOptions {
+                guess_picker: PickerMix::single(picker),
+                ..SolveOptions::default()
+            };
+            match backtrack_solve(&puzzle, &options).unwrap() {
+                UniqueSolution(report) => {
+                    assert_eq!(report.cells_left, 0, "{picker:?}");
+                    // The lanes are ragged, so `rendered`'s fixed-width rows don't apply; compare
+                    // against the picture the clues came from instead.
+                    assert_eq!(
+                        report.solution.cells(),
+                        tri_picture(&want).cells,
+                        "{picker:?}"
+                    );
+                }
+                MultipleSolutions() => panic!("this puzzle has exactly one solution ({picker:?})"),
             }
-            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
         }
     }
 

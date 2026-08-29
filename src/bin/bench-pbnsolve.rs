@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use number_loom::bt_solve::{BtReport, backtrack_solve};
+use number_loom::bt_solve::{BtReport, PickerMix, backtrack_solve};
 use number_loom::formats::webpbn::as_webpbn;
 use number_loom::grid_solve::SolveOptions;
 use number_loom::puzzle::{DynPuzzle, PuzzleDynOps};
@@ -76,6 +76,13 @@ struct Args {
     /// of the grid per node the whole time it runs.
     #[arg(long, default_value_t = 10)]
     loom_timeout: u64,
+
+    /// Which guessing heuristic our backtracker uses, in backtrack mode. Takes a rotation as
+    /// well as a single name: `disagreement:3,random:1` guesses three times one way and once the
+    /// other, over and over. Defaults to whatever `SolveOptions` does, so that the benchmark
+    /// measures the solver as shipped.
+    #[arg(long)]
+    picker: Option<PickerMix>,
 
     /// Not for humans: solve one puzzle with `backtrack_solve` and print a line of counters. The
     /// benchmark re-runs itself this way to bound a search it can't otherwise interrupt.
@@ -403,10 +410,13 @@ struct LoomBt {
 
 /// The `--solve-backtrack` half of the binary: one puzzle, one `backtrack_solve`, one line of
 /// counters on stdout for the parent to read back. Nothing here touches `pbnsolve`.
-fn solve_backtrack_child(path: &Path) -> anyhow::Result<()> {
+fn solve_backtrack_child(path: &Path, picker: PickerMix) -> anyhow::Result<()> {
     let mut document = import::load_path(&path.to_path_buf(), None)
         .with_context(|| format!("couldn't load {}", path.display()))?;
-    let options = SolveOptions::default();
+    let options = SolveOptions {
+        guess_picker: picker,
+        ..SolveOptions::default()
+    };
 
     let start = Instant::now();
     let outcome = with_puzzle!(document.puzzle(), |p| { backtrack_solve(p, &options) });
@@ -456,7 +466,11 @@ fn parse_loom_backtrack(stdout: &str) -> anyhow::Result<LoomBt> {
 /// in-process call that doesn't converge takes the whole sweep down with it — and it allocates a
 /// clone of the solve state per search node while it does, so a thread abandoned to run in the
 /// background would exhaust memory rather than merely waste a core. A child can just be killed.
-fn run_loom_backtrack(puzzle: &Path, timeout: u64) -> Result<LoomBt, PbnFailure> {
+fn run_loom_backtrack(
+    puzzle: &Path,
+    picker: &PickerMix,
+    timeout: u64,
+) -> Result<LoomBt, PbnFailure> {
     let exe = std::env::current_exe().map_err(|e| PbnFailure::Crashed(e.to_string()))?;
 
     let mut command = Command::new(exe);
@@ -465,6 +479,8 @@ fn run_loom_backtrack(puzzle: &Path, timeout: u64) -> Result<LoomBt, PbnFailure>
     command
         .arg("--pbnsolve")
         .arg(std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/")))
+        .arg("--picker")
+        .arg(picker.to_string())
         .arg("--solve-backtrack")
         .arg(puzzle);
     command.stdout(std::process::Stdio::piped());
@@ -605,7 +621,7 @@ fn main() -> anyhow::Result<()> {
 
     // The child half of `run_loom_backtrack`: solve one puzzle and say nothing else.
     if let Some(puzzle) = &args.solve_backtrack {
-        return solve_backtrack_child(puzzle);
+        return solve_backtrack_child(puzzle, args.picker.clone().unwrap_or_default());
     }
 
     if !args.pbnsolve.is_file() {
@@ -699,7 +715,12 @@ fn bench_one(
             pbn_wall,
             // `path`, not `xml`: our own loader reads every format, and converting first would
             // hand the backtracker a puzzle that had made a round trip through webpbn.
-            loom: run_loom_backtrack(path, args.loom_timeout).map_err(|f| f.label()),
+            loom: run_loom_backtrack(
+                path,
+                &args.picker.clone().unwrap_or_default(),
+                args.loom_timeout,
+            )
+            .map_err(|f| f.label()),
         }),
         Mode::Line => {
             let loom_start = Instant::now();
