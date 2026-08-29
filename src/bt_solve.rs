@@ -5,7 +5,6 @@ use anyhow::Context;
 use priority_queue::PriorityQueue;
 
 use crate::{
-    bt_solve::BtReport::{MultipleSolutions, UniqueSolution},
     geometry::GridKind,
     grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
     gui,
@@ -25,9 +24,9 @@ struct HypoCoord {
 }
 // TODO: we should really impl push/pop on `HypoCoord`
 
-pub enum BtReport {
-    MultipleSolutions(), // TODO: provide *some* information
-    UniqueSolution(Report),
+/// The root's own coordinate: no hypothesis at all, so its knowledge is unconditional.
+fn root_coord() -> HypoCoord {
+    HypoCoord { guesses: vec![] }
 }
 
 pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
@@ -157,7 +156,7 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     is: bool,
     color: Color,
     ctx: &mut BtContext<'p, 'x, C, K>,
-) -> anyhow::Result<Option<BtReport>> {
+) -> anyhow::Result<Option<Report>> {
     let state = ctx.possibilities.get_mut(&coord).unwrap();
 
     state
@@ -215,12 +214,17 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                 }
 
                 if coord.guesses.is_empty() {
-                    return Ok(Some(UniqueSolution(state.knowledge.report(ctx.puzzle))));
+                    return Ok(Some(state.knowledge.report(ctx.puzzle)));
                 }
 
                 if let Some(old_solution) = &ctx.solution_found {
                     if old_solution != &state.knowledge.grid {
-                        return Ok(Some(MultipleSolutions()));
+                        // Time to give up! If we churned for longer, we might be able to
+                        // reduce the number of unknown cells, but we know there will always be some.
+                        let root_report = ctx.possibilities[&root_coord()]
+                            .knowledge
+                            .report(ctx.puzzle);
+                        return Ok(Some(root_report));
                     }
                 } else {
                     ctx.solution_found = Some(state.knowledge.grid.clone())
@@ -239,7 +243,7 @@ pub async fn backtrack_solve<C: Clue, K: GridKind>(
     options: &SolveOptions,
     progress: mpsc::Sender<f32>,
     terminate: mpsc::Receiver<()>,
-) -> anyhow::Result<BtReport> {
+) -> anyhow::Result<Report> {
     let mut line_cache: Option<LineCache<C>> = Some(LineCache::new());
 
     let options = SolveOptions {
@@ -265,18 +269,15 @@ pub async fn backtrack_solve<C: Clue, K: GridKind>(
 
     if init_linear_state.cells_left == 0 {
         let _ = ctx.progress.send(1.0);
-        return Ok(UniqueSolution(init_linear_state.report(puzzle))); // No backtracking required!
+        return Ok(init_linear_state.report(puzzle)); // No backtracking required!
     }
     let _ = ctx
         .progress
         .send((total_cells - init_linear_state.cells_left) as f32 / total_cells as f32);
 
-    let root_coord = HypoCoord { guesses: vec![] };
-
-    ctx.q
-        .push(root_coord.clone(), std::cmp::Reverse(Score(0.0)));
+    ctx.q.push(root_coord(), std::cmp::Reverse(Score(0.0)));
     ctx.possibilities.insert(
-        root_coord,
+        root_coord(),
         BtSolveState {
             knowledge: init_linear_state,
             guesses_explored: HashSet::new(),
@@ -342,7 +343,7 @@ mod tests {
     fn solve_sync<C: Clue, K: GridKind>(
         puzzle: &Puzzle<C, K>,
         options: &SolveOptions,
-    ) -> anyhow::Result<BtReport> {
+    ) -> anyhow::Result<Report> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -455,13 +456,9 @@ mod tests {
             guess_picker: "disagreement:3,random:1".parse().unwrap(),
             ..SolveOptions::default()
         };
-        match solve_sync(&puzzle, &options).unwrap() {
-            UniqueSolution(report) => {
-                assert_eq!(report.cells_left, 0);
-                assert_eq!(rendered(&report, 7), want);
-            }
-            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
-        }
+        let report = solve_sync(&puzzle, &options).unwrap();
+        assert_eq!(report.cells_left, 0, "this puzzle has exactly one solution");
+        assert_eq!(rendered(&report, 7), want);
     }
 
     /// A hollow box: line logic alone finishes it, so the search should never start.
@@ -470,13 +467,9 @@ mod tests {
         let want = ["#####", "#...#", "#...#", "#...#", "#####"];
         let puzzle = solution_to_puzzle(&picture(&want));
 
-        match solve_sync(&puzzle, &SolveOptions::default()).unwrap() {
-            UniqueSolution(report) => {
-                assert_eq!(report.cells_left, 0);
-                assert_eq!(rendered(&report, 5), want);
-            }
-            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
-        }
+        let report = solve_sync(&puzzle, &SolveOptions::default()).unwrap();
+        assert_eq!(report.cells_left, 0, "this puzzle has exactly one solution");
+        assert_eq!(rendered(&report, 5), want);
     }
 
     /// Line logic stalls on this one with 18 of its 25 cells unknown. One guess in the upper-left-hand corner
@@ -501,13 +494,12 @@ mod tests {
                 guess_picker: PickerMix::single(picker),
                 ..SolveOptions::default()
             };
-            match solve_sync(&puzzle, &options).unwrap() {
-                UniqueSolution(report) => {
-                    assert_eq!(report.cells_left, 0, "{picker:?}");
-                    assert_eq!(rendered(&report, 5), want, "{picker:?}");
-                }
-                MultipleSolutions() => panic!("this puzzle has exactly one solution ({picker:?})"),
-            }
+            let report = solve_sync(&puzzle, &options).unwrap();
+            assert_eq!(
+                report.cells_left, 0,
+                "this puzzle has exactly one solution ({picker:?})"
+            );
+            assert_eq!(rendered(&report, 5), want, "{picker:?}");
         }
     }
 
@@ -536,13 +528,12 @@ mod tests {
                 guess_picker: PickerMix::single(picker),
                 ..SolveOptions::default()
             };
-            match solve_sync(&puzzle, &options).unwrap() {
-                UniqueSolution(report) => {
-                    assert_eq!(report.cells_left, 0, "{picker:?}");
-                    assert_eq!(rendered(&report, 7), want, "{picker:?}");
-                }
-                MultipleSolutions() => panic!("this puzzle has exactly one solution ({picker:?})"),
-            }
+            let report = solve_sync(&puzzle, &options).unwrap();
+            assert_eq!(
+                report.cells_left, 0,
+                "this puzzle has exactly one solution ({picker:?})"
+            );
+            assert_eq!(rendered(&report, 7), want, "{picker:?}");
         }
     }
 
@@ -558,13 +549,9 @@ mod tests {
             "background and two foreground colors"
         );
 
-        match solve_sync(&puzzle, &SolveOptions::default()).unwrap() {
-            UniqueSolution(report) => {
-                assert_eq!(report.cells_left, 0);
-                assert_eq!(rendered(&report, 5), want);
-            }
-            MultipleSolutions() => panic!("this puzzle has exactly one solution"),
-        }
+        let report = solve_sync(&puzzle, &SolveOptions::default()).unwrap();
+        assert_eq!(report.cells_left, 0, "this puzzle has exactly one solution");
+        assert_eq!(rendered(&report, 5), want);
     }
 
     /// Clues with no picture behind them at all — but every lane is satisfiable on its own, and
@@ -623,19 +610,18 @@ mod tests {
                 guess_picker: PickerMix::single(picker),
                 ..SolveOptions::default()
             };
-            match solve_sync(&puzzle, &options).unwrap() {
-                UniqueSolution(report) => {
-                    assert_eq!(report.cells_left, 0, "{picker:?}");
-                    // The lanes are ragged, so `rendered`'s fixed-width rows don't apply; compare
-                    // against the picture the clues came from instead.
-                    assert_eq!(
-                        report.solution.cells(),
-                        tri_picture(&want).cells,
-                        "{picker:?}"
-                    );
-                }
-                MultipleSolutions() => panic!("this puzzle has exactly one solution ({picker:?})"),
-            }
+            let report = solve_sync(&puzzle, &options).unwrap();
+            assert_eq!(
+                report.cells_left, 0,
+                "this puzzle has exactly one solution ({picker:?})"
+            );
+            // The lanes are ragged, so `rendered`'s fixed-width rows don't apply; compare
+            // against the picture the clues came from instead.
+            assert_eq!(
+                report.solution.cells(),
+                tri_picture(&want).cells,
+                "{picker:?}"
+            );
         }
     }
 
@@ -659,10 +645,8 @@ mod tests {
     fn an_ambiguous_puzzle_reports_multiple_solutions() {
         let puzzle = solution_to_puzzle(&picture(&["#.", ".#"]));
 
-        match solve_sync(&puzzle, &SolveOptions::default()).unwrap() {
-            MultipleSolutions() => (),
-            UniqueSolution(_) => panic!("both diagonals fit these clues"),
-        }
+        let report = solve_sync(&puzzle, &SolveOptions::default()).unwrap();
+        assert!(report.cells_left > 0, "both diagonals fit these clues");
     }
 
     /// A run that doesn't fit in the lane it's a clue for. Line logic sees the contradiction on

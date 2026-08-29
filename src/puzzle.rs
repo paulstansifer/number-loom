@@ -3,13 +3,12 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::{collections::HashMap, hash::Hasher};
 
-use crate::bt_solve::{self, BtReport};
+use crate::bt_solve;
 use crate::{
     geometry::{Geometry, GridKind, Outline, Rect, Shape, Square, Tri, TriCoord},
     grid_solve::{self, LineStatus, SolveOptions},
     import::{solution_to_puzzle, solution_to_tri_puzzle, solution_to_triano_puzzle},
 };
-use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 /// All colors, including `BACKGROUND`.
 pub type Palette = HashMap<Color, ColorInfo>;
@@ -561,7 +560,7 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
             grid_solve::line_logic_solve(self, &mut None, options, &mut partial)
         } else {
             // Not 100% sure this works in wasm, but this is only called by the CLI.
-            let outcome = tokio::runtime::Builder::new_current_thread()
+            tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
@@ -570,13 +569,7 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
                     options,
                     std::sync::mpsc::channel().0,
                     std::sync::mpsc::channel().1,
-                ))?;
-            match outcome {
-                BtReport::UniqueSolution(report) => Ok(report),
-                // TODO: `Report` is not designed for "multiple valid solutions", so return an error for now.
-                // Audit the places where it's used, and then make this `Ok`!
-                BtReport::MultipleSolutions() => Err(anyhow!("multiple valid solutions")),
-            }
+                ))
         }
     }
 

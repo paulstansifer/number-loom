@@ -48,7 +48,8 @@ mod tests {
 
     /// The backtracking-solve button spawns the search on a background thread and reports back
     /// over a channel, so the result doesn't land on the very frame the click does; this polls a
-    /// few frames to give it a chance to.
+    /// few frames to give it a chance to. It also shades the canvas with the solve mask, sharing
+    /// `editor_gui.solved_mask` with the plain `Solve` button.
     #[test]
     fn test_backtrack_solve_button() {
         let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
@@ -66,7 +67,7 @@ mod tests {
         let mut found = false;
         for _ in 0..200 {
             if harness
-                .query_by_label_contains("unsolved cells: 0")
+                .query_by_label_contains("unsolved cells (upper bound): 0")
                 .is_some()
             {
                 found = true;
@@ -76,6 +77,73 @@ mod tests {
             harness.run();
         }
         assert!(found, "backtracking solve never reported back");
+
+        let editor_gui = &harness.state().editor_gui;
+        let solved_mask = &editor_gui.solved_mask;
+        assert!(
+            solved_mask.fresh(editor_gui.version),
+            "the backtracking solve should have refreshed the solve mask"
+        );
+        assert!(
+            solved_mask.val.1.iter().all(|&solved| solved),
+            "apron.png is fully solved, so every cell should show as solved"
+        );
+    }
+
+    /// Both solve buttons write into `editor_gui.solved_mask` (see `test_backtrack_solve_button`),
+    /// but each keeps its own report label. `Solve` used to read its own report text back out of
+    /// `solved_mask` via `get_or_refresh`, treating it as fresh (and so skipping a real re-solve)
+    /// whenever *anything* had marked it fresh for the current version — including a backtracking
+    /// run finishing after it. Clicking `Solve` again (or ticking `auto-solve`, which re-runs the
+    /// same check every frame) would then silently show backtracking's report instead of its own.
+    #[test]
+    fn test_backtrack_solve_does_not_clobber_the_plain_solve_report() {
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+
+        harness.get_by_label("Solve").click();
+        harness.run();
+        assert!(
+            harness.query_by_label_contains("unsolved cells: 0").is_some(),
+            "the plain solve should have reported back on the same frame"
+        );
+
+        harness.get_by_label("Solve (backtracking)").click();
+        harness.run();
+        for _ in 0..200 {
+            if harness
+                .query_by_label_contains("unsolved cells (upper bound): 0")
+                .is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            harness.run();
+        }
+        assert!(
+            harness.query_by_label_contains("unsolved cells: 0").is_some(),
+            "the plain solve's report should still be showing once backtracking lands"
+        );
+
+        // The actual regression: re-clicking `Solve` (what `auto-solve` would do on the very next
+        // frame) used to pick up backtracking's cached report instead of running line logic again.
+        harness.get_by_label("Solve").click();
+        harness.run();
+        assert!(
+            harness.query_by_label_contains("unsolved cells: 0").is_some(),
+            "re-clicking Solve should still show its own report, not backtracking's"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("unsolved cells (upper bound): 0")
+                .is_some(),
+            "the backtracking solve's own report should still be showing too"
+        );
     }
 
     #[test]

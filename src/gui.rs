@@ -93,7 +93,7 @@ pub type SharedProgress = Rc<RefCell<Option<f32>>>;
 use solver::{RenderStyle, SolveGui};
 
 use crate::{
-    bt_solve::{self, BtReport},
+    bt_solve,
     export::to_bytes,
     grid_solve::{self, DisambigResult, SolveOptions, disambig_candidates},
     import,
@@ -312,6 +312,12 @@ pub struct NonogramGui {
     auto_solve: bool,
     lines_to_affect_string: String,
     solve_report: String,
+    /// The `editor_gui.version` `solve_report` was computed for, if any — independent of
+    /// `editor_gui.solved_mask`'s own freshness, which the backtracking solve also writes to
+    /// (see `BacktrackSolver::widget`). Without this, `solved_mask.get_or_refresh` would see
+    /// backtracking's fresher write and skip re-running line logic, leaving `solve_report`
+    /// showing backtracking's text under the `Solve` button.
+    solve_report_version: Option<Version>,
     pub solve_gui: Option<SolveGui>,
     show_save_share_window: bool,
     share_string: String,
@@ -639,6 +645,7 @@ impl NonogramGui {
             auto_solve: UserSettings::get_bool(consts::EDITOR_AUTO_SOLVE),
             lines_to_affect_string: "5".to_string(),
             solve_report: "".to_string(),
+            solve_report_version: None,
             solve_gui: None,
             show_save_share_window: false,
             share_string: "".to_string(),
@@ -684,33 +691,39 @@ impl NonogramGui {
                     // The shading clears itself (it's only drawn while fresh), but the report is
                     // plain text that would otherwise linger after the aid is switched off.
                     self.solve_report.clear();
+                    self.solve_report_version = None;
                 }
             }
-            if ui.button("Solve").clicked() || self.auto_solve {
+            if (ui.button("Solve").clicked() || self.auto_solve)
+                // Tracked separately from `solved_mask`'s own freshness: the backtracking solve
+                // writes there too (see `BacktrackSolver::widget`).
+                && self.solve_report_version != Some(self.editor_gui.version)
+            {
                 let puzzle = self.editor_gui.document.try_solution().unwrap().to_puzzle();
 
-                let (report, _solved_mask) =
-                    self.editor_gui
-                        .solved_mask
-                        .get_or_refresh(self.editor_gui.version, || match puzzle.plain_solve() {
-                            Ok(grid_solve::Report {
-                                solve_counts,
-                                cells_left,
-                                solution: _solution,
-                                solved_mask,
-                            }) => (
-                                // Unsolved cells first: that's the number that says whether the
-                                // puzzle works. The skim/scrub counts are solver diagnostics.
-                                format!("unsolved cells: {cells_left}\n{solve_counts}"),
-                                solved_mask,
-                            ),
-                            Err(e) => (format!("Error: {:?}", e), vec![]),
-                        });
+                let (report, mask) = match puzzle.plain_solve() {
+                    Ok(grid_solve::Report {
+                        solve_counts,
+                        cells_left,
+                        solution: _solution,
+                        solved_mask,
+                    }) => (
+                        // Unsolved cells first: that's the number that says whether the puzzle
+                        // works. The skim/scrub counts are solver diagnostics.
+                        format!("unsolved cells: {cells_left}\n{solve_counts}"),
+                        solved_mask,
+                    ),
+                    Err(e) => (format!("Error: {:?}", e), vec![]),
+                };
                 self.solve_report = report.clone();
+                self.solve_report_version = Some(self.editor_gui.version);
+                self.editor_gui
+                    .solved_mask
+                    .update((report, mask), self.editor_gui.version);
             }
 
             ui.colored_label(
-                if self.editor_gui.solved_mask.fresh(self.editor_gui.version) {
+                if self.solve_report_version == Some(self.editor_gui.version) {
                     Color32::BLACK
                 } else {
                     Color32::GRAY
@@ -721,10 +734,17 @@ impl NonogramGui {
             ui.separator();
 
             let picture = self.editor_gui.document.try_solution().unwrap().clone();
+            let version = self.editor_gui.version;
             self.editor_gui
                 .backtrack_solver
-                .get_or_refresh(self.editor_gui.version, BacktrackSolver::new)
-                .widget(&picture, &self.editor_gui.progress, ui);
+                .get_or_refresh(version, BacktrackSolver::new)
+                .widget(
+                    &picture,
+                    version,
+                    &mut self.editor_gui.solved_mask,
+                    &self.editor_gui.progress,
+                    ui,
+                );
 
             ui.separator();
 
@@ -1194,7 +1214,10 @@ pub struct BacktrackSolver {
     pub terminate_s: mpsc::Sender<()>,
     progress_r: mpsc::Receiver<f32>,
     progress: f32,
-    report_r: mpsc::Receiver<String>,
+    /// The formatted report, alongside the mask `canvas.rs` shades unsolved cells with — the same
+    /// shape `editor_gui.solved_mask` already holds for the line-logic `Solve` button, so the two
+    /// buttons can share it.
+    report_r: mpsc::Receiver<(String, Vec<bool>)>,
 }
 
 impl Default for BacktrackSolver {
@@ -1214,14 +1237,24 @@ impl BacktrackSolver {
         }
     }
 
-    pub fn widget(&mut self, picture: &DynSolution, progress: &SharedProgress, ui: &mut egui::Ui) {
+    pub fn widget(
+        &mut self,
+        picture: &DynSolution,
+        version: Version,
+        solved_mask: &mut Staleable<(String, Vec<bool>)>,
+        progress: &SharedProgress,
+        ui: &mut egui::Ui,
+    ) {
         while let Ok(p) = self.progress_r.try_recv() {
             self.progress = p;
         }
         let running = self.progress > 0.0 && self.progress < 1.0;
 
-        if let Ok(result) = self.report_r.try_recv() {
-            self.report = Some(result);
+        if let Ok((report, mask)) = self.report_r.try_recv() {
+            // Shared with the line-logic `Solve` button: whichever one ran last is the one
+            // shading the canvas, with no indication of which of the two it was.
+            solved_mask.update((report.clone(), mask), version);
+            self.report = Some(report);
         }
 
         let (mut start, mut stop) = (false, false);
@@ -1248,15 +1281,17 @@ impl BacktrackSolver {
                 let outcome = crate::with_puzzle!(&puzzle, |p| {
                     bt_solve::backtrack_solve(p, &SolveOptions::default(), p_s, t_r).await
                 });
-                let report = match outcome {
-                    Ok(BtReport::UniqueSolution(report)) => format!(
-                        "unsolved cells: {}\n{}",
-                        report.cells_left, report.solve_counts
+                let (report, mask) = match outcome {
+                    Ok(report) => (
+                        format!(
+                            "unsolved cells (upper bound): {}\n{}",
+                            report.cells_left, report.solve_counts
+                        ),
+                        report.solved_mask,
                     ),
-                    Ok(BtReport::MultipleSolutions()) => "Multiple solutions exist".to_string(),
-                    Err(e) => format!("Error: {:?}", e),
+                    Err(e) => (format!("Error: {:?}", e), vec![]),
                 };
-                let _ = r_s.send(report);
+                let _ = r_s.send((report, mask));
             });
         }
         if stop {

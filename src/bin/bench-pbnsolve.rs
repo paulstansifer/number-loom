@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use number_loom::bt_solve::{BtReport, PickerMix, backtrack_solve};
+use number_loom::bt_solve::{PickerMix, backtrack_solve};
 use number_loom::formats::webpbn::as_webpbn;
 use number_loom::grid_solve::SolveOptions;
 use number_loom::puzzle::{DynPuzzle, PuzzleDynOps};
@@ -453,13 +453,16 @@ fn solve_backtrack_child(path: &Path, picker: PickerMix) -> anyhow::Result<()> {
     let seconds = start.elapsed().as_secs_f64();
 
     // `LOOM` prefixed so a stray line from anywhere else can't be mistaken for the report.
+    // `cells_left == 0` indicates a unique solution
     match outcome {
-        Ok(BtReport::UniqueSolution(report)) => println!(
+        Ok(report) if report.cells_left == 0 => println!(
             "LOOM unique {seconds} {} {} {}",
             report.cells_left, report.solve_counts.skim, report.solve_counts.scrub
         ),
-        // `MultipleSolutions` carries no report, so there are no counters to pass along.
-        Ok(BtReport::MultipleSolutions()) => println!("LOOM multiple {seconds} 0 0 0"),
+        Ok(report) => println!(
+            "LOOM multiple {seconds} {} {} {}",
+            report.cells_left, report.solve_counts.skim, report.solve_counts.scrub
+        ),
         Err(_) => println!("LOOM contradiction {seconds} 0 0 0"),
     }
     Ok(())
