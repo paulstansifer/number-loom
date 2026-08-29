@@ -270,31 +270,31 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
         let kind = ctx.linear_ctx.options.guess_picker.for_guess(guesses_made);
         guesses_made += 1;
 
-        // TODO: only scoring protects this unwrap from crashing:
-        let (cell_idx, color) = pick_guess(kind, state, &ctx.linear_ctx).unwrap();
+        // If we've made every possible guess, don't re-enqueue the node.
+        if let Some((cell_idx, color)) = pick_guess(kind, state, &ctx.linear_ctx) {
+            ctx.q.push(
+                coord.clone(),
+                state.score_at(&coord, ctx.solution_found.as_ref()),
+            );
 
-        ctx.q.push(
-            coord.clone(),
-            state.score_at(&coord, ctx.solution_found.as_ref()),
-        );
+            let (new_coord, new_state) = state.fork(&coord, (cell_idx, color));
 
-        let (new_coord, new_state) = state.fork(&coord, (cell_idx, color));
+            if ctx.linear_ctx.options.trace_backtrack {
+                println!("Guessing {new_coord:?}.")
+            }
 
-        if ctx.linear_ctx.options.trace_backtrack {
-            println!("Guessing {new_coord:?}.")
-        }
+            // `suppose` expects to find `new_state` at `new_coord`
+            ctx.q.push(
+                new_coord.clone(),
+                new_state.score_at(&new_coord, ctx.solution_found.as_ref()),
+            );
+            ctx.possibilities.insert(new_coord.clone(), new_state);
 
-        // `suppose` expects to find `new_state` at `new_coord`
-        ctx.q.push(
-            new_coord.clone(),
-            new_state.score_at(&new_coord, ctx.solution_found.as_ref()),
-        );
-        ctx.possibilities.insert(new_coord.clone(), new_state);
-
-        let sup_res = suppose(&new_coord, cell_idx, /*is=*/ true, color, &mut ctx)?;
-
-        if let Some(sup_res) = sup_res {
-            return Ok(sup_res); // We're done!
+            if let Some(sup_res) =
+                suppose(&new_coord, cell_idx, /*is=*/ true, color, &mut ctx)?
+            {
+                return Ok(sup_res); // We're done!
+            }
         }
     }
     unreachable!("The root state shouldn't be removed without finding a unique solution");
