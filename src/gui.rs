@@ -93,8 +93,9 @@ pub type SharedProgress = Rc<RefCell<Option<f32>>>;
 use solver::{RenderStyle, SolveGui};
 
 use crate::{
+    bt_solve::{self, BtReport},
     export::to_bytes,
-    grid_solve::{self, DisambigResult, disambig_candidates},
+    grid_solve::{self, DisambigResult, SolveOptions, disambig_candidates},
     import,
     // The abstract-units point, distinct from egui's `Pos2`: everything the lasso does is in
     // grid space, and only the painter converts.
@@ -288,6 +289,7 @@ pub struct CanvasGui {
     /// Indexed by dense cell index, like `Solution::cells`.
     pub solved_mask: Staleable<(String, Vec<bool>)>,
     pub disambiguator: Staleable<Disambiguator>,
+    pub backtrack_solver: Staleable<BacktrackSolver>,
     pub id: Staleable<String>,
     pub status: SharedStatus,
     pub progress: SharedProgress,
@@ -611,6 +613,10 @@ impl NonogramGui {
                     val: Disambiguator::new(),
                     version: 0,
                 },
+                backtrack_solver: Staleable {
+                    val: BacktrackSolver::new(),
+                    version: 0,
+                },
                 id: Staleable {
                     val: "".to_string(),
                     version: 0,
@@ -715,6 +721,13 @@ impl NonogramGui {
             ui.separator();
 
             let picture = self.editor_gui.document.try_solution().unwrap().clone();
+            self.editor_gui
+                .backtrack_solver
+                .get_or_refresh(self.editor_gui.version, BacktrackSolver::new)
+                .widget(&picture, &self.editor_gui.progress, ui);
+
+            ui.separator();
+
             self.editor_gui
                 .disambiguator
                 .get_or_refresh(self.editor_gui.version, Disambiguator::new)
@@ -1168,6 +1181,93 @@ impl Disambiguator {
 
         if clear {
             self.report = None;
+        }
+    }
+}
+
+/// Drives `bt_solve::backtrack_solve` from a button: same shape as `Disambiguator` (a spawned
+/// async task reporting back over channels, so the search can run in the background and be
+/// stopped without freezing the GUI).
+pub struct BacktrackSolver {
+    /// The search's outcome, already formatted for display.
+    report: Option<String>,
+    pub terminate_s: mpsc::Sender<()>,
+    progress_r: mpsc::Receiver<f32>,
+    progress: f32,
+    report_r: mpsc::Receiver<String>,
+}
+
+impl Default for BacktrackSolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BacktrackSolver {
+    pub fn new() -> Self {
+        BacktrackSolver {
+            report: None,
+            progress: 0.0,
+            terminate_s: mpsc::channel().0,
+            progress_r: mpsc::channel().1,
+            report_r: mpsc::channel().1,
+        }
+    }
+
+    pub fn widget(&mut self, picture: &DynSolution, progress: &SharedProgress, ui: &mut egui::Ui) {
+        while let Ok(p) = self.progress_r.try_recv() {
+            self.progress = p;
+        }
+        let running = self.progress > 0.0 && self.progress < 1.0;
+
+        if let Ok(result) = self.report_r.try_recv() {
+            self.report = Some(result);
+        }
+
+        let (mut start, mut stop) = (false, false);
+        ui.horizontal(|ui| {
+            if !running {
+                start = ui.button("Solve (backtracking)").clicked();
+            } else {
+                stop = ui.button("Stop").clicked();
+            }
+        });
+
+        if start {
+            let (p_s, p_r) = mpsc::channel();
+            let (r_s, r_r) = mpsc::channel();
+            let (t_s, t_r) = mpsc::channel();
+            self.progress_r = p_r;
+            self.terminate_s = t_s;
+            self.report_r = r_r;
+            self.report = None;
+
+            let picture = picture.clone();
+            spawn_async(async move {
+                let puzzle = picture.to_puzzle();
+                let outcome = crate::with_puzzle!(&puzzle, |p| {
+                    bt_solve::backtrack_solve(p, &SolveOptions::default(), p_s, t_r).await
+                });
+                let report = match outcome {
+                    Ok(BtReport::UniqueSolution(report)) => format!(
+                        "unsolved cells: {}\n{}",
+                        report.cells_left, report.solve_counts
+                    ),
+                    Ok(BtReport::MultipleSolutions()) => "Multiple solutions exist".to_string(),
+                    Err(e) => format!("Error: {:?}", e),
+                };
+                let _ = r_s.send(report);
+            });
+        }
+        if stop {
+            let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
+            self.progress = 0.0;
+        }
+
+        *progress.borrow_mut() = if running { Some(self.progress) } else { None };
+
+        if let Some(report) = &self.report {
+            ui.label(report);
         }
     }
 }

@@ -46,6 +46,38 @@ mod tests {
         assert!(nonogram_gui.solve_gui.is_some());
     }
 
+    /// The backtracking-solve button spawns the search on a background thread and reports back
+    /// over a channel, so the result doesn't land on the very frame the click does; this polls a
+    /// few frames to give it a chance to.
+    #[test]
+    fn test_backtrack_solve_button() {
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+
+        harness.get_by_label("Solve (backtracking)").click();
+        harness.run();
+
+        // `apron.png` solves by line logic alone, so the search reports back almost immediately.
+        let mut found = false;
+        for _ in 0..200 {
+            if harness
+                .query_by_label_contains("unsolved cells: 0")
+                .is_some()
+            {
+                found = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            harness.run();
+        }
+        assert!(found, "backtracking solve never reported back");
+    }
+
     #[test]
     fn test_palette_editor() {
         let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc;
 
 use anyhow::Context;
 use priority_queue::PriorityQueue;
@@ -7,6 +8,7 @@ use crate::{
     bt_solve::BtReport::{MultipleSolutions, UniqueSolution},
     geometry::GridKind,
     grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
+    gui,
     line_solve::Cell,
     puzzle::{Clue, Color, PartialSolution, Puzzle},
 };
@@ -34,6 +36,10 @@ pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
     linear_ctx: SolveContext<'p, 'x, C, K>,
     puzzle: &'p Puzzle<C, K>,
     solution_found: Option<PartialSolution>, // though we know it'll be a complete solution
+    /// How many cells the puzzle has in total, for progress reporting
+    total_cells: usize,
+    /// Externally report progress
+    progress: mpsc::Sender<f32>,
 }
 
 #[derive(Clone)]
@@ -170,6 +176,14 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     ctx.q
         .change_priority(coord, state.score_at(coord, ctx.solution_found.as_ref()));
 
+    // `coord` is the root exactly when what was just learned is unconditional (no hypothesis
+    // behind it), which is the only kind of progress worth reporting: hypothetical knowledge can
+    // still be thrown away by a later contradiction.
+    if coord.guesses.is_empty() {
+        let done = ctx.total_cells.saturating_sub(state.knowledge.cells_left);
+        let _ = ctx.progress.send(done as f32 / ctx.total_cells as f32);
+    }
+
     match run_consequence {
         Err(e) => {
             let mut higher_coord = coord.clone();
@@ -220,9 +234,11 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     Ok(None)
 }
 
-pub fn backtrack_solve<C: Clue, K: GridKind>(
+pub async fn backtrack_solve<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     options: &SolveOptions,
+    progress: mpsc::Sender<f32>,
+    terminate: mpsc::Receiver<()>,
 ) -> anyhow::Result<BtReport> {
     let mut line_cache: Option<LineCache<C>> = Some(LineCache::new());
 
@@ -230,12 +246,15 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
         display_cli_progress: false,
         ..options.clone()
     };
+    let total_cells = puzzle.geometry.cell_count();
     let mut ctx = BtContext {
         q: PriorityQueue::new(),
         possibilities: HashMap::default(),
         linear_ctx: SolveContext::new(puzzle, &mut line_cache, &options),
         puzzle,
         solution_found: None,
+        total_cells,
+        progress,
     };
 
     let mut init_linear_state = SolveState::new(
@@ -245,8 +264,12 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
     init_linear_state.run_and_check(&mut ctx.linear_ctx)?; // `?` because contradictions here are "real"
 
     if init_linear_state.cells_left == 0 {
+        let _ = ctx.progress.send(1.0);
         return Ok(UniqueSolution(init_linear_state.report(puzzle))); // No backtracking required!
     }
+    let _ = ctx
+        .progress
+        .send((total_cells - init_linear_state.cells_left) as f32 / total_cells as f32);
 
     let root_coord = HypoCoord { guesses: vec![] };
 
@@ -264,6 +287,11 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
     let mut guesses_made = 0;
 
     while let Some((coord, _score)) = ctx.q.pop() {
+        if terminate.try_recv().is_ok() {
+            anyhow::bail!("backtracking search cancelled");
+        }
+        gui::yield_now().await;
+
         let state = ctx.possibilities.get_mut(&coord).unwrap();
 
         let kind = ctx.linear_ctx.options.guess_picker.for_guess(guesses_made);
@@ -292,6 +320,7 @@ pub fn backtrack_solve<C: Clue, K: GridKind>(
             if let Some(sup_res) =
                 suppose(&new_coord, cell_idx, /*is=*/ true, color, &mut ctx)?
             {
+                let _ = ctx.progress.send(1.0);
                 return Ok(sup_res); // We're done!
             }
         }
@@ -307,6 +336,24 @@ mod tests {
     use crate::import::{bw_palette, solution_to_puzzle, solution_to_tri_puzzle};
     use crate::line_solve::Cell;
     use crate::puzzle::{BACKGROUND, ClueStyle, ColorInfo, Nono, Solution};
+
+    /// Runs `backtrack_solve` to completion on the current thread, ignoring progress and never
+    /// terminating early — what every test here wants, since none of them are testing that.
+    fn solve_sync<C: Clue, K: GridKind>(
+        puzzle: &Puzzle<C, K>,
+        options: &SolveOptions,
+    ) -> anyhow::Result<BtReport> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(backtrack_solve(
+                puzzle,
+                options,
+                mpsc::channel().0,
+                mpsc::channel().1,
+            ))
+    }
 
     /// A picture, written a row at a time: `.` is the background, and every other character is a
     /// foreground color, numbered in the order the characters first appear. The palette is built
@@ -408,7 +455,7 @@ mod tests {
             guess_picker: "disagreement:3,random:1".parse().unwrap(),
             ..SolveOptions::default()
         };
-        match backtrack_solve(&puzzle, &options).unwrap() {
+        match solve_sync(&puzzle, &options).unwrap() {
             UniqueSolution(report) => {
                 assert_eq!(report.cells_left, 0);
                 assert_eq!(rendered(&report, 7), want);
@@ -423,7 +470,7 @@ mod tests {
         let want = ["#####", "#...#", "#...#", "#...#", "#####"];
         let puzzle = solution_to_puzzle(&picture(&want));
 
-        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
+        match solve_sync(&puzzle, &SolveOptions::default()).unwrap() {
             UniqueSolution(report) => {
                 assert_eq!(report.cells_left, 0);
                 assert_eq!(rendered(&report, 5), want);
@@ -454,7 +501,7 @@ mod tests {
                 guess_picker: PickerMix::single(picker),
                 ..SolveOptions::default()
             };
-            match backtrack_solve(&puzzle, &options).unwrap() {
+            match solve_sync(&puzzle, &options).unwrap() {
                 UniqueSolution(report) => {
                     assert_eq!(report.cells_left, 0, "{picker:?}");
                     assert_eq!(rendered(&report, 5), want, "{picker:?}");
@@ -489,7 +536,7 @@ mod tests {
                 guess_picker: PickerMix::single(picker),
                 ..SolveOptions::default()
             };
-            match backtrack_solve(&puzzle, &options).unwrap() {
+            match solve_sync(&puzzle, &options).unwrap() {
                 UniqueSolution(report) => {
                     assert_eq!(report.cells_left, 0, "{picker:?}");
                     assert_eq!(rendered(&report, 7), want, "{picker:?}");
@@ -511,7 +558,7 @@ mod tests {
             "background and two foreground colors"
         );
 
-        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
+        match solve_sync(&puzzle, &SolveOptions::default()).unwrap() {
             UniqueSolution(report) => {
                 assert_eq!(report.cells_left, 0);
                 assert_eq!(rendered(&report, 5), want);
@@ -549,7 +596,7 @@ mod tests {
         .unwrap();
         assert_eq!(line_only.cells_left, 16);
 
-        assert!(backtrack_solve(&puzzle, &SolveOptions::default()).is_err());
+        assert!(solve_sync(&puzzle, &SolveOptions::default()).is_err());
     }
 
     /// `backtrack_solve` is generic over the grid shape, and a triddler is the part of that
@@ -576,7 +623,7 @@ mod tests {
                 guess_picker: PickerMix::single(picker),
                 ..SolveOptions::default()
             };
-            match backtrack_solve(&puzzle, &options).unwrap() {
+            match solve_sync(&puzzle, &options).unwrap() {
                 UniqueSolution(report) => {
                     assert_eq!(report.cells_left, 0, "{picker:?}");
                     // The lanes are ragged, so `rendered`'s fixed-width rows don't apply; compare
@@ -604,7 +651,7 @@ mod tests {
             vec![runs(&[1]), runs(&[2])],
         );
 
-        assert!(backtrack_solve(&puzzle, &SolveOptions::default()).is_err());
+        assert!(solve_sync(&puzzle, &SolveOptions::default()).is_err());
     }
 
     /// One filled cell per row and per column of a 2x2 grid: the two diagonals both fit.
@@ -612,7 +659,7 @@ mod tests {
     fn an_ambiguous_puzzle_reports_multiple_solutions() {
         let puzzle = solution_to_puzzle(&picture(&["#.", ".#"]));
 
-        match backtrack_solve(&puzzle, &SolveOptions::default()).unwrap() {
+        match solve_sync(&puzzle, &SolveOptions::default()).unwrap() {
             MultipleSolutions() => (),
             UniqueSolution(_) => panic!("both diagonals fit these clues"),
         }
@@ -632,6 +679,6 @@ mod tests {
         // Two columns, so the first row's run of three has nowhere to go.
         let puzzle = Puzzle::square(bw_palette(), vec![clue(3), clue(1)], vec![clue(1), clue(1)]);
 
-        assert!(backtrack_solve(&puzzle, &SolveOptions::default()).is_err());
+        assert!(solve_sync(&puzzle, &SolveOptions::default()).is_err());
     }
 }

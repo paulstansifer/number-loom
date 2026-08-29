@@ -437,8 +437,19 @@ fn solve_backtrack_child(path: &Path, picker: PickerMix) -> anyhow::Result<()> {
         ..SolveOptions::default()
     };
 
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
     let start = Instant::now();
-    let outcome = with_puzzle!(document.puzzle(), |p| { backtrack_solve(p, &options) });
+    let outcome = with_puzzle!(document.puzzle(), |p| {
+        rt.block_on(backtrack_solve(
+            p,
+            &options,
+            std::sync::mpsc::channel().0,
+            std::sync::mpsc::channel().1,
+        ))
+    });
     let seconds = start.elapsed().as_secs_f64();
 
     // `LOOM` prefixed so a stray line from anywhere else can't be mistaken for the report.
@@ -481,10 +492,11 @@ fn parse_loom_backtrack(stdout: &str) -> anyhow::Result<LoomBt> {
 /// `--loom-timeout`.
 ///
 /// Out-of-process because there is no other way to stop it. `pbnsolve` polices itself with `-x`;
-/// `backtrack_solve` takes no deadline, exposes no guess budget, and never yields, so an
-/// in-process call that doesn't converge takes the whole sweep down with it — and it allocates a
-/// clone of the solve state per search node while it does, so a thread abandoned to run in the
-/// background would exhaust memory rather than merely waste a core. A child can just be killed.
+/// `backtrack_solve` takes no deadline and exposes no guess budget, and this call blocks the one
+/// thread driving it rather than polling it alongside a timer, so an in-process call that doesn't
+/// converge takes the whole sweep down with it — and it allocates a clone of the solve state per
+/// search node while it does, so a thread abandoned to run in the background would exhaust memory
+/// rather than merely waste a core. A child can just be killed.
 fn run_loom_backtrack(
     puzzle: &Path,
     picker: &PickerMix,

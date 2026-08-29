@@ -1,5 +1,6 @@
 use super::{
-    Action, ActionMood, CanvasGui, Disambiguator, Staleable, Tool, default_color, outline_text,
+    Action, ActionMood, BacktrackSolver, CanvasGui, Disambiguator, Staleable, Tool, default_color,
+    outline_text,
 };
 use crate::{
     grid_solve::LineStatus,
@@ -103,6 +104,10 @@ impl SolveGui {
                 },
                 disambiguator: Staleable {
                     val: Disambiguator::new(),
+                    version: 0,
+                },
+                backtrack_solver: Staleable {
+                    val: BacktrackSolver::new(),
                     version: 0,
                 },
                 id: Staleable {

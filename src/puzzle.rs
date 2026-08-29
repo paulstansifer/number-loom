@@ -560,7 +560,18 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
 
             grid_solve::line_logic_solve(self, &mut None, options, &mut partial)
         } else {
-            match bt_solve::backtrack_solve(self, options)? {
+            // Not 100% sure this works in wasm, but this is only called by the CLI.
+            let outcome = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(bt_solve::backtrack_solve(
+                    self,
+                    options,
+                    std::sync::mpsc::channel().0,
+                    std::sync::mpsc::channel().1,
+                ))?;
+            match outcome {
                 BtReport::UniqueSolution(report) => Ok(report),
                 // TODO: `Report` is not designed for "multiple valid solutions", so return an error for now.
                 // Audit the places where it's used, and then make this `Ok`!
