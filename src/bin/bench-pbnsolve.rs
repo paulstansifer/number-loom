@@ -31,7 +31,8 @@ use number_loom::{import, with_puzzle};
 enum Mode {
     /// `number-loom`'s line logic head-to-head against `pbnsolve`'s.
     Line,
-    /// `pbnsolve`'s search, on its own, as a baseline for the backtracker to beat.
+    /// `pbnsolve`'s search, on its own, as a baseline for the backtracker to beat. Both sides
+    /// prove the solution unique here (see `run_pbnsolve`'s `check_unique`).
     Backtrack,
 }
 
@@ -270,15 +271,23 @@ fn complaint(text: &str) -> Option<String> {
 }
 
 /// Runs `pbnsolve` once, returning its report and how long the whole process took.
+///
+/// `check_unique` is `-u`, and it has to match what our own side is doing or the two aren't being
+/// asked the same question. Left off, pbnsolve stops at the first solution it finds and reports
+/// `solvable`.
 fn run_pbnsolve(
     binary: &Path,
     xml: &Path,
     algorithm: Option<&str>,
     timeout: u64,
+    check_unique: bool,
 ) -> Result<(PbnReport, Duration), PbnFailure> {
     let mut command = Command::new(binary);
     // `-b` for brief output, `-t` for the counters and its own clock.
     command.arg("-b").arg("-t").arg(format!("-x{timeout}"));
+    if check_unique {
+        command.arg("-u");
+    }
     if let Some(algorithm) = algorithm {
         command.arg(format!("-a{algorithm}"));
     }
@@ -353,10 +362,11 @@ fn best_pbnsolve_run(
     algorithm: Option<&str>,
     timeout: u64,
     reps: u32,
+    check_unique: bool,
 ) -> Result<(PbnReport, Duration), PbnFailure> {
     let mut best: Option<(PbnReport, Duration)> = None;
     for _ in 0..reps {
-        let (report, wall) = run_pbnsolve(binary, xml, algorithm, timeout)?;
+        let (report, wall) = run_pbnsolve(binary, xml, algorithm, timeout, check_unique)?;
         // Compare on pbnsolve's own clock, which is what gets reported; wall clock rides along.
         let better = best
             .as_ref()
@@ -792,7 +802,14 @@ fn bench_one(
 
     let xml = webpbn_path_for(path, &document, temp_dir)?;
 
-    let pbn_run = best_pbnsolve_run(&args.pbnsolve, &xml, algorithm, args.timeout, reps);
+    let pbn_run = best_pbnsolve_run(
+        &args.pbnsolve,
+        &xml,
+        algorithm,
+        args.timeout,
+        reps,
+        args.mode == Mode::Backtrack,
+    );
     let (pbn, pbn_wall) = match pbn_run {
         Ok(both) => both,
         Err(failure) => bail!("pbnsolve: {}", failure.label()),
@@ -946,15 +963,19 @@ fn print_backtrack_table(rows: &[Row]) {
     // `backtrack_solve` counts no guesses or backtracks of its own yet, so pbnsolve's two search
     // counters have no column to sit beside; what it does report is skims and scrubs, the same
     // pair line mode shows.
+    //
+    // There is no "pbn left" column here, though line mode has one: under `-u` pbnsolve backtracks
+    // out of the solution it found to go looking for a second, so its `Cells Solved` ends up
+    // describing wherever the search stopped rather than the answer — `webpbn-00436` solves
+    // uniquely and still reports 725 of 1400. The status word is what says how it went.
     println!(
-        "{:<name_width$} {:>7} {:>12} {:>12} {:>8} {:>10} {:>10} {:>13}  {:<14} {}",
+        "{:<name_width$} {:>7} {:>12} {:>12} {:>8} {:>10} {:>13}  {:<14} {}",
         "puzzle",
         "cells",
         "loom sec",
         "pbn sec",
         "ratio",
         "loom left",
-        "pbn left",
         "skims/scrubs",
         "loom",
         "pbn",
@@ -1011,9 +1032,8 @@ fn print_backtrack_table(rows: &[Row]) {
 
                 println!(
                     "{name:<name_width$} {cells:>7} {loom_sec:>12} {:>12.6} {ratio:>8} \
-                     {loom_left:>10} {:>10} {loom_lines:>13}  {loom_status:<14} {pbn_status}",
+                     {loom_left:>10} {loom_lines:>13}  {loom_status:<14} {pbn_status}",
                     pbn.seconds,
-                    pbn.cells_total.saturating_sub(pbn.cells_solved),
                 );
             }
             Row::Skipped { name, why } => println!("{name:<name_width$} {why}"),
@@ -1086,10 +1106,11 @@ fn write_csv(path: &Path, rows: &[Row]) -> anyhow::Result<()> {
                         why.clone(),
                     ),
                 };
+                // `pbn_cells_left` is left empty rather than filled in: see `print_backtrack_table`
+                // for why `-u` makes pbnsolve's count of them meaningless here.
                 out.push_str(&format!(
-                    "{name},{cells},{loom_seconds},{},{loom_left},{},{skims},{scrubs},{},{},{},\"loom: {loom_status}; pbn: {}\"\n",
+                    "{name},{cells},{loom_seconds},{},{loom_left},,{skims},{scrubs},{},{},{},\"loom: {loom_status}; pbn: {}\"\n",
                     pbn.seconds,
-                    pbn.cells_total.saturating_sub(pbn.cells_solved),
                     pbn.lines_processed,
                     pbn.guesses,
                     pbn.backtracks,
