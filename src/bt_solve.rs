@@ -154,10 +154,9 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
 ) -> anyhow::Result<Option<BtReport>> {
     let state = ctx.possibilities.get_mut(&coord).unwrap();
 
-    // TODO: rename `guess` to `learn`
     state
         .knowledge
-        .guess(&mut ctx.linear_ctx, cell_idx, is, color);
+        .learn(&mut ctx.linear_ctx, cell_idx, is, color);
     let run_consequence = state.knowledge.run_and_check(&mut ctx.linear_ctx);
 
     if ctx.linear_ctx.options.trace_backtrack {

@@ -824,7 +824,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     /// after a `Stalled` picks up where the stall left off.
     ///
     /// Panics if the assumption is isn't new information or is impossible
-    pub fn guess<K: GridKind>(
+    pub fn learn<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
         cell: usize,
