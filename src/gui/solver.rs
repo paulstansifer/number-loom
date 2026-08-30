@@ -3,8 +3,8 @@ use super::{
     outline_text,
 };
 use crate::{
-    grid_solve::LineStatus,
     puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
+    solve::grid_solve::LineStatus,
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
@@ -652,7 +652,7 @@ pub struct BlockHint {
     pub rgb: (u8, u8, u8),
 }
 
-use crate::line_solve::SolveMode;
+use crate::solve::line_solve::SolveMode;
 
 /// The little mark showing which technique will crack a line: a dot for skimming, a diamond for
 /// scrubbing, a red cross for a contradiction.

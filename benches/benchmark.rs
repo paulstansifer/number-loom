@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use number_loom::grid_solve::{SolveOptions, solve};
 use number_loom::import::load_path;
+use number_loom::solve::grid_solve::{SolveOptions, solve};
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut dust_40_doc =

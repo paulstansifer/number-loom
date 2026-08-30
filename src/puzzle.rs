@@ -3,11 +3,11 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::{collections::HashMap, hash::Hasher};
 
-use crate::bt_solve;
+use crate::solve::bt_solve;
 use crate::{
     geometry::{Geometry, GridKind, Outline, Rect, Shape, Square, Tri, TriCoord},
-    grid_solve::{self, LineStatus, SolveOptions},
     import::{solution_to_puzzle, solution_to_tri_puzzle, solution_to_triano_puzzle},
+    solve::grid_solve::{self, LineStatus, SolveOptions},
 };
 use serde::{Deserialize, Serialize};
 /// All colors, including `BACKGROUND`.
@@ -289,7 +289,7 @@ pub struct Solution<K: GridKind> {
 // Indexed by the dense cell numbering that `Geometry` defines, so it works for any shape. For
 // square puzzles that numbering is `y * width + x`, i.e. the same row-major layout the old
 // `Array2` had.
-pub type PartialSolution = Vec<crate::line_solve::Cell>;
+pub type PartialSolution = Vec<crate::solve::line_solve::Cell>;
 
 impl<K: GridKind> Solution<K> {
     pub fn new(
@@ -317,9 +317,9 @@ impl<K: GridKind> Solution<K> {
             .iter()
             .map(|color| {
                 if *color == UNSOLVED {
-                    crate::line_solve::Cell::new_anything()
+                    crate::solve::line_solve::Cell::new_anything()
                 } else {
-                    crate::line_solve::Cell::from_color(*color)
+                    crate::solve::line_solve::Cell::from_color(*color)
                 }
             })
             .collect()
@@ -507,15 +507,15 @@ pub trait PuzzleDynOps {
     fn solve(
         &self,
         backtrack: bool,
-        options: &crate::grid_solve::SolveOptions,
-    ) -> anyhow::Result<crate::grid_solve::Report>;
+        options: &crate::solve::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::solve::grid_solve::Report>;
     // TODO: we should propogate `backtrack` through these functions:
     fn partial_solve(
         &self,
         partial: &mut PartialSolution,
-        options: &crate::grid_solve::SolveOptions,
-    ) -> anyhow::Result<crate::grid_solve::Report>;
-    fn plain_solve(&self) -> anyhow::Result<crate::grid_solve::Report> {
+        options: &crate::solve::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::solve::grid_solve::Report>;
+    fn plain_solve(&self) -> anyhow::Result<crate::solve::grid_solve::Report> {
         self.solve(/*backtrack=*/ false, &SolveOptions::default())
     }
     /// One `Vec<LineStatus>` per clue family — two for a square puzzle, three for a triddler.
@@ -542,8 +542,8 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
     fn partial_solve(
         &self,
         partial: &mut PartialSolution,
-        options: &crate::grid_solve::SolveOptions,
-    ) -> anyhow::Result<crate::grid_solve::Report> {
+        options: &crate::solve::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::solve::grid_solve::Report> {
         grid_solve::line_logic_solve(self, &mut None, options, partial)
     }
 
@@ -551,11 +551,13 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
         &self,
         backtrack: bool,
         options: &SolveOptions,
-    ) -> anyhow::Result<crate::grid_solve::Report> {
+    ) -> anyhow::Result<crate::solve::grid_solve::Report> {
         // TODO: there's no reason for `bt_solve` and `grid_solve` to have different interfaces like this
         if !backtrack {
-            let mut partial =
-                vec![crate::line_solve::Cell::new(&self.palette); self.geometry.cell_count()];
+            let mut partial = vec![
+                crate::solve::line_solve::Cell::new(&self.palette);
+                self.geometry.cell_count()
+            ];
 
             grid_solve::line_logic_solve(self, &mut None, options, &mut partial)
         } else {
@@ -598,16 +600,16 @@ impl PuzzleDynOps for DynPuzzle {
     fn partial_solve(
         &self,
         partial: &mut PartialSolution,
-        options: &crate::grid_solve::SolveOptions,
-    ) -> anyhow::Result<crate::grid_solve::Report> {
+        options: &crate::solve::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::solve::grid_solve::Report> {
         with_puzzle!(self, |p| p.partial_solve(partial, options))
     }
 
     fn solve(
         &self,
         backtrack: bool,
-        options: &crate::grid_solve::SolveOptions,
-    ) -> anyhow::Result<crate::grid_solve::Report> {
+        options: &crate::solve::grid_solve::SolveOptions,
+    ) -> anyhow::Result<crate::solve::grid_solve::Report> {
         with_puzzle!(self, |p| p.solve(backtrack, options))
     }
 
@@ -821,8 +823,8 @@ impl DynSolution {
 /// Line caches are keyed on the clue list plus the gathered lane contents, and geometry never
 /// enters that key — so square and triangular `Nono` puzzles correctly share one cache.
 pub struct DynSolveCache {
-    nono_cache: Option<crate::grid_solve::LineCache<Nono>>,
-    triano_cache: Option<crate::grid_solve::LineCache<Triano>>,
+    nono_cache: Option<crate::solve::grid_solve::LineCache<Nono>>,
+    triano_cache: Option<crate::solve::grid_solve::LineCache<Triano>>,
 }
 
 impl Default for DynSolveCache {
@@ -839,13 +841,17 @@ impl DynSolveCache {
         }
     }
 
-    pub fn solve(&mut self, p: &DynPuzzle) -> anyhow::Result<crate::grid_solve::Report> {
-        let options = crate::grid_solve::SolveOptions::default();
+    pub fn solve(&mut self, p: &DynPuzzle) -> anyhow::Result<crate::solve::grid_solve::Report> {
+        let options = crate::solve::grid_solve::SolveOptions::default();
         match p {
-            DynPuzzle::SquareNono(p) => crate::grid_solve::solve(p, &mut self.nono_cache, &options),
-            DynPuzzle::TriNono(p) => crate::grid_solve::solve(p, &mut self.nono_cache, &options),
+            DynPuzzle::SquareNono(p) => {
+                crate::solve::grid_solve::solve(p, &mut self.nono_cache, &options)
+            }
+            DynPuzzle::TriNono(p) => {
+                crate::solve::grid_solve::solve(p, &mut self.nono_cache, &options)
+            }
             DynPuzzle::SquareTriano(p) => {
-                crate::grid_solve::solve(p, &mut self.triano_cache, &options)
+                crate::solve::grid_solve::solve(p, &mut self.triano_cache, &options)
             }
         }
     }

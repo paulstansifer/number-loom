@@ -21,10 +21,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use number_loom::bt_solve::{PickerMix, ScoreKind, backtrack_solve};
 use number_loom::formats::webpbn::as_webpbn;
-use number_loom::grid_solve::SolveOptions;
 use number_loom::puzzle::{DynPuzzle, PuzzleDynOps};
+use number_loom::solve::bt_solve::{PickerMix, ScoreKind, backtrack_solve};
+use number_loom::solve::grid_solve::SolveOptions;
 use number_loom::{import, with_puzzle};
 
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]

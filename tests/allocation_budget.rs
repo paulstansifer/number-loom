@@ -17,9 +17,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use number_loom::grid_solve::{SolveContext, SolveOptions, SolveState, Step};
 use number_loom::import::load_path;
-use number_loom::line_solve::Cell;
+use number_loom::solve::grid_solve::{SolveContext, SolveOptions, SolveState, Step};
+use number_loom::solve::line_solve::Cell;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 

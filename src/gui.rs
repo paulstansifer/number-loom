@@ -93,9 +93,7 @@ pub type SharedProgress = Rc<RefCell<Option<f32>>>;
 use solver::{RenderStyle, SolveGui};
 
 use crate::{
-    bt_solve,
     export::to_bytes,
-    grid_solve::{self, DisambigResult, SolveOptions, disambig_candidates},
     import,
     // The abstract-units point, distinct from egui's `Pos2`: everything the lasso does is in
     // grid space, and only the painter converts.
@@ -104,6 +102,8 @@ use crate::{
         BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynSolution, Palette,
         PuzzleDynOps, Solution, UNSOLVED,
     },
+    solve::bt_solve,
+    solve::grid_solve::{self, DisambigResult, SolveOptions, disambig_candidates},
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, TextStyle, Vec2, Visuals};

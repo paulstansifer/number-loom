@@ -6,19 +6,21 @@ use priority_queue::PriorityQueue;
 
 use crate::{
     geometry::GridKind,
-    grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
     gui,
-    line_solve::Cell,
     puzzle::{Clue, Color, PartialSolution, Puzzle},
+    solve::grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
+    solve::line_solve::Cell,
 };
 
-mod pickers;
-mod scoring;
+#[path = "bt_picking.rs"]
+mod bt_picking;
+#[path = "bt_scoring.rs"]
+mod bt_scoring;
 
-use pickers::pick_guess;
-pub use pickers::{PickerKind, PickerMix};
-pub use scoring::ScoreKind;
-use scoring::{ScoreCtx, Terms};
+use bt_picking::pick_guess;
+pub use bt_picking::{PickerKind, PickerMix};
+pub use bt_scoring::ScoreKind;
+use bt_scoring::{ScoreCtx, Terms};
 
 /// A coordinate into the tree of hypotheticals (a stack of assumptions)
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -73,7 +75,7 @@ impl<'p, C: Clue> BtSolveState<'p, C> {
             solution_known: sc.solution_found.is_some(),
         };
 
-        std::cmp::Reverse(Score(scoring::score(sc.kind, &terms)))
+        std::cmp::Reverse(Score(bt_scoring::score(sc.kind, &terms)))
     }
 
     /// Summed candidate colors over the unknown cells — only the `Candidates` scorer asks, and
@@ -349,8 +351,8 @@ mod tests {
 
     use crate::geometry::{Geometry, Outline, Rect, Square, Tri};
     use crate::import::{bw_palette, solution_to_puzzle, solution_to_tri_puzzle};
-    use crate::line_solve::Cell;
     use crate::puzzle::{BACKGROUND, ClueStyle, ColorInfo, Nono, Solution};
+    use crate::solve::line_solve::Cell;
 
     /// Runs `backtrack_solve` to completion on the current thread, ignoring progress and never
     /// terminating early — what every test here wants, since none of them are testing that.
@@ -494,7 +496,7 @@ mod tests {
         let puzzle = solution_to_puzzle(&picture(&want));
 
         let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
-        let line_only = crate::grid_solve::line_logic_solve(
+        let line_only = crate::solve::grid_solve::line_logic_solve(
             &puzzle,
             &mut None,
             &SolveOptions::default(),
@@ -528,7 +530,7 @@ mod tests {
         let puzzle = solution_to_puzzle(&picture(&want));
 
         let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
-        let line_only = crate::grid_solve::line_logic_solve(
+        let line_only = crate::solve::grid_solve::line_logic_solve(
             &puzzle,
             &mut None,
             &SolveOptions::default(),
@@ -588,7 +590,7 @@ mod tests {
 
         // Line logic really doesn't notice; if it learns to, this stops testing the search.
         let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
-        let line_only = crate::grid_solve::line_logic_solve(
+        let line_only = crate::solve::grid_solve::line_logic_solve(
             &puzzle,
             &mut None,
             &SolveOptions::default(),
@@ -610,7 +612,7 @@ mod tests {
         let puzzle = solution_to_tri_puzzle(&tri_picture(&want));
 
         let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
-        let line_only = crate::grid_solve::line_logic_solve(
+        let line_only = crate::solve::grid_solve::line_logic_solve(
             &puzzle,
             &mut None,
             &SolveOptions::default(),

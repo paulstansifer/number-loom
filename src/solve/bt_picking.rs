@@ -6,10 +6,10 @@
 //! it lives apart from the search itself, which doesn't care how the guesses get chosen.
 
 use crate::{
-    bt_solve::{BtSolveState, Score},
     geometry::GridKind,
-    grid_solve::SolveContext,
     puzzle::{BACKGROUND, Clue, Color},
+    solve::bt_solve::{BtSolveState, Score},
+    solve::grid_solve::SolveContext,
 };
 
 /// Decides which cell to guess at, and what color to guess.
@@ -323,7 +323,7 @@ pub struct PickerMix {
 
 impl Default for PickerMix {
     fn default() -> PickerMix {
-        use crate::bt_solve::pickers::PickerKind::{Disagreement, Random};
+        use PickerKind::{Disagreement, Random};
         PickerMix {
             rotation: vec![Disagreement, Disagreement, Disagreement, Random],
         }

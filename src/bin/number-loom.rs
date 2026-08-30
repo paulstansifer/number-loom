@@ -8,7 +8,7 @@ use number_loom::puzzle::Document;
 use number_loom::puzzle::NonogramFormat;
 use number_loom::puzzle::PuzzleDynOps;
 use number_loom::puzzle::{DynSolution, Solution};
-use number_loom::{export, grid_solve, gui};
+use number_loom::{export, gui, solve::grid_solve};
 
 #[derive(clap::Parser, Debug)]
 #[command(version, about, long_about = None)]

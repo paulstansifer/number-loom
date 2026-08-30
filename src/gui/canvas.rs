@@ -34,7 +34,7 @@ impl HoverBlocks {
 pub struct ClueOverlay<'a> {
     pub puzzle: &'a crate::puzzle::DynPuzzle,
     /// One `Vec<LineStatus>` per clue family, in family order.
-    pub analysis: Option<&'a Vec<Vec<crate::grid_solve::LineStatus>>>,
+    pub analysis: Option<&'a Vec<Vec<crate::solve::grid_solve::LineStatus>>>,
     pub is_stale: bool,
     /// The hovered cell's block lengths, shown in place of the analysis marks on its own lanes.
     pub hover: Option<HoverBlocks>,

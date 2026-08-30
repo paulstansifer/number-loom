@@ -21,12 +21,12 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
       gallery.rs - for chosing a puzzle to solve
       outline_text.rs - overengineered halos for text readability on arbitrary backgrounds
     import.rs, export.rs - support for various file formats
-    line_solve.rs - quick ("skim") and exhaustive ("scrub") line-logic implementation
-    grid_solve.rs - uses repeated line-logic to solve a puzzle
-    bt_solve.rs - backtracking search
-    bt_solve/
-      pickers.rs - how to decide where to guess
-      scoring.rs - how to decide which hypothesis to work on next
+    solve/ - the automatic solver (as opposed to gui/solver.rs, the interactive solving view)
+      line_solve.rs - quick ("skim") and exhaustive ("scrub") line-logic implementation
+      grid_solve.rs - uses repeated line-logic to solve a puzzle
+      bt_solve.rs - backtracking search
+      bt_picking.rs - how to decide where to guess
+      bt_scoring.rs - how to decide which hypothesis to work on next
     geometry.rs - puzzle shapes: what cells exist, what lines they form, where they sit
     layout.rs - abstract drawing geometry (cell shapes, positions, grid lines, clue gutters)
     puzzle.rs - data structures

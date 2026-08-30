@@ -6,13 +6,13 @@ use colored::Colorize;
 use crate::{
     geometry::{GridKind, LaneMap},
     gui,
-    line_solve::{
-        Cell, ClueSummary, LaneCounts, ModeMap, ScrubReport, SolveMode, count_cells, count_lane,
-        exhaust_line, score_counts, scrub_heuristic, skim_heuristic, skim_line,
-    },
     puzzle::{
         BACKGROUND, Clue, Color, ColorInfo, DynSolution, PartialSolution, Puzzle, Solution,
         UNSOLVED,
+    },
+    solve::line_solve::{
+        Cell, ClueSummary, LaneCounts, ModeMap, ScrubReport, SolveMode, count_cells, count_lane,
+        exhaust_line, score_counts, scrub_heuristic, skim_heuristic, skim_line,
     },
 };
 
@@ -27,9 +27,9 @@ pub struct SolveOptions {
     pub max_effort: SolveMode,
     /// How `bt_solve` decides where to guess, and in what rotation. Ignored by line logic,
     /// which never guesses.
-    pub guess_picker: crate::bt_solve::PickerMix,
+    pub guess_picker: crate::solve::bt_solve::PickerMix,
     /// How `bt_solve` orders its queue of hypotheses. Ignored by line logic, which has no queue.
-    pub node_scorer: crate::bt_solve::ScoreKind,
+    pub node_scorer: crate::solve::bt_solve::ScoreKind,
 }
 
 impl Default for SolveOptions {
@@ -40,8 +40,8 @@ impl Default for SolveOptions {
             display_cli_progress: false,
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
-            guess_picker: crate::bt_solve::PickerMix::default(),
-            node_scorer: crate::bt_solve::ScoreKind::default(),
+            guess_picker: crate::solve::bt_solve::PickerMix::default(),
+            node_scorer: crate::solve::bt_solve::ScoreKind::default(),
         }
     }
 }
@@ -484,7 +484,7 @@ pub fn settle_solution<C: Clue, K: GridKind>(
     let mut buf: Vec<Cell> = vec![];
     for (lane, clues) in puzzle.lines.iter().enumerate() {
         gather_into(puzzle.geometry.lane_map(), lane, grid, &mut buf);
-        crate::line_solve::settle_line(clues, &mut buf)?;
+        crate::solve::line_solve::settle_line(clues, &mut buf)?;
         scatter(puzzle.geometry.lane_map(), lane, &buf, grid);
     }
     Ok(())
@@ -750,7 +750,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         self.lanes[idx].per_mode[mode].processed = true;
 
         if let Some(color) = options.only_solve_color {
-            crate::line_solve::filter_report_by_color(
+            crate::solve::line_solve::filter_report_by_color(
                 &mut report,
                 &orig_version_of_line,
                 grid_lane,

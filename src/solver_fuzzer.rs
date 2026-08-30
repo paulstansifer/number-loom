@@ -3,12 +3,12 @@ mod tests {
     use std::collections::HashSet;
 
     use number_loom::geometry::{Geometry, Outline, Square, Tri};
-    use number_loom::grid_solve::{SolveOptions, solve};
     use number_loom::import::{bw_palette, solution_to_puzzle, solution_to_triano_puzzle};
-    use number_loom::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
     use number_loom::puzzle::{
         BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Puzzle, Solution,
     };
+    use number_loom::solve::grid_solve::{SolveOptions, solve};
+    use number_loom::solve::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
     use rand::{Rng, SeedableRng};
 
     fn generate_random_line(length: usize, num_colors: u8) -> Vec<Color> {

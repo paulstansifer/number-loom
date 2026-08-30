@@ -1,13 +1,11 @@
-pub mod bt_solve;
 pub mod export;
 pub mod formats;
 pub mod geometry;
-pub mod grid_solve;
 pub mod gui;
 pub mod import;
 pub mod layout;
-pub mod line_solve;
 pub mod puzzle;
+pub mod solve;
 pub mod user_settings;
 
 #[cfg(test)]
@@ -16,7 +14,7 @@ use crate::puzzle::PuzzleDynOps;
 #[test]
 // This is a consistency test, used to notice when measured difficulties change.
 fn solve_examples() {
-    use crate::{grid_solve::Report, import};
+    use crate::{import, solve::grid_solve::Report};
     use itertools::Itertools;
     use std::path::PathBuf;
 
@@ -101,7 +99,7 @@ fn solve_examples() {
 // that directory also holds a `README.md` that isn't a puzzle file, and since a triddler's
 // `Puzzle` is a different type from a square one's.
 fn solve_triddler_examples() {
-    use crate::{grid_solve::Report, import};
+    use crate::{import, solve::grid_solve::Report};
     use std::path::PathBuf;
 
     let examples_dir = PathBuf::from("examples/triddler");
