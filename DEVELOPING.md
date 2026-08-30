@@ -26,6 +26,7 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     bt_solve.rs - backtracking search
     bt_solve/
       pickers.rs - how to decide where to guess
+      scoring.rs - how to decide which hypothesis to work on next
     geometry.rs - puzzle shapes: what cells exist, what lines they form, where they sit
     layout.rs - abstract drawing geometry (cell shapes, positions, grid lines, clue gutters)
     puzzle.rs - data structures
@@ -51,14 +52,19 @@ coordinate scheme, and lane details.
 
 # Benchmarking against `pbnsolve`
 
-`pbnsolve` is Jan Wolter's solver, the reference implementation from his
-[Survey of Paint-by-Number Puzzle Solvers](http://webpbn.com/survey/). `examples/wolter/` is that
+`pbnsolve`, by Jan Wolter, is one of the fastest and most complete nonogram solvers. Wolter's
+[Survey of Paint-by-Number Puzzle Solvers](http://webpbn.com/survey/) is extensive. `examples/wolter/` is that
 survey's puzzle set, in the webpbn XML that `pbnsolve` reads natively — so the two solvers can be
 pointed at exactly the same puzzles. Build `pbnsolve` from source, then:
 
 ```
 cargo run --release --features bench-pbnsolve --bin bench-pbnsolve -- --pbnsolve /path/to/pbnsolve
 ```
+
+`--mode backtrack` adds two knobs for the search itself: `--picker` (where to guess within a
+node; see `bt_solve/pickers.rs`) and `--scorer` (which node to work on next; see
+`bt_solve/scoring.rs`). Both default to what `SolveOptions` ships, so leaving them off measures
+the solver as users get it.
 
 
 # The `WOVEN` format

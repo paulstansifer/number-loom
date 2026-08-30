@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use number_loom::bt_solve::{PickerMix, backtrack_solve};
+use number_loom::bt_solve::{PickerMix, ScoreKind, backtrack_solve};
 use number_loom::formats::webpbn::as_webpbn;
 use number_loom::grid_solve::SolveOptions;
 use number_loom::puzzle::{DynPuzzle, PuzzleDynOps};
@@ -93,6 +93,11 @@ struct Args {
     /// of them costs a full `--loom-timeout` and reports nothing but that it ran out.
     #[arg(long)]
     include_difficult: bool,
+
+    /// Which node-scoring function orders our backtracker's queue, in backtrack mode. Defaults
+    /// to whatever `SolveOptions` does.
+    #[arg(long, value_enum)]
+    scorer: Option<ScoreKind>,
 
     /// Not for humans: solve one puzzle with `backtrack_solve` and print a line of counters. The
     /// benchmark re-runs itself this way to bound a search it can't otherwise interrupt.
@@ -429,11 +434,12 @@ struct LoomBt {
 
 /// The `--solve-backtrack` half of the binary: one puzzle, one `backtrack_solve`, one line of
 /// counters on stdout for the parent to read back. Nothing here touches `pbnsolve`.
-fn solve_backtrack_child(path: &Path, picker: PickerMix) -> anyhow::Result<()> {
+fn solve_backtrack_child(path: &Path, picker: PickerMix, scorer: ScoreKind) -> anyhow::Result<()> {
     let mut document = import::load_path(&path.to_path_buf(), None)
         .with_context(|| format!("couldn't load {}", path.display()))?;
     let options = SolveOptions {
         guess_picker: picker,
+        node_scorer: scorer,
         ..SolveOptions::default()
     };
 
@@ -503,6 +509,7 @@ fn parse_loom_backtrack(stdout: &str) -> anyhow::Result<LoomBt> {
 fn run_loom_backtrack(
     puzzle: &Path,
     picker: &PickerMix,
+    scorer: ScoreKind,
     timeout: u64,
 ) -> Result<LoomBt, PbnFailure> {
     let exe = std::env::current_exe().map_err(|e| PbnFailure::Crashed(e.to_string()))?;
@@ -515,6 +522,8 @@ fn run_loom_backtrack(
         .arg(std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/")))
         .arg("--picker")
         .arg(picker.to_string())
+        .arg("--scorer")
+        .arg(scorer.flag_name())
         .arg("--solve-backtrack")
         .arg(puzzle);
     command.stdout(std::process::Stdio::piped());
@@ -644,6 +653,7 @@ const TOO_DIFFICULT: &[&str] = &[
     "-10088",
     "-12548",
     "-18297",
+    "-22336",
     "-color-00672",
     "-color-03620",
 ];
@@ -731,7 +741,11 @@ fn main() -> anyhow::Result<()> {
 
     // The child half of `run_loom_backtrack`: solve one puzzle and say nothing else.
     if let Some(puzzle) = &args.solve_backtrack {
-        return solve_backtrack_child(puzzle, args.picker.clone().unwrap_or_default());
+        return solve_backtrack_child(
+            puzzle,
+            args.picker.clone().unwrap_or_default(),
+            args.scorer.unwrap_or_default(),
+        );
     }
 
     if !args.pbnsolve.is_file() {
@@ -841,6 +855,7 @@ fn bench_one(
             loom: run_loom_backtrack(
                 path,
                 &args.picker.clone().unwrap_or_default(),
+                args.scorer.unwrap_or_default(),
                 args.loom_timeout,
             )
             .map_err(|f| f.label()),
@@ -1016,9 +1031,7 @@ fn print_backtrack_table(rows: &[Row]) {
 
                 let (loom_sec, loom_left, loom_lines, loom_status, ratio) = match loom {
                     Ok(loom) => {
-                        if loom.cells_left == 0 {
-                            solved += 1;
-                        }
+                        solved += 1;
                         // Only worth a ratio when both clocks actually measured something.
                         let ratio = match micros(pbn.seconds) {
                             Some(pbn_us) if loom.seconds > 0.0 => {

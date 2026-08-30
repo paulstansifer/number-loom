@@ -28,6 +28,8 @@ pub struct SolveOptions {
     /// How `bt_solve` decides where to guess, and in what rotation. Ignored by line logic,
     /// which never guesses.
     pub guess_picker: crate::bt_solve::PickerMix,
+    /// How `bt_solve` orders its queue of hypotheses. Ignored by line logic, which has no queue.
+    pub node_scorer: crate::bt_solve::ScoreKind,
 }
 
 impl Default for SolveOptions {
@@ -39,6 +41,7 @@ impl Default for SolveOptions {
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
             guess_picker: crate::bt_solve::PickerMix::default(),
+            node_scorer: crate::bt_solve::ScoreKind::default(),
         }
     }
 }
@@ -842,7 +845,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         assert!(new_info, "must be new information");
 
         if self.grid[cell].is_known() {
-        self.cells_left -= 1;
+            self.cells_left -= 1;
         }
 
         let Scratch { changes, stale, .. } = &mut ctx.scratch;

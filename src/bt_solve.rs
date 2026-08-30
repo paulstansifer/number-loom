@@ -13,9 +13,12 @@ use crate::{
 };
 
 mod pickers;
+mod scoring;
 
 use pickers::pick_guess;
 pub use pickers::{PickerKind, PickerMix};
+pub use scoring::ScoreKind;
+use scoring::{ScoreCtx, Terms};
 
 /// A coordinate into the tree of hypotheticals (a stack of assumptions)
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -45,39 +48,42 @@ pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
 struct BtSolveState<'p, C: Clue> {
     knowledge: SolveState<'p, C>,
     guesses_explored: HashSet<(usize, Color)>,
+    /// How many cells were unknown in the node this one was forked from, so a scorer can ask
+    /// what this node's guess actually bought. The root is its own parent.
+    parent_cells_left: usize,
 }
 
 impl<'p, C: Clue> BtSolveState<'p, C> {
-    /// How much is a node worth searching. Strong penalty for hypothetical depth:
-    /// the goal is to prove a unique solution if possible, and that requires facts
-    /// to filter down to "ground level"
-    ///
-    /// `solution_found` is the solution the search has already turned up, if it has: a node
-    /// whose first guess agrees with it is on its way to rediscovering it, and rediscovering it
-    /// settles nothing. What's wanted is a *second* solution, or the proof that there isn't one.
-    fn score_at(
-        &self,
-        coord: &HypoCoord,
-        solution_found: Option<&PartialSolution>,
-    ) -> std::cmp::Reverse<Score> {
-        let distance_remaining = self.knowledge.cells_left as f32;
-
-        // Doubling per level, but only down to depth 5 — past there every node is buried anyway,
-        // and what's left to do is order them, which a gentle slope does as well as a cliff.
-        let levels = coord.guesses.len();
-        let depth = 5.0 * 2.0_f32.powi(levels.min(5) as i32)
-            + if levels > 5 { levels as f32 * 5.0 } else { 0.0 };
-
-        let rediscovery = match (solution_found, coord.guesses.first()) {
-            (Some(solution), Some((cell_idx, color))) if solution[*cell_idx].can_be(*color) => {
-                500.0
-            }
-            _ => 0.0,
+    /// How much is a node worth searching: lower is sooner. The formulas live in
+    /// `scoring.rs`; this gathers the measurements they read.
+    fn score_at(&self, coord: &HypoCoord, sc: &ScoreCtx<'_>) -> std::cmp::Reverse<Score> {
+        let rediscovering = match (sc.solution_found, coord.guesses.first()) {
+            (Some(solution), Some((cell_idx, color))) => solution[*cell_idx].can_be(*color),
+            _ => false,
         };
 
-        let exhaustion = self.guesses_explored.len() as f32 * 3.0;
+        let terms = Terms {
+            cells_left: self.knowledge.cells_left as f32,
+            parent_cells_left: self.parent_cells_left as f32,
+            candidates: self.candidates() as f32,
+            levels: coord.guesses.len() as f32,
+            explored: self.guesses_explored.len() as f32,
+            rediscovering,
+            total_cells: sc.total_cells as f32,
+            solution_known: sc.solution_found.is_some(),
+        };
 
-        std::cmp::Reverse(Score(distance_remaining + depth + rediscovery + exhaustion))
+        std::cmp::Reverse(Score(scoring::score(sc.kind, &terms)))
+    }
+
+    /// Summed candidate colors over the unknown cells — only the `Candidates` scorer asks, and
+    /// it's a pass over the grid, which is what `pick_guess` costs anyway.
+    fn candidates(&self) -> usize {
+        self.knowledge
+            .grid
+            .iter()
+            .map(|cell| cell.raw().count_ones() as usize)
+            .sum()
     }
 
     fn fork(
@@ -94,6 +100,7 @@ impl<'p, C: Clue> BtSolveState<'p, C> {
             BtSolveState {
                 knowledge: self.knowledge.clone(),
                 guesses_explored: HashSet::new(),
+                parent_cells_left: self.knowledge.cells_left,
             },
         )
     }
@@ -164,16 +171,21 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
         .learn(&mut ctx.linear_ctx, cell_idx, is, color);
     let run_consequence = state.knowledge.run_and_check(&mut ctx.linear_ctx);
 
+    let sc = ScoreCtx {
+        kind: ctx.linear_ctx.options.node_scorer,
+        total_cells: ctx.total_cells,
+        solution_found: ctx.solution_found.as_ref(),
+    };
     if ctx.linear_ctx.options.trace_backtrack {
         println!(
             "Rescoring {coord:?} to {:?}. Q len {}",
-            state.score_at(coord, ctx.solution_found.as_ref()),
+            state.score_at(coord, &sc),
             ctx.q.len()
         );
     }
     // Did all that learning make this node look better?
-    ctx.q
-        .change_priority(coord, state.score_at(coord, ctx.solution_found.as_ref()));
+    // (usually, this is the same as .change_priority, but `coord` might have gotten nuked!)
+    ctx.q.push(coord.clone(), state.score_at(coord, &sc));
 
     // `coord` is the root exactly when what was just learned is unconditional (no hypothesis
     // behind it), which is the only kind of progress worth reporting: hypothetical knowledge can
@@ -276,11 +288,13 @@ pub async fn backtrack_solve<C: Clue, K: GridKind>(
         .send((total_cells - init_linear_state.cells_left) as f32 / total_cells as f32);
 
     ctx.q.push(root_coord(), std::cmp::Reverse(Score(0.0)));
+    let root_cells_left = init_linear_state.cells_left;
     ctx.possibilities.insert(
         root_coord(),
         BtSolveState {
             knowledge: init_linear_state,
             guesses_explored: HashSet::new(),
+            parent_cells_left: root_cells_left,
         },
     );
 
@@ -294,16 +308,18 @@ pub async fn backtrack_solve<C: Clue, K: GridKind>(
         gui::yield_now().await;
 
         let state = ctx.possibilities.get_mut(&coord).unwrap();
+        let sc = ScoreCtx {
+            kind: ctx.linear_ctx.options.node_scorer,
+            total_cells: ctx.total_cells,
+            solution_found: ctx.solution_found.as_ref(),
+        };
 
         let kind = ctx.linear_ctx.options.guess_picker.for_guess(guesses_made);
         guesses_made += 1;
 
         // If we've made every possible guess, don't re-enqueue the node.
         if let Some((cell_idx, color)) = pick_guess(kind, state, &ctx.linear_ctx) {
-            ctx.q.push(
-                coord.clone(),
-                state.score_at(&coord, ctx.solution_found.as_ref()),
-            );
+            ctx.q.push(coord.clone(), state.score_at(&coord, &sc));
 
             let (new_coord, new_state) = state.fork(&coord, (cell_idx, color));
 
@@ -312,10 +328,8 @@ pub async fn backtrack_solve<C: Clue, K: GridKind>(
             }
 
             // `suppose` expects to find `new_state` at `new_coord`
-            ctx.q.push(
-                new_coord.clone(),
-                new_state.score_at(&new_coord, ctx.solution_found.as_ref()),
-            );
+            ctx.q
+                .push(new_coord.clone(), new_state.score_at(&new_coord, &sc));
             ctx.possibilities.insert(new_coord.clone(), new_state);
 
             if let Some(sup_res) =
