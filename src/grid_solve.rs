@@ -841,7 +841,9 @@ impl<'p, C: Clue> SolveState<'p, C> {
         };
         assert!(new_info, "must be new information");
 
+        if self.grid[cell].is_known() {
         self.cells_left -= 1;
+        }
 
         let Scratch { changes, stale, .. } = &mut ctx.scratch;
         changes.clear();
