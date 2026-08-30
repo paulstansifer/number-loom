@@ -5,4 +5,16 @@
 * https://github.com/emilk/egui/issues/3218 has a workaround for bold text (for puzzle titles)
 * Maybe investigate using Tauri?
 * The "unsolved cell" dots are too big in triddlers.
-* If the user drags the line tool off of a lane, maybe we should keep the rosette and helper numbers locked to the original lane?
+* HTML export support for all puzzle types
+* Webpbn import by ID
+* Multicolor trianograms
+* Manual + automatic clue cross-off
+* Lock clues onscreen in solve mode
+
+# Maybe?
+* Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)
+* Bottleneck difficulty measurement during solve
+* Scale+quantize a picture into a puzzle
+* Inverted "disambiguate" to increase difficulty
+* PWA + touch input with cursor
+* If the user drags the line tool off of a lane, keep the rosette and helper numbers locked to the original lane
