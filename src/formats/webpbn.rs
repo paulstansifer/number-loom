@@ -1,7 +1,7 @@
 use anyhow::{Context, bail};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::geometry::{ClueSet, ClueSetCounts, GridKind, Outline, Shape, Tri};
+use crate::geometry::{ClueSet, ClueSetCounts, GridKind, Outline, Shape, Square, Tri};
 use crate::puzzle::{
     BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynPuzzle, DynSolution, Nono, Puzzle,
     Solution,
@@ -330,21 +330,125 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
     ))
 }
 
+/// `pbnsolve` doesn't like spaces in `<solution>`s, and I bet non-ASCII is asking for trouble, so
+/// clean up the palette
+fn websafe_chars(palette: &HashMap<Color, ColorInfo>) -> HashMap<Color, ColorInfo> {
+    let mut palette = palette.clone();
+
+    if let Some(bg) = palette.get_mut(&BACKGROUND) {
+        bg.ch = '.';
+    }
+    let mut used: HashSet<char> = palette.values().map(|c| c.ch).collect();
+    used.insert('.'); // reserved for the background even if it's absent from this palette
+
+    let mut fresh = ('a'..='z').chain('A'..='Z').chain('0'..='9');
+
+    for (&color, info) in palette.iter_mut() {
+        if color == BACKGROUND || (info.ch != '.' && info.ch.is_ascii() && info.ch != ' ') {
+            continue;
+        }
+        let new_ch = fresh
+            .by_ref()
+            .find(|c| !used.contains(c))
+            .expect("ran out of ASCII letters and digits for color characters");
+        used.insert(new_ch);
+        info.ch = new_ch;
+    }
+
+    palette
+}
+
+/// How `write_webpbn` delimits one text row of a `<solution>` image; `webpbn_tridder.md` uses `|`
+/// for a grid's rows and `/`/`\` (chosen per end) for a triddler's.
+trait ImageDelimiter: GridKind {
+    fn row_delimiters(geometry: &crate::geometry::Geometry<Self>, cells: &[u32]) -> (char, char);
+}
+
+impl ImageDelimiter for Square {
+    fn row_delimiters(_geometry: &crate::geometry::Geometry<Self>, _cells: &[u32]) -> (char, char) {
+        ('|', '|')
+    }
+}
+
+impl ImageDelimiter for Tri {
+    /// An upward-pointing triangle's left edge slopes like `/` and its right edge like `\`; a
+    /// downward-pointing triangle's edges slope the other way — worked out (and cross-checked
+    /// against every row of `webpbn_tridder.md`'s own worked example) alongside the chargrid
+    /// reader that shares this convention, `import::char_grid_to_tri_solution`.
+    fn row_delimiters(geometry: &crate::geometry::Geometry<Self>, cells: &[u32]) -> (char, char) {
+        let leftmost_points_up = geometry.coord(cells[0]).points_up();
+        let rightmost_points_up = geometry.coord(*cells.last().unwrap()).points_up();
+        (
+            if leftmost_points_up { '/' } else { '\\' },
+            if rightmost_points_up { '\\' } else { '/' },
+        )
+    }
+}
+
+/// Renders a `<solution type="goal"><image>...</image></solution>` body. `Solution` has a palette,
+/// but we're using a different one.
+fn solution_image<K: GridKind + ImageDelimiter>(
+    solution: &Solution<K>,
+    palette: &HashMap<Color, ColorInfo>,
+) -> String {
+    let mut image = String::new();
+    for lane in solution.geometry.family(0) {
+        let cells = &solution.geometry.lane(lane).cells;
+        let (left, right) = K::row_delimiters(&solution.geometry, cells);
+        image.push(left);
+        for &cell in cells {
+            image.push(palette[&solution.cells[cell as usize]].ch);
+        }
+        image.push(right);
+        image.push('\n');
+    }
+    image
+}
+
 /// webpbn describes `Nono` clues in either shape, so dispatch once and let the writer below be
-/// generic over the grid kind.
+/// generic over the grid kind. Also writes the picture alongside the clues whenever the document
+/// has a complete one (from a stored solution, or one line logic alone can recover) — most
+/// documents do, and a webpbn file that has both lets any reader skip re-deriving it.
 pub fn as_webpbn(document: &Document) -> String {
     let mut document_with_puzzle = document.clone();
+    let has_solution = document_with_puzzle
+        .has_complete_solution()
+        .unwrap_or(false);
+
+    let square_solution: Option<Solution<Square>> = has_solution
+        .then(|| {
+            document_with_puzzle
+                .try_solution()
+                .unwrap()
+                .as_square()
+                .cloned()
+        })
+        .flatten();
+    let tri_solution: Option<Solution<Tri>> = has_solution
+        .then(|| {
+            document_with_puzzle
+                .try_solution()
+                .unwrap()
+                .as_tri()
+                .cloned()
+        })
+        .flatten();
+
     match document_with_puzzle.puzzle() {
-        DynPuzzle::SquareNono(p) => write_webpbn(document, p),
-        DynPuzzle::TriNono(p) => write_webpbn(document, p),
+        DynPuzzle::SquareNono(p) => write_webpbn(document, p, square_solution.as_ref()),
+        DynPuzzle::TriNono(p) => write_webpbn(document, p, tri_solution.as_ref()),
         DynPuzzle::SquareTriano(_) => panic!("webpbn cannot represent trianogram clues"),
     }
 }
 
-fn write_webpbn<K: GridKind>(document: &Document, puzzle: &Puzzle<Nono, K>) -> String {
+fn write_webpbn<K: GridKind + ImageDelimiter>(
+    document: &Document,
+    puzzle: &Puzzle<Nono, K>,
+    solution: Option<&Solution<K>>,
+) -> String {
     use indoc::indoc;
 
-    let palette = &puzzle.palette;
+    let palette = websafe_chars(&puzzle.palette);
 
     let puzzle_type = match puzzle.geometry.shape() {
         Shape::Square { .. } => "grid",
@@ -447,6 +551,12 @@ fn write_webpbn<K: GridKind>(document: &Document, puzzle: &Puzzle<Nono, K>) -> S
                 write_clue_set(&mut res, name, &lines);
             }
         }
+    }
+
+    if let Some(solution) = solution {
+        res.push_str("<solution type=\"goal\">\n<image>\n");
+        res.push_str(&solution_image(solution, &palette));
+        res.push_str("</image>\n</solution>\n");
     }
 
     res.push_str(r#"</puzzle></puzzleset>"#);
@@ -610,6 +720,149 @@ mod tests {
     fn a_file_in_webpbn_house_style_solves() {
         let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
         assert_eq!(doc.puzzle().plain_solve().unwrap().cells_left, 0);
+    }
+
+    #[test]
+    fn writing_a_square_puzzle_includes_its_solution() {
+        let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
+        let solution = doc.solution().unwrap().clone(); // line logic alone solves it
+        let serialized = as_webpbn(&doc);
+        assert!(serialized.contains(r#"<solution type="goal">"#));
+
+        let mut reloaded = webpbn_to_document(&serialized).unwrap();
+        assert_eq!(*reloaded.solution().unwrap(), solution);
+    }
+
+    /// The triddler analog of `writing_a_square_puzzle_includes_its_solution` — also confirms the
+    /// `/`/`\` delimiters `tri_solution_image` derives from each row's end slopes are the ones
+    /// `char_grid_to_tri_solution`/`parse_solution_image` actually expect, by reading the written
+    /// image back rather than just checking it's present.
+    #[test]
+    fn writing_a_triddler_includes_its_solution() {
+        let mut doc = webpbn_to_document(DOC_TRIDDLER).unwrap();
+        let solution = doc.solution().unwrap().clone(); // line logic alone solves it
+        let serialized = as_webpbn(&doc);
+        assert!(serialized.contains(r#"<solution type="goal">"#));
+
+        let mut reloaded = webpbn_to_document(&serialized).unwrap();
+        assert_eq!(*reloaded.solution().unwrap(), solution);
+    }
+
+    /// A puzzle with no stored solution and clues line logic can't fully resolve has no complete
+    /// picture to write — the writer should just omit `<solution>` rather than writing one full of
+    /// placeholder cells (or, worse, panicking trying to look up a color for `UNSOLVED`).
+    #[test]
+    fn writing_an_unsolvable_by_line_logic_puzzle_omits_the_solution() {
+        // Same shape as `AMBIGUOUS_WITH_SOLUTION`, but without the `<solution>` that pins it down.
+        const AMBIGUOUS_NO_SOLUTION: &str = r#"<?xml version="1.0"?>
+            <puzzleset>
+            <puzzle type="grid" backgroundcolor="white" defaultcolor="black">
+            <color name="white" char=".">FFFFFF</color>
+            <color name="black" char="X">000000</color>
+            <clues type="columns">
+            <line><count>1</count></line>
+            <line><count>1</count></line>
+            </clues>
+            <clues type="rows">
+            <line><count>1</count></line>
+            <line><count>1</count></line>
+            </clues>
+            </puzzle></puzzleset>"#;
+
+        let doc = webpbn_to_document(AMBIGUOUS_NO_SOLUTION).unwrap();
+        let serialized = as_webpbn(&doc);
+        assert!(!serialized.contains("<solution"));
+    }
+
+    #[test]
+    fn websafe_chars_reassigns_problem_characters_only() {
+        let mut palette = HashMap::new();
+        palette.insert(
+            BACKGROUND,
+            ColorInfo {
+                ch: ' ',
+                name: "bg".to_string(),
+                rgb: (255, 255, 255),
+                color: BACKGROUND,
+                corner: None,
+            },
+        );
+        // Already reserved for the background once it's forced to "." below.
+        palette.insert(
+            Color(1),
+            ColorInfo {
+                ch: '.',
+                name: "dotty".to_string(),
+                rgb: (0, 0, 0),
+                color: Color(1),
+                corner: None,
+            },
+        );
+        // Non-ASCII.
+        palette.insert(
+            Color(2),
+            ColorInfo {
+                ch: '★',
+                name: "star".to_string(),
+                rgb: (1, 2, 3),
+                color: Color(2),
+                corner: None,
+            },
+        );
+        // An ordinary ASCII char, which should survive untouched.
+        palette.insert(
+            Color(3),
+            ColorInfo {
+                ch: 'Q',
+                name: "keeper".to_string(),
+                rgb: (4, 5, 6),
+                color: Color(3),
+                corner: None,
+            },
+        );
+
+        let safe = websafe_chars(&palette);
+
+        assert_eq!(safe[&BACKGROUND].ch, '.');
+        assert_eq!(safe[&Color(3)].ch, 'Q');
+        assert!(safe[&Color(1)].ch.is_ascii_alphanumeric());
+        assert!(safe[&Color(2)].ch.is_ascii_alphanumeric());
+
+        // Every character in the rewritten palette is distinct.
+        let chars: HashSet<char> = safe.values().map(|c| c.ch).collect();
+        assert_eq!(chars.len(), safe.len());
+
+        // Nothing but `ch` changed.
+        for (color, info) in &palette {
+            assert_eq!(safe[color].name, info.name);
+            assert_eq!(safe[color].rgb, info.rgb);
+        }
+    }
+
+    /// The end-to-end version of `websafe_chars_reassigns_problem_characters_only`: a palette
+    /// `pbnsolve` would choke on (a space for the background, a non-ASCII foreground char) comes
+    /// out clean in both the `<color>` tags and the `<solution>` image, and still parses back.
+    #[test]
+    fn writing_replaces_problem_characters_in_the_palette() {
+        let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
+        doc.solution().unwrap(); // populate a solution to corrupt below
+        for info in doc.solution_mut().palette_mut().values_mut() {
+            info.ch = if info.color == BACKGROUND { ' ' } else { '★' };
+        }
+
+        let serialized = as_webpbn(&doc);
+        assert!(
+            !serialized.contains(r#"char=" ""#),
+            "a space should never appear as a color char: {serialized}"
+        );
+        assert!(
+            !serialized.contains('★'),
+            "a non-ASCII char should have been replaced: {serialized}"
+        );
+        assert!(serialized.contains(r#"char=".""#));
+
+        let mut reloaded = webpbn_to_document(&serialized).unwrap();
+        assert_eq!(reloaded.puzzle().plain_solve().unwrap().cells_left, 0);
     }
 
     /// A 2x2 grid where every clue is a lone `1` — line logic alone can't place any of them

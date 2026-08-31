@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
 <puzzleset>
-<puzzle type="grid" defaultcolor="white">
+<puzzle type="grid" backgroundcolor="white" defaultcolor="black">
 <source>number-loom</source>
+<author>Paul Stansifer</author>
 <id>gray-kilo-stretch</id>
+<color name="white" char=".">FFFFFF</color>
 <color name="black" char="#">000000</color>
-<color name="white" char=" ">FFFFFF</color>
 <clues type="columns"><line><count color="black">1</count></line>
 <line><count color="black">1</count></line>
 <line><count color="black">1</count><count color="black">3</count></line>
@@ -53,4 +54,31 @@
 <line><count color="black">1</count></line>
 <line><count color="black">1</count></line>
 </clues>
+<solution type="goal">
+<image>
+|....................###|
+|......................#|
+|..................###.#|
+|....................#..|
+|................###.#..|
+|..................#....|
+|..............###.#....|
+|................#......|
+|............###.#......|
+|..............#........|
+|..........###.#........|
+|............#..........|
+|........###.#..........|
+|..........#............|
+|......###.#............|
+|........#..............|
+|....###.#..............|
+|......#................|
+|..###.#................|
+|....#..................|
+|###.#..................|
+|..#....................|
+|..#....................|
+</image>
+</solution>
 </puzzle></puzzleset>

@@ -8,6 +8,7 @@
 * Multicolor trianograms
 * Manual + automatic clue cross-off
 * Lock clues onscreen in solve mode
+* Actually record useful statistics in backtracking mode
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)
