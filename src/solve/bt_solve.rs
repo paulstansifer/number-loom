@@ -9,7 +9,7 @@ use crate::{
     gui,
     puzzle::{Clue, Color, PartialSolution, Puzzle},
     solve::grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
-    solve::line_solve::Cell,
+    solve::line_solve::{Cell, ModeMap, SolveMode},
 };
 
 #[path = "bt_picking.rs"]
@@ -36,7 +36,7 @@ fn root_coord() -> HypoCoord {
 
 pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
     q: PriorityQueue<HypoCoord, std::cmp::Reverse<Score>>,
-    possibilities: HashMap<HypoCoord, BtSolveState<'p, C>>,
+    possibilities: HashMap<HypoCoord, BtSolveState>,
     linear_ctx: SolveContext<'p, 'x, C, K>,
     puzzle: &'p Puzzle<C, K>,
     solution_found: Option<PartialSolution>, // though we know it'll be a complete solution
@@ -47,15 +47,19 @@ pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
 }
 
 #[derive(Clone)]
-struct BtSolveState<'p, C: Clue> {
-    knowledge: SolveState<'p, C>,
+struct BtSolveState {
+    grid: PartialSolution,
+    /// It's cheaper to do `SolveState::resume` each time than to keep it.
+    cells_left: usize,
+    /// Keep the history of steps taken (TODO: this isn't that meaningful anyways.)
+    solve_counts: ModeMap<usize>,
     guesses_explored: HashSet<(usize, Color)>,
     /// How many cells were unknown in the node this one was forked from, so a scorer can ask
     /// what this node's guess actually bought. The root is its own parent.
     parent_cells_left: usize,
 }
 
-impl<'p, C: Clue> BtSolveState<'p, C> {
+impl BtSolveState {
     /// How much is a node worth searching: lower is sooner. The formulas live in
     /// `scoring.rs`; this gathers the measurements they read.
     fn score_at(&self, coord: &HypoCoord, sc: &ScoreCtx<'_>) -> std::cmp::Reverse<Score> {
@@ -65,7 +69,7 @@ impl<'p, C: Clue> BtSolveState<'p, C> {
         };
 
         let terms = Terms {
-            cells_left: self.knowledge.cells_left as f32,
+            cells_left: self.cells_left as f32,
             parent_cells_left: self.parent_cells_left as f32,
             candidates: self.candidates() as f32,
             levels: coord.guesses.len() as f32,
@@ -81,18 +85,13 @@ impl<'p, C: Clue> BtSolveState<'p, C> {
     /// Summed candidate colors over the unknown cells — only the `Candidates` scorer asks, and
     /// it's a pass over the grid, which is what `pick_guess` costs anyway.
     fn candidates(&self) -> usize {
-        self.knowledge
-            .grid
+        self.grid
             .iter()
             .map(|cell| cell.raw().count_ones() as usize)
             .sum()
     }
 
-    fn fork(
-        &mut self,
-        coord: &HypoCoord,
-        guess: (usize, Color),
-    ) -> (HypoCoord, BtSolveState<'p, C>) {
+    fn fork(&mut self, coord: &HypoCoord, guess: (usize, Color)) -> (HypoCoord, BtSolveState) {
         let mut new_coord = coord.clone();
         new_coord.guesses.push(guess);
 
@@ -100,9 +99,11 @@ impl<'p, C: Clue> BtSolveState<'p, C> {
         (
             new_coord,
             BtSolveState {
-                knowledge: self.knowledge.clone(),
+                grid: self.grid.clone(),
+                cells_left: self.cells_left,
+                solve_counts: self.solve_counts,
                 guesses_explored: HashSet::new(),
-                parent_cells_left: self.knowledge.cells_left,
+                parent_cells_left: self.cells_left,
             },
         )
     }
@@ -166,12 +167,18 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     color: Color,
     ctx: &mut BtContext<'p, 'x, C, K>,
 ) -> anyhow::Result<Option<Report>> {
-    let state = ctx.possibilities.get_mut(&coord).unwrap();
+    // Rebuild the line-logic bookkeeping. `mem::take` leaves an empty grid behind, but we will put it back.
+    let grid = std::mem::take(&mut ctx.possibilities.get_mut(coord).unwrap().grid);
+    let mut working = SolveState::resume(&mut ctx.linear_ctx, grid);
+    working.learn(&mut ctx.linear_ctx, cell_idx, is, color);
+    let run_consequence = working.run_and_check(&mut ctx.linear_ctx);
 
-    state
-        .knowledge
-        .learn(&mut ctx.linear_ctx, cell_idx, is, color);
-    let run_consequence = state.knowledge.run_and_check(&mut ctx.linear_ctx);
+    let state = ctx.possibilities.get_mut(coord).unwrap();
+    state.grid = working.grid;
+    state.cells_left = working.cells_left;
+    for mode in SolveMode::all() {
+        state.solve_counts[*mode] += working.solve_counts[*mode];
+    }
 
     let sc = ScoreCtx {
         kind: ctx.linear_ctx.options.node_scorer,
@@ -193,7 +200,7 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     // behind it), which is the only kind of progress worth reporting: hypothetical knowledge can
     // still be thrown away by a later contradiction.
     if coord.guesses.is_empty() {
-        let done = ctx.total_cells.saturating_sub(state.knowledge.cells_left);
+        let done = ctx.total_cells.saturating_sub(state.cells_left);
         let _ = ctx.progress.send(done as f32 / ctx.total_cells as f32);
     }
 
@@ -222,26 +229,35 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
             }
         }
         Ok(_) => {
-            if state.knowledge.cells_left == 0 {
+            if state.cells_left == 0 {
                 if ctx.linear_ctx.options.trace_backtrack {
                     println!("Found a solution, assuming {coord:?}");
                 }
 
                 if coord.guesses.is_empty() {
-                    return Ok(Some(state.knowledge.report(ctx.puzzle)));
+                    return Ok(Some(Report::from_grid(
+                        ctx.puzzle,
+                        &state.grid,
+                        state.cells_left,
+                        state.solve_counts,
+                    )));
                 }
 
                 if let Some(old_solution) = &ctx.solution_found {
-                    if old_solution != &state.knowledge.grid {
+                    if old_solution != &state.grid {
                         // Time to give up! If we churned for longer, we might be able to
                         // reduce the number of unknown cells, but we know there will always be some.
-                        let root_report = ctx.possibilities[&root_coord()]
-                            .knowledge
-                            .report(ctx.puzzle);
+                        let root = &ctx.possibilities[&root_coord()];
+                        let root_report = Report::from_grid(
+                            ctx.puzzle,
+                            &root.grid,
+                            root.cells_left,
+                            root.solve_counts,
+                        );
                         return Ok(Some(root_report));
                     }
                 } else {
-                    ctx.solution_found = Some(state.knowledge.grid.clone())
+                    ctx.solution_found = Some(state.grid.clone())
                 }
 
                 nuke_node(coord, ctx);
@@ -294,7 +310,9 @@ pub async fn backtrack_solve<C: Clue, K: GridKind>(
     ctx.possibilities.insert(
         root_coord(),
         BtSolveState {
-            knowledge: init_linear_state,
+            grid: init_linear_state.grid,
+            cells_left: root_cells_left,
+            solve_counts: init_linear_state.solve_counts,
             guesses_explored: HashSet::new(),
             parent_cells_left: root_cells_left,
         },

@@ -57,6 +57,23 @@ pub struct Report {
     pub solved_mask: Vec<bool>,
 }
 
+impl Report {
+    /// Build a `Report` straight from a grid
+    pub fn from_grid<C: Clue, K: GridKind>(
+        puzzle: &Puzzle<C, K>,
+        grid: &PartialSolution,
+        cells_left: usize,
+        solve_counts: ModeMap<usize>,
+    ) -> Report {
+        Report {
+            solve_counts,
+            cells_left,
+            solution: dyn_solution(grid, puzzle),
+            solved_mask: grid_to_solved_mask(grid),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct LaneState<'a, C: Clue> {
     clues: &'a [C], // just convenience, since `lane` suffices to find it again
@@ -417,7 +434,8 @@ pub struct SolveState<'p, C: Clue> {
     /// Parallel to `LaneMap::lanes()`, so a lane index indexes both this and the geometry.
     pub lanes: Vec<LaneState<'p, C>>,
     /// Per mode, which lanes are waiting for a turn, in the order they'll get one. Seeded once
-    /// (sorted best-score-first) in `new`; after that a lane goes to the back when invalidated
+    /// (sorted best-score-first) in `new` — or left empty in `resume`, for a caller that already
+    /// knows nothing here needs a turn yet — after that a lane goes to the back when invalidated
     /// rather than being re-ranked. See `find_best_lane`.
     queues: ModeMap<std::collections::VecDeque<usize>>,
     pub cells_left: usize,
@@ -480,6 +498,38 @@ impl<'p, C: Clue> SolveState<'p, C> {
             grid,
             lanes,
             queues,
+            solve_counts: ModeMap::new_uniform(0),
+            allowed_failures: INITIAL_ALLOWED_FAILURES,
+        }
+    }
+
+    /// Rebuild a `SolveState` around a grid that's already fully quiesced.
+    /// `.run` won't do anything until something is invalidated.
+    pub fn resume<K: GridKind>(
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        grid: PartialSolution,
+    ) -> SolveState<'p, C> {
+        let puzzle = ctx.puzzle;
+        let lane_map = ctx.lane_map();
+        let scratch = &mut ctx.scratch;
+
+        let mut lanes = vec![];
+        for family in 0..lane_map.family_count() {
+            for (index_in_family, lane) in lane_map.family(family).enumerate() {
+                gather_into(lane_map, lane, &grid, &mut scratch.seed);
+                let clues = &puzzle.lines[lane];
+                let mut lane_state =
+                    LaneState::new(clues, lane_map, lane, index_in_family, &scratch.seed);
+                lane_state.queued = ModeMap::new_uniform(false);
+                lanes.push(lane_state);
+            }
+        }
+
+        SolveState {
+            cells_left: grid.iter().filter(|c| !c.is_known()).count(),
+            grid,
+            lanes,
+            queues: ModeMap::new_uniform(std::collections::VecDeque::new()),
             solve_counts: ModeMap::new_uniform(0),
             allowed_failures: INITIAL_ALLOWED_FAILURES,
         }
@@ -759,12 +809,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
 
     /// Package the state up for the GUI and the CLI, which see a kind-erased solution.
     pub fn report<K: GridKind>(&self, puzzle: &Puzzle<C, K>) -> Report {
-        Report {
-            solve_counts: self.solve_counts,
-            cells_left: self.cells_left,
-            solution: dyn_solution(&self.grid, puzzle),
-            solved_mask: grid_to_solved_mask(&self.grid),
-        }
+        Report::from_grid(puzzle, &self.grid, self.cells_left, self.solve_counts)
     }
 }
 

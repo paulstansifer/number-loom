@@ -22,14 +22,14 @@ trait GuessPicker: Sized {
     /// guesses this picker will rate; a picker that only cares about the puzzle's shape can
     /// ignore it.
     fn new<C: Clue, K: GridKind>(
-        state: &BtSolveState<'_, C>,
+        state: &BtSolveState,
         linear_ctx: &SolveContext<'_, '_, C, K>,
     ) -> Self;
 
     /// Score guesses against each other. Note that this is totally different than *node* scores!
     fn rate<C: Clue, K: GridKind>(
         &self,
-        state: &BtSolveState<'_, C>,
+        state: &BtSolveState,
         linear_ctx: &SolveContext<'_, '_, C, K>,
         guess: (usize, Color),
     ) -> Score;
@@ -37,10 +37,10 @@ trait GuessPicker: Sized {
     /// Pick the lowest-scoring choice that's a valid guess
     fn pick<C: Clue, K: GridKind>(
         &self,
-        state: &BtSolveState<'_, C>,
+        state: &BtSolveState,
         linear_ctx: &SolveContext<'_, '_, C, K>,
     ) -> Option<(usize, Color)> {
-        let idxed_cells = state.knowledge.grid.iter().enumerate();
+        let idxed_cells = state.grid.iter().enumerate();
         let uncertain_cells = idxed_cells.filter(|(_, cell)| !cell.is_known());
         let options = uncertain_cells
             .flat_map(|(idx, cell)| cell.can_be_iter().map(move |color| (idx, color)));
@@ -53,13 +53,13 @@ trait GuessPicker: Sized {
 struct First;
 
 impl GuessPicker for First {
-    fn new<C: Clue, K: GridKind>(_: &BtSolveState<'_, C>, _: &SolveContext<'_, '_, C, K>) -> First {
+    fn new<C: Clue, K: GridKind>(_: &BtSolveState, _: &SolveContext<'_, '_, C, K>) -> First {
         First
     }
 
     fn rate<C: Clue, K: GridKind>(
         &self,
-        _: &BtSolveState<'_, C>,
+        _: &BtSolveState,
         _: &SolveContext<'_, '_, C, K>,
         _: (usize, Color),
     ) -> Score {
@@ -75,7 +75,7 @@ struct Edge {
 
 impl GuessPicker for Edge {
     fn new<C: Clue, K: GridKind>(
-        _: &BtSolveState<'_, C>,
+        _: &BtSolveState,
         linear_ctx: &SolveContext<'_, '_, C, K>,
     ) -> Edge {
         let lane_map = linear_ctx.lane_map();
@@ -99,7 +99,7 @@ impl GuessPicker for Edge {
 
     fn rate<C: Clue, K: GridKind>(
         &self,
-        _: &BtSolveState<'_, C>,
+        _: &BtSolveState,
         _: &SolveContext<'_, '_, C, K>,
         (idx, _): (usize, Color),
     ) -> Score {
@@ -113,7 +113,7 @@ struct Middle(Edge);
 
 impl GuessPicker for Middle {
     fn new<C: Clue, K: GridKind>(
-        state: &BtSolveState<'_, C>,
+        state: &BtSolveState,
         linear_ctx: &SolveContext<'_, '_, C, K>,
     ) -> Middle {
         Middle(Edge::new(state, linear_ctx))
@@ -121,7 +121,7 @@ impl GuessPicker for Middle {
 
     fn rate<C: Clue, K: GridKind>(
         &self,
-        state: &BtSolveState<'_, C>,
+        state: &BtSolveState,
         linear_ctx: &SolveContext<'_, '_, C, K>,
         guess: (usize, Color),
     ) -> Score {
@@ -137,7 +137,7 @@ struct Random {
 
 impl GuessPicker for Random {
     fn new<C: Clue, K: GridKind>(
-        state: &BtSolveState<'_, C>,
+        state: &BtSolveState,
         _: &SolveContext<'_, '_, C, K>,
     ) -> Random {
         use std::hash::BuildHasher;
@@ -145,7 +145,7 @@ impl GuessPicker for Random {
         // `RandomState`'s keys differ from one instance to the next, so this is a fresh stream
         // per node, and a different search every run.
         let seed =
-            std::collections::hash_map::RandomState::new().hash_one(state.knowledge.cells_left);
+            std::collections::hash_map::RandomState::new().hash_one(state.cells_left);
 
         Random {
             rng: std::cell::Cell::new(seed | 1), // xorshift never leaves zero
@@ -154,7 +154,7 @@ impl GuessPicker for Random {
 
     fn rate<C: Clue, K: GridKind>(
         &self,
-        _: &BtSolveState<'_, C>,
+        _: &BtSolveState,
         _: &SolveContext<'_, '_, C, K>,
         _: (usize, Color),
     ) -> Score {
@@ -181,7 +181,7 @@ struct Disagreement {
 
 impl GuessPicker for Disagreement {
     fn new<C: Clue, K: GridKind>(
-        state: &BtSolveState<'_, C>,
+        state: &BtSolveState,
         linear_ctx: &SolveContext<'_, '_, C, K>,
     ) -> Disagreement {
         let lane_map = linear_ctx.lane_map();
@@ -213,7 +213,7 @@ impl GuessPicker for Disagreement {
             // ...minus what's already on the grid.
             let mut unknown = 0;
             for cell_idx in &lane.cells {
-                match state.knowledge.grid[*cell_idx as usize].known_or() {
+                match state.grid[*cell_idx as usize].known_or() {
                     Some(color) => wanted[color.0 as usize] -= 1,
                     None => unknown += 1,
                 }
@@ -256,7 +256,7 @@ impl GuessPicker for Disagreement {
 
     fn rate<C: Clue, K: GridKind>(
         &self,
-        _: &BtSolveState<'_, C>,
+        _: &BtSolveState,
         _: &SolveContext<'_, '_, C, K>,
         (idx, color): (usize, Color),
     ) -> Score {
@@ -408,7 +408,7 @@ impl std::fmt::Display for PickerMix {
 /// node it's about to look at; see `GuessPicker`.
 pub(super) fn pick_guess<C: Clue, K: GridKind>(
     kind: PickerKind,
-    state: &BtSolveState<'_, C>,
+    state: &BtSolveState,
     linear_ctx: &SolveContext<'_, '_, C, K>,
 ) -> Option<(usize, Color)> {
     match kind {
