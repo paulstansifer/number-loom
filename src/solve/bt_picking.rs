@@ -107,8 +107,7 @@ impl GuessPicker for Edge {
     }
 }
 
-/// `Edge`, backwards: guess in the middle of the lanes, where the clues have the least to say.
-/// Here to find out whether `Edge` is a bad heuristic or a good one pointed the wrong way.
+/// Inverse of `Edge`; surprisingly, it seems to be slightly better (on limited and outdated testing)
 struct Middle(Edge);
 
 impl GuessPicker for Middle {
@@ -136,16 +135,12 @@ struct Random {
 }
 
 impl GuessPicker for Random {
-    fn new<C: Clue, K: GridKind>(
-        state: &BtSolveState,
-        _: &SolveContext<'_, '_, C, K>,
-    ) -> Random {
+    fn new<C: Clue, K: GridKind>(state: &BtSolveState, _: &SolveContext<'_, '_, C, K>) -> Random {
         use std::hash::BuildHasher;
 
         // `RandomState`'s keys differ from one instance to the next, so this is a fresh stream
         // per node, and a different search every run.
-        let seed =
-            std::collections::hash_map::RandomState::new().hash_one(state.cells_left);
+        let seed = std::collections::hash_map::RandomState::new().hash_one(state.cells_left);
 
         Random {
             rng: std::cell::Cell::new(seed | 1), // xorshift never leaves zero
@@ -264,6 +259,74 @@ impl GuessPicker for Disagreement {
     }
 }
 
+/// How many of each cell's neighbors `counts` accepts. A neighbor is the cell before or after
+/// this one in a lane it belongs to — on a square grid, exactly the four cells sharing an edge;
+/// on a triddler, the six cells line logic can reach it through. A lane that ends here has no
+/// neighbor on that side, and contributes `edge` instead.
+fn neighborhood<C: Clue, K: GridKind>(
+    linear_ctx: &SolveContext<'_, '_, C, K>,
+    edge: f32,
+    counts: impl Fn(usize) -> bool,
+) -> Vec<f32> {
+    let lane_map = linear_ctx.lane_map();
+
+    (0..lane_map.cell_count() as u32)
+        .map(|cell| {
+            let mut total = 0.0;
+            for m in lane_map.memberships(cell) {
+                let lane = &lane_map.lane(m.lane as usize).cells;
+                let pos = m.position as usize;
+
+                let before = pos.checked_sub(1).map(|p| lane[p]);
+                let after = lane.get(pos + 1).copied();
+                for side in [before, after] {
+                    total += match side {
+                        Some(neighbor) if counts(neighbor as usize) => 1.0,
+                        Some(_) => 0.0,
+                        None => edge,
+                    };
+                }
+            }
+            total
+        })
+        .collect()
+}
+
+/// Guesses where the most is already settled: a cell whose neighbors are known is one whose
+/// color the lines around it have the most to say about, so a guess there is the likeliest to
+/// propagate (or to be contradicted quickly, which is just as useful).
+///
+/// The puzzle's edge counts as slightly *more* than a solved neighbor, so among cells that are
+/// equally hemmed in, the ones against a wall go first.
+struct Neighbors {
+    /// How settled each cell's surroundings are, by cell index.
+    solidity: Vec<f32>,
+}
+
+impl GuessPicker for Neighbors {
+    fn new<C: Clue, K: GridKind>(
+        state: &BtSolveState,
+        linear_ctx: &SolveContext<'_, '_, C, K>,
+    ) -> Neighbors {
+        let solidity = neighborhood(
+            linear_ctx,
+            /*edge=*/ 1.01,
+            |neighbor| state.grid[neighbor].is_known(),
+        );
+
+        Neighbors { solidity }
+    }
+
+    fn rate<C: Clue, K: GridKind>(
+        &self,
+        _: &BtSolveState,
+        _: &SolveContext<'_, '_, C, K>,
+        (idx, _): (usize, Color),
+    ) -> Score {
+        Score(-self.solidity[idx]) // more settled is better, and lower is better
+    }
+}
+
 /// Which `GuessPicker` `backtrack_solve` uses. The search's shape depends entirely on where it
 /// decides to guess, so this is the knob worth benchmarking.
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -280,15 +343,19 @@ pub enum PickerKind {
     /// the `examples/wolter` set: the only one that solves `webpbn-00803` at all.
     #[default]
     Disagreement,
+    /// Where the most neighboring cells are already solved (the puzzle's edge counting for a
+    /// little more than one of them).
+    Neighbors,
 }
 
 impl PickerKind {
-    pub const ALL: [PickerKind; 5] = [
+    pub const ALL: [PickerKind; 6] = [
         PickerKind::First,
         PickerKind::Edge,
         PickerKind::Middle,
         PickerKind::Random,
         PickerKind::Disagreement,
+        PickerKind::Neighbors,
     ];
 
     /// The name `--picker` spells this kind with. `picker_names_round_trip` checks these
@@ -300,6 +367,7 @@ impl PickerKind {
             PickerKind::Middle => "middle",
             PickerKind::Random => "random",
             PickerKind::Disagreement => "disagreement",
+            PickerKind::Neighbors => "neighbors",
         }
     }
 }
@@ -314,6 +382,9 @@ const MAX_ROTATION: usize = 1024;
 /// Pickers turn out to be complementary rather than ranked: on the `examples/wolter` set,
 /// `Disagreement` is the only one that cracks `webpbn-00803` and the only one that doesn't crack
 /// `webpbn-06574`. A mix is a way to get both without knowing in advance which puzzle you have.
+/// Diluting a good pair does hurt, though: adding `middle:1,first:1` to the default's rotation
+/// costs three puzzles and gains none, since every guess spent on a picker that isn't steering
+/// is one the two that are don't get.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickerMix {
     /// The rotation, with the weights already spelled out: `disagreement:3,random:1` is stored
@@ -322,10 +393,15 @@ pub struct PickerMix {
 }
 
 impl Default for PickerMix {
+    /// `Disagreement` and `Neighbors`, alternating: 18 of the 31 puzzles `bench-pbnsolve --mode
+    /// backtrack` runs, against 16 for the `disagreement:3,random:1` this replaced — and, having
+    /// no `Random` in it, the same 18 every time, so a future change to the solver shows up as a
+    /// difference rather than as noise. Each does something the other can't: only `Disagreement`
+    /// gets `webpbn-00803`, only `Neighbors` gets `webpbn-03541`.
     fn default() -> PickerMix {
-        use PickerKind::{Disagreement, Random};
+        use PickerKind::{Disagreement, Neighbors};
         PickerMix {
-            rotation: vec![Disagreement, Disagreement, Disagreement, Random],
+            rotation: vec![Disagreement, Neighbors],
         }
     }
 }
@@ -417,12 +493,46 @@ pub(super) fn pick_guess<C: Clue, K: GridKind>(
         PickerKind::Middle => Middle::new(state, linear_ctx).pick(state, linear_ctx),
         PickerKind::Random => Random::new(state, linear_ctx).pick(state, linear_ctx),
         PickerKind::Disagreement => Disagreement::new(state, linear_ctx).pick(state, linear_ctx),
+        PickerKind::Neighbors => Neighbors::new(state, linear_ctx).pick(state, linear_ctx),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::import::bw_palette;
+    use crate::puzzle::{Nono, Puzzle};
+    use crate::solve::grid_solve::SolveOptions;
+
+    /// What `Neighbors` counts: the cells adjacent along a lane, and the lane ends where the
+    /// puzzle runs out instead.
+    #[test]
+    fn a_neighborhood_is_four_lane_neighbors_and_the_edges_among_them() {
+        // A 3x3 grid; the clues don't matter, only the shape does.
+        let clue = vec![Nono {
+            color: Color(1),
+            count: 1,
+        }];
+        let puzzle = Puzzle::square(bw_palette(), vec![clue.clone(); 3], vec![clue; 3]);
+        let mut line_cache = None;
+        let options = SolveOptions::default();
+        let ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
+
+        // Two lanes cross every cell, so every cell has four sides, edges included.
+        let sides = neighborhood(&ctx, /*edge=*/ 1.0, |_| true);
+        assert_eq!(sides, vec![4.0; 9]);
+
+        // Corners are against two of them, the middles of the sides one, and the center none.
+        let edges = neighborhood(&ctx, /*edge=*/ 1.0, |_| false);
+        #[rustfmt::skip]
+        let want = vec![
+            2.0, 1.0, 2.0,
+            1.0, 0.0, 1.0,
+            2.0, 1.0, 2.0,
+        ];
+        assert_eq!(edges, want);
+    }
 
     /// Every spelling `--picker` accepts, and what it means. The `:count`s expand into a
     /// rotation, and `Display` puts them back together.

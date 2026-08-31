@@ -61,7 +61,7 @@ struct BtSolveState {
 
 impl BtSolveState {
     /// How much is a node worth searching: lower is sooner. The formulas live in
-    /// `scoring.rs`; this gathers the measurements they read.
+    /// `bt_scoring.rs`; this gathers the measurements they read.
     fn score_at(&self, coord: &HypoCoord, sc: &ScoreCtx<'_>) -> std::cmp::Reverse<Score> {
         let rediscovering = match (sc.solution_found, coord.guesses.first()) {
             (Some(solution), Some((cell_idx, color))) => solution[*cell_idx].can_be(*color),
@@ -110,15 +110,21 @@ impl BtSolveState {
 }
 
 /// Lower is better! This is used both to score nodes (`score_at`) and to score possible guesses
-/// inside nodes (`pickers::GuessPicker::rate`)!
-#[derive(PartialEq, PartialOrd, Debug)]
+/// inside nodes (`bt_picking::GuessPicker::rate`)!
+#[derive(PartialEq, Debug)]
 struct Score(f32);
 
 impl Eq for Score {}
 
 impl Ord for Score {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(other).unwrap()
+        self.0.partial_cmp(&other.0).expect("a score was NaN")
+    }
+}
+
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -158,6 +164,7 @@ fn nuke_descendants<'p, 'x, C: Clue, K: GridKind>(
 
 /// Learn that (assuming `coord`) the cell at `cell_idx` is [not] `color`.
 /// When making a guess, `is` must be `true`, and `(cell_idx, color)` should be at the end of `coord`.
+/// (We could store `(cell_idx, is, color)` instead, but I think there's not much call for that)
 /// Errors on top-level contradiction. (Note that if `.run_and_check` is an error, we pop a guess and recur!)
 /// Returns `None` if the search is still incomplete
 fn suppose<'p, 'x, C: Clue, K: GridKind>(

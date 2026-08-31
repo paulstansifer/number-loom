@@ -62,8 +62,8 @@ cargo run --release --features bench-pbnsolve --bin bench-pbnsolve -- --pbnsolve
 ```
 
 `--mode backtrack` adds two knobs for the search itself: `--picker` (where to guess within a
-node; see `bt_solve/pickers.rs`) and `--scorer` (which node to work on next; see
-`bt_solve/scoring.rs`). Both default to what `SolveOptions` ships, so leaving them off measures
+node; see `solve/bt_picking.rs`) and `--scorer` (which node to work on next; see
+`solve/bt_scoring.rs`). Both default to what `SolveOptions` ships, so leaving them off measures
 the solver as users get it.
 
 

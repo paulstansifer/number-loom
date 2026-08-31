@@ -9,6 +9,8 @@
 * Manual + automatic clue cross-off
 * Lock clues onscreen in solve mode
 * Actually record useful statistics in backtracking mode
+* Let the picker choose how long to keep going at a particular level (instead of having a fixed budget)
+* Write information into children instead of nuking them
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)

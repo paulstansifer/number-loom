@@ -2,7 +2,7 @@
 //!
 //! `bt_solve`'s queue is a best-first one over hypotheses, so the scoring function here is what
 //! gives the search its shape — dive, probe, or something in between. It's the counterpart of
-//! `pickers.rs` (which decides where to guess *within* a node), and it's split out for the same
+//! `bt_picking.rs` (which decides where to guess *within* a node), and it's split out for the same
 //! reason: it's a knob worth benchmarking. See `bench-pbnsolve --mode backtrack --scorer`.
 
 use crate::puzzle::PartialSolution;
