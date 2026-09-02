@@ -66,6 +66,12 @@ node; see `solve/bt_picking.rs`) and `--scorer` (which node to work on next; see
 `solve/bt_scoring.rs`). Both default to what `SolveOptions` ships, so leaving them off measures
 the solver as users get it.
 
+Both knobs take more than a single name. `--picker` takes a rotation — `disagreement:3,random:1`
+guesses three times one way and once the other, over and over. `--scorer` takes a *phase pair*,
+because the search has two jobs: until it holds a solution it is hunting for one, and after that
+it is proving no second one exists, and those don't want the same ordering. `progress/bfs` hunts
+with `Progress` and confirms with `Bfs`; a bare `--scorer baseline` uses one scorer for both.
+
 
 # The `WOVEN` format
 

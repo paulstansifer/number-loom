@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc;
 
 use anyhow::Context;
@@ -19,7 +19,7 @@ mod bt_scoring;
 
 use bt_picking::pick_guess;
 pub use bt_picking::{PickerKind, PickerMix};
-pub use bt_scoring::ScoreKind;
+pub use bt_scoring::{ScoreKind, ScorerPair};
 use bt_scoring::{ScoreCtx, Terms};
 
 /// A coordinate into the tree of hypotheticals (a stack of assumptions)
@@ -48,12 +48,14 @@ pub struct BtContext<'p, 'x, C: Clue, K: GridKind> {
 
 #[derive(Clone)]
 struct BtSolveState {
+    /// It's cheaper to do `SolveState::resume` each time than to keep `SolveState`.
     grid: PartialSolution,
-    /// It's cheaper to do `SolveState::resume` each time than to keep it.
+    /// We *could* add it to the grid immediately instead, but we'd need to track what coord is dirty
+    extra_knowledge: Vec<(usize, bool, Color)>,
     cells_left: usize,
     /// Keep the history of steps taken (TODO: this isn't that meaningful anyways.)
     solve_counts: ModeMap<usize>,
-    guesses_explored: HashSet<(usize, Color)>,
+    guesses_explored: BTreeSet<(usize, Color)>,
     /// How many cells were unknown in the node this one was forked from, so a scorer can ask
     /// what this node's guess actually bought. The root is its own parent.
     parent_cells_left: usize,
@@ -100,9 +102,10 @@ impl BtSolveState {
             new_coord,
             BtSolveState {
                 grid: self.grid.clone(),
+                extra_knowledge: self.extra_knowledge.clone(),
                 cells_left: self.cells_left,
                 solve_counts: self.solve_counts,
-                guesses_explored: HashSet::new(),
+                guesses_explored: BTreeSet::new(),
                 parent_cells_left: self.cells_left,
             },
         )
@@ -162,6 +165,26 @@ fn nuke_descendants<'p, 'x, C: Clue, K: GridKind>(
     }
 }
 
+fn inform_descendents<'p, 'x, C: Clue, K: GridKind>(
+    coord: &HypoCoord,
+    (cell_idx, is, color): (usize, bool, Color),
+    ctx: &mut BtContext<'p, 'x, C, K>,
+) {
+    if let Some(state) = ctx.possibilities.get(&coord) {
+        let guesses_here = state.guesses_explored.clone();
+        for guess in guesses_here {
+            let mut new_coord = coord.clone();
+            new_coord.guesses.push(guess);
+
+            if let Some(new_state) = ctx.possibilities.get_mut(&new_coord) {
+                new_state.extra_knowledge.push((cell_idx, is, color));
+            }
+
+            inform_descendents(&new_coord, (cell_idx, is, color), ctx);
+        }
+    }
+}
+
 /// Learn that (assuming `coord`) the cell at `cell_idx` is [not] `color`.
 /// When making a guess, `is` must be `true`, and `(cell_idx, color)` should be at the end of `coord`.
 /// (We could store `(cell_idx, is, color)` instead, but I think there's not much call for that)
@@ -174,13 +197,22 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     color: Color,
     ctx: &mut BtContext<'p, 'x, C, K>,
 ) -> anyhow::Result<Option<Report>> {
+    let state = ctx.possibilities.get_mut(coord).unwrap();
+
     // Rebuild the line-logic bookkeeping. `mem::take` leaves an empty grid behind, but we will put it back.
-    let grid = std::mem::take(&mut ctx.possibilities.get_mut(coord).unwrap().grid);
+    let grid = std::mem::take(&mut state.grid);
     let mut working = SolveState::resume(&mut ctx.linear_ctx, grid);
-    working.learn(&mut ctx.linear_ctx, cell_idx, is, color);
+
+    // Reapply information we got from cousins
+    for &(cell_idx, is, color) in &state.extra_knowledge {
+        // TODO: Can we short-circuit if this is a contradiction?
+        let _ = working.learn(&mut ctx.linear_ctx, cell_idx, is, color);
+    }
+    state.extra_knowledge.clear();
+    let _ = working.learn(&mut ctx.linear_ctx, cell_idx, is, color);
+
     let run_consequence = working.run_and_check(&mut ctx.linear_ctx);
 
-    let state = ctx.possibilities.get_mut(coord).unwrap();
     state.grid = working.grid;
     state.cells_left = working.cells_left;
     for mode in SolveMode::all() {
@@ -219,17 +251,10 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                     println!("Assumption {coord:?} wasn't true! So {prev_cell_idx} isn't {color:?}")
                 }
 
-                // Perhaps we instead ought to (lazily?) apply our knowledge to our sibling's descenents?
-                // ...but they also might not be very valuable any more.
-                nuke_descendants(&higher_coord, false, ctx);
+                nuke_node(coord, ctx); // Get rid of the contradiction node
+                inform_descendents(&higher_coord, (prev_cell_idx, false, prev_color), ctx);
 
-                return suppose(
-                    &higher_coord,
-                    prev_cell_idx,
-                    /*is=*/ false,
-                    prev_color,
-                    ctx,
-                );
+                return suppose(&higher_coord, prev_cell_idx, false, prev_color, ctx);
             } else {
                 // end of the line!
                 return Err(e).context("after counterfactual deduction");
@@ -267,6 +292,7 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                     ctx.solution_found = Some(state.grid.clone())
                 }
 
+                // The parent of `coord` will retain an entry as a tombstone.
                 nuke_node(coord, ctx);
             }
         }
@@ -318,9 +344,10 @@ pub async fn backtrack_solve<C: Clue, K: GridKind>(
         root_coord(),
         BtSolveState {
             grid: init_linear_state.grid,
+            extra_knowledge: vec![],
             cells_left: root_cells_left,
             solve_counts: init_linear_state.solve_counts,
-            guesses_explored: HashSet::new(),
+            guesses_explored: BTreeSet::new(),
             parent_cells_left: root_cells_left,
         },
     );

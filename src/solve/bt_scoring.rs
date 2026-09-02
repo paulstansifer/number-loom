@@ -9,7 +9,7 @@ use crate::puzzle::PartialSolution;
 
 /// Everything a scorer knows besides the node itself.
 pub(super) struct ScoreCtx<'a> {
-    pub kind: ScoreKind,
+    pub kind: ScorerPair,
     /// The size of the whole grid, for scorers that measure progress as a fraction.
     pub total_cells: usize,
     /// The solution the search has already found, if any (see `Terms::rediscovery`).
@@ -65,10 +65,12 @@ impl Terms {
 }
 
 /// How `bt_solve` orders its queue of hypotheses. Lower scores are searched first.
-#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// One node-ordering formula. What the solver actually runs is a `ScorerPair` of these — there
+/// is deliberately no `Default` here, because a default on a single kind reads as "this is what
+/// ships", which is `ScorerPair::default()`'s job to say.
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ScoreKind {
     /// Mostly "fewest unknown cells wins", with a doubling penalty per hypothetical level.
-    #[default]
     Baseline,
     /// `Baseline`, but with the distance measured as a fraction of the grid, so the depth penalty
     /// means the same thing on a 50x50 as it does on a 5x5.
@@ -98,15 +100,10 @@ pub enum ScoreKind {
     /// Shallow-first, but a node that has learned a great deal can still jump the queue: the
     /// depth and distance terms are on the same scale rather than one dominating.
     Blend,
-    /// Two phases, because the search has two jobs: dive (`Progress`) until it holds a solution,
-    /// then BFS (`Bfs`) to prove there isn't a second one.
-    Hunt,
-    /// `Hunt` with the phases the other way round, as a control.
-    Refute,
 }
 
 impl ScoreKind {
-    pub const ALL: [ScoreKind; 15] = [
+    pub const ALL: [ScoreKind; 13] = [
         ScoreKind::Baseline,
         ScoreKind::Normalized,
         ScoreKind::Dfs,
@@ -120,8 +117,6 @@ impl ScoreKind {
         ScoreKind::Probe30,
         ScoreKind::Probe100,
         ScoreKind::Blend,
-        ScoreKind::Hunt,
-        ScoreKind::Refute,
     ];
 }
 
@@ -137,8 +132,104 @@ impl ScoreKind {
     }
 }
 
-/// The score itself: lower is searched sooner.
-pub(super) fn score(kind: ScoreKind, t: &Terms) -> f32 {
+/// Which scorer the search uses, in each of its two phases.
+///
+/// The search has two jobs, and they don't want the same ordering. Until it holds a solution it
+/// is *hunting* for one, and wants whatever finds one soonest; once it has one, the job changes
+/// to proving no second solution exists, which is a different shape of search. Naming the two
+/// separately means any pairing can be tried, rather than only the handful that used to be
+/// spelled out as their own `ScoreKind`s: the old `Hunt` is `progress/bfs`, `Refute` is
+/// `probe100/progress`, `Dive` is `dfs/probe30`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ScorerPair {
+    /// Used while the search is still looking for a solution.
+    pub initial: ScoreKind,
+    /// Used once a solution is in hand and the job is proving it unique.
+    pub confirming: ScoreKind,
+}
+
+impl Default for ScorerPair {
+    /// `Progress` to hunt, `Bfs` to confirm: 21 of the 31 puzzles `bench-pbnsolve --mode
+    /// backtrack` runs decide within ten seconds, against 13 for the `Baseline` this replaced.
+    /// It wins nine of them outright and loses only `webpbn-10810`, which `Baseline` gets in
+    /// 0.60s. The split is the point — hunting for a solution and proving no second one exists
+    /// want different orderings, and no single scorer was good at both.
+    fn default() -> ScorerPair {
+        ScorerPair {
+            initial: ScoreKind::Progress,
+            confirming: ScoreKind::Bfs,
+        }
+    }
+}
+
+impl ScorerPair {
+    /// The same scorer for both phases, which is what a bare `--scorer baseline` means.
+    pub fn single(kind: ScoreKind) -> ScorerPair {
+        ScorerPair {
+            initial: kind,
+            confirming: kind,
+        }
+    }
+
+    /// Which of the two applies; `solution_known` is the phase.
+    fn for_phase(&self, solution_known: bool) -> ScoreKind {
+        if solution_known {
+            self.confirming
+        } else {
+            self.initial
+        }
+    }
+}
+
+impl std::str::FromStr for ScorerPair {
+    type Err = String;
+
+    /// `progress/bfs` — the scorer to hunt with, then the one to confirm with. A bare name, like
+    /// `baseline`, uses that scorer for both phases.
+    fn from_str(spec: &str) -> Result<ScorerPair, String> {
+        use clap::ValueEnum;
+
+        let one = |name: &str| {
+            let name = name.trim();
+            ScoreKind::from_str(name, /*ignore_case=*/ true)
+                .map_err(|_| format!("no such scorer: {name:?}"))
+        };
+
+        match spec.split_once('/') {
+            Some((initial, confirming)) => Ok(ScorerPair {
+                initial: one(initial)?,
+                confirming: one(confirming)?,
+            }),
+            None => Ok(ScorerPair::single(one(spec)?)),
+        }
+    }
+}
+
+impl std::fmt::Display for ScorerPair {
+    /// The spec `from_str` would parse back into this pair; a pair that uses one scorer for both
+    /// phases prints as the bare name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.initial == self.confirming {
+            write!(f, "{}", self.initial.flag_name())
+        } else {
+            write!(
+                f,
+                "{}/{}",
+                self.initial.flag_name(),
+                self.confirming.flag_name()
+            )
+        }
+    }
+}
+
+/// The score itself: lower is searched sooner. Picks the phase's scorer out of `pair` — see
+/// `ScorerPair` for why there are two.
+pub(super) fn score(pair: ScorerPair, t: &Terms) -> f32 {
+    score_one(pair.for_phase(t.solution_known), t)
+}
+
+/// One scorer's formula, with the phase already decided.
+fn score_one(kind: ScoreKind, t: &Terms) -> f32 {
     // Every formula wants to push a node that's merely rediscovering the known solution to the
     // back; how far back depends on the scale the rest of the formula works in.
     let rediscovery = |scale: f32| if t.rediscovering { scale } else { 0.0 };
@@ -179,10 +270,6 @@ pub(super) fn score(kind: ScoreKind, t: &Terms) -> f32 {
         ScoreKind::Blend => {
             200.0 * t.levels + 1000.0 * t.unknown_frac() + rediscovery(1e4) + t.explored * 3.0
         }
-        ScoreKind::Hunt if !t.solution_known => score(ScoreKind::Progress, t),
-        ScoreKind::Hunt => 1000.0 * t.levels + t.unknown_frac() + rediscovery(1e6), // = BFS
-        ScoreKind::Refute if t.solution_known => score(ScoreKind::Progress, t),
-        ScoreKind::Refute => probe(t, 100.0),
     }
 }
 
@@ -229,7 +316,76 @@ mod tests {
             solution_known: false,
         };
         for kind in ScoreKind::ALL {
-            assert!(!score(kind, &empty).is_nan(), "{kind:?} scored NaN");
+            assert!(!score_one(kind, &empty).is_nan(), "{kind:?} scored NaN");
         }
+    }
+
+    /// The spec `--scorer` takes has to survive the round trip the benchmark puts it through
+    /// (parse, hand to a child process as a string, parse again), for both shapes it can take.
+    #[test]
+    fn scorer_pairs_round_trip() {
+        use std::str::FromStr;
+
+        for initial in ScoreKind::ALL {
+            for confirming in ScoreKind::ALL {
+                let pair = ScorerPair {
+                    initial,
+                    confirming,
+                };
+                let spelled = pair.to_string();
+                assert_eq!(
+                    ScorerPair::from_str(&spelled),
+                    Ok(pair),
+                    "{spelled:?} didn't parse back"
+                );
+            }
+        }
+    }
+
+    /// A bare name means both phases, and prints back as the bare name rather than `x/x`.
+    #[test]
+    fn a_bare_scorer_name_means_both_phases() {
+        use std::str::FromStr;
+
+        let both = ScorerPair::from_str("progress").unwrap();
+        assert_eq!(both, ScorerPair::single(ScoreKind::Progress));
+        assert_eq!(both.to_string(), "progress");
+
+        let split = ScorerPair::from_str("progress/bfs").unwrap();
+        assert_eq!(split.initial, ScoreKind::Progress);
+        assert_eq!(split.confirming, ScoreKind::Bfs);
+        assert_eq!(split.to_string(), "progress/bfs");
+
+        assert!(ScorerPair::from_str("progress/nope").is_err());
+        assert!(ScorerPair::from_str("nope").is_err());
+    }
+
+    /// The pair is what makes the phases separable: the same node scores differently depending on
+    /// whether a solution has been found yet. This is the old `Hunt`, spelled as a pair.
+    #[test]
+    fn a_pair_switches_scorer_when_a_solution_is_found() {
+        let hunt = ScorerPair {
+            initial: ScoreKind::Progress,
+            confirming: ScoreKind::Bfs,
+        };
+        let terms = |solution_known| Terms {
+            cells_left: 20.0,
+            parent_cells_left: 40.0,
+            candidates: 40.0,
+            levels: 3.0,
+            explored: 1.0,
+            rediscovering: false,
+            total_cells: 100.0,
+            solution_known,
+        };
+
+        assert_eq!(
+            score(hunt, &terms(false)),
+            score_one(ScoreKind::Progress, &terms(false))
+        );
+        assert_eq!(
+            score(hunt, &terms(true)),
+            score_one(ScoreKind::Bfs, &terms(true))
+        );
     }
 }

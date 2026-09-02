@@ -29,7 +29,7 @@ pub struct SolveOptions {
     /// which never guesses.
     pub guess_picker: crate::solve::bt_solve::PickerMix,
     /// How `bt_solve` orders its queue of hypotheses. Ignored by line logic, which has no queue.
-    pub node_scorer: crate::solve::bt_solve::ScoreKind,
+    pub node_scorer: crate::solve::bt_solve::ScorerPair,
 }
 
 impl Default for SolveOptions {
@@ -41,7 +41,7 @@ impl Default for SolveOptions {
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
             guess_picker: crate::solve::bt_solve::PickerMix::default(),
-            node_scorer: crate::solve::bt_solve::ScoreKind::default(),
+            node_scorer: crate::solve::bt_solve::ScorerPair::default(),
         }
     }
 }
@@ -713,23 +713,25 @@ impl<'p, C: Clue> SolveState<'p, C> {
     /// Assume `cell` is `color` and mark everything that assumption bears on, so that a `step`
     /// after a `Stalled` picks up where the stall left off.
     ///
-    /// Panics if the assumption is isn't new information or is impossible
+    /// An error if the fact is a contradiction; returns whether the information was new.
     pub fn learn<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
         cell: usize,
         is: bool,
         color: Color,
-    ) {
+    ) -> anyhow::Result<bool> {
         let lane_map = ctx.lane_map();
 
         let previous = self.grid[cell];
         let new_info = if is {
-            self.grid[cell].learn(color).unwrap()
+            self.grid[cell].learn(color)?
         } else {
-            self.grid[cell].learn_that_not(color).unwrap()
+            self.grid[cell].learn_that_not(color)?
         };
-        assert!(new_info, "must be new information");
+        if !new_info {
+            return Ok(false);
+        }
 
         if self.grid[cell].is_known() {
             self.cells_left -= 1;
@@ -741,6 +743,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         self.invalidate(changes, None, lane_map);
         // A guess is new information, so it's worth another cheap pass before escalating.
         self.allowed_failures = INITIAL_ALLOWED_FAILURES;
+        Ok(new_info)
     }
 
     /// React to a batch of changed cells: fold each one into `unknown_cells` for every lane

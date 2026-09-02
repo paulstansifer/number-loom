@@ -23,7 +23,7 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use number_loom::formats::webpbn::as_webpbn;
 use number_loom::puzzle::{DynPuzzle, PuzzleDynOps};
-use number_loom::solve::bt_solve::{PickerMix, ScoreKind, backtrack_solve};
+use number_loom::solve::bt_solve::{PickerMix, ScorerPair, backtrack_solve};
 use number_loom::solve::grid_solve::SolveOptions;
 use number_loom::{import, with_puzzle};
 
@@ -94,10 +94,11 @@ struct Args {
     #[arg(long)]
     include_difficult: bool,
 
-    /// Which node-scoring function orders our backtracker's queue, in backtrack mode. Defaults
-    /// to whatever `SolveOptions` does.
-    #[arg(long, value_enum)]
-    scorer: Option<ScoreKind>,
+    /// Which node-scoring function orders our backtracker's queue, in backtrack mode. Takes a
+    /// phase pair as well as a single name: `progress/bfs` hunts for a solution one way and
+    /// proves it unique the other. Defaults to whatever `SolveOptions` does.
+    #[arg(long)]
+    scorer: Option<ScorerPair>,
 
     /// Not for humans: solve one puzzle with `backtrack_solve` and print a line of counters. The
     /// benchmark re-runs itself this way to bound a search it can't otherwise interrupt.
@@ -434,7 +435,7 @@ struct LoomBt {
 
 /// The `--solve-backtrack` half of the binary: one puzzle, one `backtrack_solve`, one line of
 /// counters on stdout for the parent to read back. Nothing here touches `pbnsolve`.
-fn solve_backtrack_child(path: &Path, picker: PickerMix, scorer: ScoreKind) -> anyhow::Result<()> {
+fn solve_backtrack_child(path: &Path, picker: PickerMix, scorer: ScorerPair) -> anyhow::Result<()> {
     let mut document = import::load_path(&path.to_path_buf(), None)
         .with_context(|| format!("couldn't load {}", path.display()))?;
     let options = SolveOptions {
@@ -509,7 +510,7 @@ fn parse_loom_backtrack(stdout: &str) -> anyhow::Result<LoomBt> {
 fn run_loom_backtrack(
     puzzle: &Path,
     picker: &PickerMix,
-    scorer: ScoreKind,
+    scorer: ScorerPair,
     timeout: u64,
 ) -> Result<LoomBt, PbnFailure> {
     let exe = std::env::current_exe().map_err(|e| PbnFailure::Crashed(e.to_string()))?;
@@ -523,7 +524,7 @@ fn run_loom_backtrack(
         .arg("--picker")
         .arg(picker.to_string())
         .arg("--scorer")
-        .arg(scorer.flag_name())
+        .arg(scorer.to_string())
         .arg("--solve-backtrack")
         .arg(puzzle);
     command.stdout(std::process::Stdio::piped());
