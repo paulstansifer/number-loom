@@ -79,7 +79,7 @@ pub enum ScoreKind {
     Dfs,
     /// Shallowest node first: probe every level-1 guess before opening a level-2 one.
     Bfs,
-    /// Prefer the node whose guess taught the most, as a fraction of what its parent didn't know.
+    /// Puts strong value on proportion of the grid discovered
     Progress,
     /// Fewest unknown cells wins, full stop — no depth penalty at all.
     Flat,
@@ -247,7 +247,7 @@ fn score_one(kind: ScoreKind, t: &Terms) -> f32 {
             1000.0 * (1.0 - t.progress_frac())
                 + t.stepped_depth()
                 + rediscovery(500.0)
-                + t.explored * 3.0
+                + t.explored * 0.5
         }
         ScoreKind::Flat => t.cells_left + rediscovery(500.0) + t.explored * 3.0,
         ScoreKind::Candidates => {
