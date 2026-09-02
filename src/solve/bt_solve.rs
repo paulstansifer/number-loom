@@ -19,8 +19,8 @@ mod bt_scoring;
 
 use bt_picking::pick_guess;
 pub use bt_picking::{PickerKind, PickerMix};
-pub use bt_scoring::{ScoreKind, ScorerPair};
 use bt_scoring::{ScoreCtx, Terms};
+pub use bt_scoring::{ScoreKind, ScorerPair};
 
 /// A coordinate into the tree of hypotheticals (a stack of assumptions)
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
@@ -203,15 +203,29 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
     let grid = std::mem::take(&mut state.grid);
     let mut working = SolveState::resume(&mut ctx.linear_ctx, grid);
 
-    // Reapply information we got from cousins
-    for &(cell_idx, is, color) in &state.extra_knowledge {
-        // TODO: Can we short-circuit if this is a contradiction?
-        let _ = working.learn(&mut ctx.linear_ctx, cell_idx, is, color);
+    // Reapply what we learned from our cousins; is it even consistent with us?
+    let mut learned = Ok(());
+    for &(cousin_idx, cousin_is, cousin_color) in &state.extra_knowledge {
+        learned = working
+            .learn(&mut ctx.linear_ctx, cousin_idx, cousin_is, cousin_color)
+            .map(|_| ());
+        if learned.is_err() {
+            break; // the rest can't matter; this node is already impossible
+        }
     }
     state.extra_knowledge.clear();
-    let _ = working.learn(&mut ctx.linear_ctx, cell_idx, is, color);
+    if learned.is_ok() {
+        // TODO: maybe fold into the above loop.
+        learned = working
+            .learn(&mut ctx.linear_ctx, cell_idx, is, color)
+            .map(|_| ());
+    }
 
-    let run_consequence = working.run_and_check(&mut ctx.linear_ctx);
+    // No sense running line logic over a grid we already know can't be filled in.
+    let run_consequence = match learned {
+        Ok(()) => working.run_and_check(&mut ctx.linear_ctx),
+        Err(e) => Err(e),
+    };
 
     state.grid = working.grid;
     state.cells_left = working.cells_left;
