@@ -232,6 +232,13 @@ impl PbnFailure {
     }
 }
 
+/// The other way `-x` running out arrives: pbnsolve notices between search nodes, prints the
+/// status word for it, and exits nonzero. Without this it would be reported as a crash, which is
+/// a very different thing to see in the table.
+fn said_timeout(stdout: &str) -> bool {
+    stdout.lines().any(|line| line.trim() == "timeout")
+}
+
 /// `-x` is an `RLIMIT_CPU`, so overrunning it arrives as a signal rather than as anything pbnsolve
 /// gets to say — and because it sets the hard limit alongside the soft one, what actually lands is
 /// usually `SIGKILL` rather than the `SIGXCPU` you'd expect. Telling that apart from a genuine
@@ -340,7 +347,7 @@ fn run_pbnsolve(
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     if !output.status.success() {
-        if is_cpu_limit(&output.status, elapsed, timeout) {
+        if is_cpu_limit(&output.status, elapsed, timeout) || said_timeout(&stdout) {
             return Err(PbnFailure::CpuLimit);
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -576,21 +583,25 @@ fn run_loom_backtrack(
     parse_loom_backtrack(&stdout).map_err(|e| PbnFailure::Unreadable(e.to_string()))
 }
 
+/// What `pbnsolve` did with a puzzle: its report and how long the whole process took, or the
+/// reason there's no report — a timeout, a crash, unreadable output. A puzzle it can't finish is
+/// exactly the kind we most want our own number for, so its failure costs it a column rather than
+/// costing the row.
+type PbnRun = Result<(PbnReport, Duration), String>;
+
 /// One row of the table: either a measurement or a reason there isn't one.
 enum Row {
     Line {
         name: String,
         cells: usize,
         loom: LoomRun,
-        pbn: PbnReport,
+        pbn: PbnRun,
         loom_wall: Duration,
-        pbn_wall: Duration,
     },
     Backtrack {
         name: String,
         cells: usize,
-        pbn: PbnReport,
-        pbn_wall: Duration,
+        pbn: PbnRun,
         /// `Err` is the reason there's no measurement — a timeout, a crash, unreadable output.
         loom: Result<LoomBt, String>,
     },
@@ -832,25 +843,21 @@ fn bench_one(
 
     let xml = webpbn_path_for(path, &document, temp_dir)?;
 
-    let pbn_run = best_pbnsolve_run(
+    let pbn: PbnRun = best_pbnsolve_run(
         &args.pbnsolve,
         &xml,
         algorithm,
         args.timeout,
         reps,
         args.mode == Mode::Backtrack,
-    );
-    let (pbn, pbn_wall) = match pbn_run {
-        Ok(both) => both,
-        Err(failure) => bail!("pbnsolve: {}", failure.label()),
-    };
+    )
+    .map_err(|failure| failure.label());
 
     match args.mode {
         Mode::Backtrack => Ok(Row::Backtrack {
             name,
             cells,
             pbn,
-            pbn_wall,
             // `path`, not `xml`: our own loader reads every format, and converting first would
             // hand the backtracker a puzzle that had made a round trip through webpbn.
             loom: run_loom_backtrack(
@@ -872,7 +879,6 @@ fn bench_one(
                 loom,
                 pbn,
                 loom_wall,
-                pbn_wall,
             })
         }
     }
@@ -921,37 +927,48 @@ fn print_line_table(rows: &[Row], verbose: bool) {
                 loom,
                 pbn,
                 loom_wall,
-                pbn_wall,
             } => {
-                let pbn_left = pbn.cells_total.saturating_sub(pbn.cells_solved);
-                let agrees = pbn_left == loom.cells_left;
-                if !agrees {
-                    disagreements += 1;
-                }
-
                 let loom_us = loom.solve.as_secs_f64() * 1e6;
-                let (pbn_us_text, ratio_text) = match micros(pbn.seconds) {
-                    Some(pbn_us) => {
-                        measured += 1;
-                        ratios.push(pbn_us / loom_us);
-                        (format!("{pbn_us:.1}"), format!("{:.2}x", pbn_us / loom_us))
+
+                let pbn_us_text;
+                let mut ratio_text = "-".to_string();
+                let mut pbn_left_text = "-".to_string();
+                let mut pbn_lines_text = "-".to_string();
+                let mut pbn_wall_text = "-".to_string();
+
+                match pbn {
+                    Ok((pbn, pbn_wall)) => {
+                        let pbn_left = pbn.cells_total.saturating_sub(pbn.cells_solved);
+                        let agrees = pbn_left == loom.cells_left;
+                        if !agrees {
+                            disagreements += 1;
+                        }
+
+                        (pbn_us_text, ratio_text) = match micros(pbn.seconds) {
+                            Some(pbn_us) => {
+                                measured += 1;
+                                ratios.push(pbn_us / loom_us);
+                                (format!("{pbn_us:.1}"), format!("{:.2}x", pbn_us / loom_us))
+                            }
+                            None => ("<1".to_string(), "-".to_string()),
+                        };
+                        pbn_left_text = format!("{}{}", pbn_left, if agrees { "" } else { " ***" });
+                        pbn_lines_text = pbn.lines_processed.to_string();
+                        pbn_wall_text = format!("{:.1}", pbn_wall.as_secs_f64() * 1e6);
                     }
-                    None => ("<1".to_string(), "-".to_string()),
-                };
+                    Err(why) => pbn_us_text = why.clone(),
+                }
 
                 print!(
                     "{name:<name_width$} {cells:>7} {loom_us:>10.1} {pbn_us_text:>10} \
-                     {ratio_text:>8} {:>9} {:>9} {:>13} {:>9}",
+                     {ratio_text:>8} {:>9} {pbn_left_text:>9} {:>13} {pbn_lines_text:>9}",
                     loom.cells_left,
-                    format!("{}{}", pbn_left, if agrees { "" } else { " ***" }),
                     format!("{}/{}", loom.skims, loom.scrubs),
-                    pbn.lines_processed,
                 );
                 if verbose {
                     print!(
-                        " {:>10.1} {:>10.1}",
+                        " {:>10.1} {pbn_wall_text:>10}",
                         loom_wall.as_secs_f64() * 1e6,
-                        pbn_wall.as_secs_f64() * 1e6
                     );
                 }
                 println!();
@@ -1021,20 +1038,23 @@ fn print_backtrack_table(rows: &[Row]) {
                 name,
                 cells,
                 pbn,
-                pbn_wall,
                 loom,
             } => {
-                let pbn_status = if pbn.status.is_empty() {
-                    format!("(wall {:.3}s)", pbn_wall.as_secs_f64())
-                } else {
-                    pbn.status.clone()
+                let (pbn_sec_text, pbn_status) = match pbn {
+                    Ok((pbn, pbn_wall)) if pbn.status.is_empty() => (
+                        format!("{:.6}", pbn.seconds),
+                        format!("(wall {:.3}s)", pbn_wall.as_secs_f64()),
+                    ),
+                    Ok((pbn, _)) => (format!("{:.6}", pbn.seconds), pbn.status.clone()),
+                    Err(why) => ("-".to_string(), why.clone()),
                 };
+                let pbn_micros = pbn.as_ref().ok().and_then(|(pbn, _)| micros(pbn.seconds));
 
                 let (loom_sec, loom_left, loom_lines, loom_status, ratio) = match loom {
                     Ok(loom) => {
                         solved += 1;
                         // Only worth a ratio when both clocks actually measured something.
-                        let ratio = match micros(pbn.seconds) {
+                        let ratio = match pbn_micros {
                             Some(pbn_us) if loom.seconds > 0.0 => {
                                 let r = pbn_us / (loom.seconds * 1e6);
                                 ratios.push(r);
@@ -1060,9 +1080,8 @@ fn print_backtrack_table(rows: &[Row]) {
                 };
 
                 println!(
-                    "{name:<name_width$} {cells:>7} {loom_sec:>12} {:>12.6} {ratio:>8} \
-                     {loom_left:>10} {loom_lines:>13}  {loom_status:<14} {pbn_status}",
-                    pbn.seconds,
+                    "{name:<name_width$} {cells:>7} {loom_sec:>12} {pbn_sec_text:>12} \
+                     {ratio:>8} {loom_left:>10} {loom_lines:>13}  {loom_status:<14} {pbn_status}"
                 );
             }
             Row::Skipped { name, why } => println!("{name:<name_width$} {why}"),
@@ -1086,6 +1105,30 @@ fn print_backtrack_table(rows: &[Row]) {
     }
 }
 
+/// The `pbn_*` columns of a CSV row: the numbers when there are any, and empty fields plus the
+/// failure as the status when there aren't. Returns `(seconds, cells_left, lines, guesses,
+/// backtracks, status)`.
+fn csv_pbn_columns(pbn: &PbnRun) -> (String, String, String, String, String, String) {
+    match pbn {
+        Ok((pbn, _)) => (
+            pbn.seconds.to_string(),
+            pbn.cells_total.saturating_sub(pbn.cells_solved).to_string(),
+            pbn.lines_processed.to_string(),
+            pbn.guesses.to_string(),
+            pbn.backtracks.to_string(),
+            pbn.status.clone(),
+        ),
+        Err(why) => (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            why.clone(),
+        ),
+    }
+}
+
 fn write_csv(path: &Path, rows: &[Row]) -> anyhow::Result<()> {
     let mut out = String::from(
         "puzzle,cells,loom_seconds,pbn_seconds,loom_cells_left,pbn_cells_left,\
@@ -1099,19 +1142,18 @@ fn write_csv(path: &Path, rows: &[Row]) -> anyhow::Result<()> {
                 loom,
                 pbn,
                 ..
-            } => out.push_str(&format!(
-                "{name},{cells},{},{},{},{},{},{},{},{},{},{}\n",
-                loom.solve.as_secs_f64(),
-                pbn.seconds,
-                loom.cells_left,
-                pbn.cells_total.saturating_sub(pbn.cells_solved),
-                loom.skims,
-                loom.scrubs,
-                pbn.lines_processed,
-                pbn.guesses,
-                pbn.backtracks,
-                pbn.status,
-            )),
+            } => {
+                let (pbn_seconds, pbn_left, pbn_lines, pbn_guesses, pbn_backtracks, status) =
+                    csv_pbn_columns(pbn);
+                out.push_str(&format!(
+                    "{name},{cells},{},{pbn_seconds},{},{pbn_left},{},{},{pbn_lines},\
+                     {pbn_guesses},{pbn_backtracks},{status}\n",
+                    loom.solve.as_secs_f64(),
+                    loom.cells_left,
+                    loom.skims,
+                    loom.scrubs,
+                ))
+            }
             Row::Backtrack {
                 name,
                 cells,
@@ -1135,15 +1177,14 @@ fn write_csv(path: &Path, rows: &[Row]) -> anyhow::Result<()> {
                         why.clone(),
                     ),
                 };
+                let (pbn_seconds, _, pbn_lines, pbn_guesses, pbn_backtracks, pbn_status) =
+                    csv_pbn_columns(pbn);
                 // `pbn_cells_left` is left empty rather than filled in: see `print_backtrack_table`
                 // for why `-u` makes pbnsolve's count of them meaningless here.
                 out.push_str(&format!(
-                    "{name},{cells},{loom_seconds},{},{loom_left},,{skims},{scrubs},{},{},{},\"loom: {loom_status}; pbn: {}\"\n",
-                    pbn.seconds,
-                    pbn.lines_processed,
-                    pbn.guesses,
-                    pbn.backtracks,
-                    pbn.status,
+                    "{name},{cells},{loom_seconds},{pbn_seconds},{loom_left},,{skims},{scrubs},\
+                     {pbn_lines},{pbn_guesses},{pbn_backtracks},\
+                     \"loom: {loom_status}; pbn: {pbn_status}\"\n"
                 ))
             }
             Row::Skipped { name, why } => {
@@ -1180,6 +1221,14 @@ Processing Time: 0.000175 sec
         assert_eq!(report.lines_processed, 298);
         assert_eq!(report.guesses, 0);
         assert_eq!(report.seconds, 0.000175);
+    }
+
+    #[test]
+    fn a_timeout_pbnsolve_reported_itself_is_recognized() {
+        assert!(said_timeout("#8098 (v.1): Domino Logic III\ntimeout\n"));
+        assert!(!said_timeout(SOLVED));
+        // The title line is arbitrary text; only a line that is *only* the word counts.
+        assert!(!said_timeout("#1 (v.1): timeout, the movie\nunique\n"));
     }
 
     /// The title line is arbitrary text, and here it is made of status words. Taking the *last*
@@ -1264,7 +1313,7 @@ examples/wolter/knotty.xml:2: I/O warning : failed to load external entity \"htt
             "examples/wolter/webpbn-00672.xml"
         )));
         assert!(!is_too_difficult(Path::new(
-            "examples/wolter/webpbn-22336.xml"
+            "examples/wolter/webpbn-00023.xml"
         )));
     }
 
@@ -1295,14 +1344,15 @@ examples/wolter/knotty.xml:2: I/O warning : failed to load external entity \"htt
         let puzzles = collect_puzzles(&[PathBuf::from("examples/wolter")]).unwrap();
 
         let kept = for_backtracking(&puzzles, /*include_difficult=*/ false);
-        assert_eq!(kept.len(), puzzles.len() - 8 - 9);
+        assert_eq!(kept.len(), puzzles.len() - 8 - TOO_DIFFICULT.len());
         assert!(!kept.iter().any(|p| p.ends_with("webpbn-00001.xml")));
         assert!(!kept.iter().any(|p| p.ends_with("knotty.xml")));
         assert!(kept.iter().any(|p| p.ends_with("webpbn-00023.xml")));
 
-        // `--include-difficult` puts back the nine, and only the nine.
+        // `--include-difficult` puts back the difficult ones, and only those — each pattern in
+        // `TOO_DIFFICULT` naming exactly one puzzle of the set.
         let with_hard = for_backtracking(&puzzles, /*include_difficult=*/ true);
-        assert_eq!(with_hard.len(), kept.len() + 9);
+        assert_eq!(with_hard.len(), kept.len() + TOO_DIFFICULT.len());
         assert!(with_hard.iter().any(|p| p.ends_with("knotty.xml")));
         assert!(!with_hard.iter().any(|p| p.ends_with("webpbn-00001.xml")));
     }
