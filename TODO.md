@@ -14,6 +14,13 @@
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)
+  * What intermediate-difficulty reasoning steps do people use?
+    * We need somewhat broad categories, since the solver exhausts one level before going on
+    * Skim, in practice, is quite powerful. Skim-ignoring-foreground seems interesting...
+      * Perhaps also skim-ignoring-background. (call the combination "mono-skim"?)
+    * Need to experiment to see if this is good: \[mono-\]skim, only painting the largest unsolved clue (and spaces adjacent to solved clues, if relevant)
+    * Given a skim, what clue sizes may fit in each gap?
+    * Given a skim, what clue sizes may a particular foreground spot be?
 * Bottleneck difficulty measurement during solve
 * Scale+quantize a picture into a puzzle
 * Inverted "disambiguate" to increase difficulty
