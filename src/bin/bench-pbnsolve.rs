@@ -11,6 +11,10 @@
 //! microsecond-scale line solve in a millisecond of process startup — `--verbose` shows those
 //! numbers anyway, as a sanity check that the two clocks tell the same story.
 //!
+//! `--mode first-solution` is `backtrack` with both sides asked only to *find* a solution, not
+//! to prove it unique: no `-u` for pbnsolve, `stop_at_first_solution` for ours. Comparing it
+//! against `--mode backtrack` says how much of a search is the hunt and how much the proof.
+//!
 //! `--mode backtrack` benchmarks a smaller set than `--mode line` does: puzzles line logic
 //! finishes by itself never reach the backtracker's guessing, and the handful in `TOO_DIFFICULT`
 //! only ever spend `--loom-timeout` and report that they did. See `for_backtracking`.
@@ -34,6 +38,18 @@ enum Mode {
     /// `pbnsolve`'s search, on its own, as a baseline for the backtracker to beat. Both sides
     /// prove the solution unique here (see `run_pbnsolve`'s `check_unique`).
     Backtrack,
+    /// `Backtrack`, but both sides stop at the first solution they find rather than proving it
+    /// the only one. An ambiguous puzzle is fair game here -- whichever solution comes up first
+    /// is an answer -- so the two modes' times aren't comparable puzzle-for-puzzle so much as in
+    /// aggregate: what the proof half of the work costs.
+    FirstSolution,
+}
+
+impl Mode {
+    /// Whether this mode runs the backtracking search at all (as opposed to line logic).
+    fn is_backtracking(self) -> bool {
+        matches!(self, Mode::Backtrack | Mode::FirstSolution)
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -104,6 +120,11 @@ struct Args {
     /// benchmark re-runs itself this way to bound a search it can't otherwise interrupt.
     #[arg(long, hide = true)]
     solve_backtrack: Option<PathBuf>,
+
+    /// Not for humans: what `--mode first-solution` hands its child, so the child stops hunting
+    /// once it has a grid instead of going on to prove it unique.
+    #[arg(long, hide = true)]
+    first_solution: bool,
 }
 
 impl Args {
@@ -111,14 +132,14 @@ impl Args {
         match (&self.pbn_algorithm, self.mode) {
             (Some(explicit), _) => Some(explicit.clone()),
             (None, Mode::Line) => Some("LE".to_string()),
-            (None, Mode::Backtrack) => None,
+            (None, Mode::Backtrack | Mode::FirstSolution) => None,
         }
     }
 
     fn reps(&self) -> u32 {
         self.reps.unwrap_or(match self.mode {
             Mode::Line => 5,
-            Mode::Backtrack => 1,
+            Mode::Backtrack | Mode::FirstSolution => 1,
         })
     }
 }
@@ -442,12 +463,18 @@ struct LoomBt {
 
 /// The `--solve-backtrack` half of the binary: one puzzle, one `backtrack_solve`, one line of
 /// counters on stdout for the parent to read back. Nothing here touches `pbnsolve`.
-fn solve_backtrack_child(path: &Path, picker: PickerMix, scorer: ScorerPair) -> anyhow::Result<()> {
+fn solve_backtrack_child(
+    path: &Path,
+    picker: PickerMix,
+    scorer: ScorerPair,
+    first_solution: bool,
+) -> anyhow::Result<()> {
     let mut document = import::load_path(&path.to_path_buf(), None)
         .with_context(|| format!("couldn't load {}", path.display()))?;
     let options = SolveOptions {
         guess_picker: picker,
         node_scorer: scorer,
+        stop_at_first_solution: first_solution,
         ..SolveOptions::default()
     };
 
@@ -469,6 +496,12 @@ fn solve_backtrack_child(path: &Path, picker: PickerMix, scorer: ScorerPair) -> 
     // `LOOM` prefixed so a stray line from anywhere else can't be mistaken for the report.
     // `cells_left == 0` indicates a unique solution
     match outcome {
+        // Under `first_solution` a finished grid is just *a* solution: the search never looked
+        // for a second one, so `unique` would be a claim it didn't make.
+        Ok(report) if report.cells_left == 0 && first_solution => println!(
+            "LOOM solved {seconds} {} {} {}",
+            report.cells_left, report.solve_counts.skim, report.solve_counts.scrub
+        ),
         Ok(report) if report.cells_left == 0 => println!(
             "LOOM unique {seconds} {} {} {}",
             report.cells_left, report.solve_counts.skim, report.solve_counts.scrub
@@ -519,6 +552,7 @@ fn run_loom_backtrack(
     picker: &PickerMix,
     scorer: ScorerPair,
     timeout: u64,
+    first_solution: bool,
 ) -> Result<LoomBt, PbnFailure> {
     let exe = std::env::current_exe().map_err(|e| PbnFailure::Crashed(e.to_string()))?;
 
@@ -534,6 +568,9 @@ fn run_loom_backtrack(
         .arg(scorer.to_string())
         .arg("--solve-backtrack")
         .arg(puzzle);
+    if first_solution {
+        command.arg("--first-solution");
+    }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
 
@@ -757,6 +794,7 @@ fn main() -> anyhow::Result<()> {
             puzzle,
             args.picker.clone().unwrap_or_default(),
             args.scorer.unwrap_or_default(),
+            args.first_solution,
         );
     }
 
@@ -767,7 +805,7 @@ fn main() -> anyhow::Result<()> {
     let reps = args.reps();
 
     let mut puzzles = collect_puzzles(&args.puzzles)?;
-    if args.mode == Mode::Backtrack {
+    if args.mode.is_backtracking() {
         puzzles = for_backtracking(&puzzles, args.include_difficult);
         if puzzles.is_empty() {
             bail!("every puzzle named was excluded from backtrack mode");
@@ -806,7 +844,7 @@ fn main() -> anyhow::Result<()> {
 
     match args.mode {
         Mode::Line => print_line_table(&rows, args.verbose),
-        Mode::Backtrack => print_backtrack_table(&rows),
+        Mode::Backtrack | Mode::FirstSolution => print_backtrack_table(&rows),
     }
 
     if let Some(csv_path) = &args.csv {
@@ -854,7 +892,7 @@ fn bench_one(
     .map_err(|failure| failure.label());
 
     match args.mode {
-        Mode::Backtrack => Ok(Row::Backtrack {
+        Mode::Backtrack | Mode::FirstSolution => Ok(Row::Backtrack {
             name,
             cells,
             pbn,
@@ -865,6 +903,7 @@ fn bench_one(
                 &args.picker.clone().unwrap_or_default(),
                 args.scorer.unwrap_or_default(),
                 args.loom_timeout,
+                args.mode == Mode::FirstSolution,
             )
             .map_err(|f| f.label()),
         }),

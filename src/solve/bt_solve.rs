@@ -289,6 +289,17 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
                     )));
                 }
 
+                // Hunting only: the first complete grid is the answer, whether or not anything
+                // else would also fit.
+                if ctx.linear_ctx.options.stop_at_first_solution {
+                    return Ok(Some(Report::from_grid(
+                        ctx.puzzle,
+                        &state.grid,
+                        state.cells_left,
+                        state.solve_counts,
+                    )));
+                }
+
                 if let Some(old_solution) = &ctx.solution_found {
                     if old_solution != &state.grid {
                         // Time to give up! If we churned for longer, we might be able to

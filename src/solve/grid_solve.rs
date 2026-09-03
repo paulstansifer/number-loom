@@ -30,6 +30,11 @@ pub struct SolveOptions {
     pub guess_picker: crate::solve::bt_solve::PickerMix,
     /// How `bt_solve` orders its queue of hypotheses. Ignored by line logic, which has no queue.
     pub node_scorer: crate::solve::bt_solve::ScorerPair,
+    /// Stop as soon as any complete grid turns up, instead of going on to prove it is the only
+    /// one. The answer is then only "a solution", not "the solution" -- an ambiguous puzzle
+    /// reports whichever it happened to reach first, and says nothing about the others. For
+    /// measuring how much of a search is spent hunting versus confirming.
+    pub stop_at_first_solution: bool,
 }
 
 impl Default for SolveOptions {
@@ -42,6 +47,7 @@ impl Default for SolveOptions {
             max_effort: SolveMode::Scrub,
             guess_picker: crate::solve::bt_solve::PickerMix::default(),
             node_scorer: crate::solve::bt_solve::ScorerPair::default(),
+            stop_at_first_solution: false,
         }
     }
 }
