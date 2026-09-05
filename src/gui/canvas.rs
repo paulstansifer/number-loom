@@ -29,15 +29,90 @@ impl HoverBlocks {
     }
 }
 
+/// A clue in a gutter: which lane it belongs to, and which of that lane's clues it is.
+pub type ClueId = (usize, usize);
+
 /// What a canvas needs in order to draw clue gutters around the picture. Only the solve view
 /// supplies this; the editor draws the picture alone.
 pub struct ClueOverlay<'a> {
     pub puzzle: &'a crate::puzzle::DynPuzzle,
     /// One `Vec<LineStatus>` per clue family, in family order.
     pub analysis: Option<&'a Vec<Vec<crate::solve::grid_solve::LineStatus>>>,
+    /// One `Vec<usize>` of resolved clue indices per lane, grouped by family like `analysis`.
+    pub fixed: Option<&'a Vec<Vec<Vec<usize>>>>,
     pub is_stale: bool,
     /// The hovered cell's block lengths, shown in place of the analysis marks on its own lanes.
     pub hover: Option<HoverBlocks>,
+}
+
+impl ClueOverlay<'_> {
+    /// Whether the solver has worked a clue out for itself. Those ignore clicks: there's nothing
+    /// for the user to check off, and unchecking it would only last until the next repaint.
+    fn auto_fixed(&self, picture: &DynSolution, (lane, clue_idx): ClueId) -> bool {
+        let family = picture.lane_map().lanes()[lane].family;
+        let line = lane - picture.lane_map().family(family).start;
+        self.fixed
+            .and_then(|f| f.get(family)?.get(line))
+            .is_some_and(|fixed| fixed.contains(&clue_idx))
+    }
+}
+
+/// One lane's clue boxes in the order they're drawn, counting outward from the grid: the color,
+/// the count (`None` for a triano cap), and which of the lane's clues the box belongs to.
+fn expressed_clues(
+    puzzle: &crate::puzzle::DynPuzzle,
+    g: &crate::layout::GutterLane,
+) -> Vec<(ColorInfo, Option<u16>, usize)> {
+    crate::with_puzzle!(puzzle, |p| {
+        let mut v: Vec<(ColorInfo, Option<u16>, usize)> = p.lines[g.lane]
+            .iter()
+            .enumerate()
+            .flat_map(|(clue_idx, c)| {
+                c.express(&p.palette)
+                    .into_iter()
+                    .map(move |(ci, n)| (ci.clone(), n, clue_idx))
+            })
+            .collect();
+        // Clues run in the lane's own direction, so the box nearest the grid is the last one;
+        // `reversed` covers the families whose clues are labelled at the far end from where the
+        // lane is stored.
+        if !g.reversed {
+            v.reverse();
+        }
+        v
+    })
+}
+
+/// The corners of a gutter's `i`th clue box, in abstract units.
+fn clue_box_points(g: &crate::layout::GutterLane, family: usize, i: usize) -> [Point; 4] {
+    crate::layout::tri_clue_rhombus(
+        g.clue_box_center(i),
+        family,
+        g.edge_dir,
+        crate::layout::CLUE_BOX,
+        crate::layout::CLUE_BOX_SHORT,
+    )
+}
+
+/// The clue whose gutter box covers `at` (in abstract units). A box the solver has checked off
+/// itself swallows the click rather than reporting it: there's nothing left to check off there.
+fn clue_box_at(
+    picture: &DynSolution,
+    overlay: &ClueOverlay<'_>,
+    at: crate::layout::Point,
+) -> Option<ClueId> {
+    for (_, gutter) in picture.gutters() {
+        for g in gutter {
+            let family = picture.lane_map().lanes()[g.lane].family;
+            for (i, (_, _, clue_idx)) in expressed_clues(overlay.puzzle, g).iter().enumerate() {
+                if crate::layout::convex_contains(&clue_box_points(g, family, i), at) {
+                    let id = (g.lane, *clue_idx);
+                    return (!overlay.auto_fixed(picture, id)).then_some(id);
+                }
+            }
+        }
+    }
+    None
 }
 
 impl CanvasGui {
@@ -63,18 +138,19 @@ impl CanvasGui {
         scale: f32,
         render_style: RenderStyle,
     ) -> Option<u32> {
-        self.canvas_with_clues(ui, scale, render_style, None)
+        self.canvas_with_clues(ui, scale, render_style, None).0
     }
 
     /// As `canvas`, but growing the drawing area to cover wherever the clues reach, and handing
-    /// the gutters themselves to `draw_clue_gutters`.
+    /// the gutters themselves to `draw_clue_gutters`. Returns the hovered cell and whichever clue
+    /// box the pointer clicked, if any.
     pub fn canvas_with_clues(
         &mut self,
         ui: &mut egui::Ui,
         scale: f32,
         render_style: RenderStyle,
         clues: Option<ClueOverlay<'_>>,
-    ) -> Option<u32> {
+    ) -> (Option<u32>, Option<ClueId>) {
         let extent = self.document.solution_mut().extent();
 
         // Grow the drawing area to cover wherever the clues reach.
@@ -260,8 +336,30 @@ impl CanvasGui {
         }
 
         // Clue gutters, in the same coordinate system as the picture.
+        //
+        // Their boxes are clickable, except when the lasso or the annotate tool is in hand: those
+        // two work outside the grid as well as on it, so the clicks that land out here are
+        // theirs.
+        let mut clicked_clue = None;
         if let Some(overlay) = &clues {
-            draw_clue_gutters(ui, &painter, picture, overlay, scale, &to_screen);
+            if !matches!(tool, Tool::Lasso | Tool::Annotate)
+                && let Some(pointer_pos) = response.hover_pos()
+            {
+                let p = from_screen * pointer_pos;
+                if let Some(clue) = clue_box_at(picture, overlay, Point::new(p.x, p.y)) {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    clicked_clue = response.clicked().then_some(clue);
+                }
+            }
+            draw_clue_gutters(
+                ui,
+                &painter,
+                picture,
+                overlay,
+                &self.checked_clues,
+                scale,
+                &to_screen,
+            );
         }
 
         // Grid lines, precomputed by the geometry: one boundary per lane, with every fifth one
@@ -308,7 +406,7 @@ impl CanvasGui {
 
         response.mark_changed();
 
-        hovered_cell
+        (hovered_cell, clicked_clue)
     }
 }
 
@@ -323,6 +421,7 @@ fn draw_clue_gutters(
     painter: &egui::Painter,
     picture: &DynSolution,
     overlay: &ClueOverlay<'_>,
+    checked: &HashSet<ClueId>,
     scale: f32,
     to_screen: &egui::emath::RectTransform,
 ) {
@@ -338,40 +437,38 @@ fn draw_clue_gutters(
 
     for (_, gutter) in picture.gutters() {
         for g in gutter {
-            let expressed = crate::with_puzzle!(overlay.puzzle, |p| {
-                let mut v: Vec<(ColorInfo, Option<u16>)> = p.lines[g.lane]
-                    .iter()
-                    .flat_map(|c| {
-                        c.express(&p.palette)
-                            .into_iter()
-                            .map(|(ci, n)| (ci.clone(), n))
-                    })
-                    .collect();
-                // Clues run in the lane's own direction, so the box nearest the grid is
-                // the last one; `reversed` covers the families whose clues are labelled
-                // at the far end from where the lane is stored.
-                if !g.reversed {
-                    v.reverse();
-                }
-                v
-            });
+            // Each entry carries the clue it came from, since a clue can express as several
+            // boxes and it's the whole clue that gets resolved.
+            let expressed = expressed_clues(overlay.puzzle, g);
 
             let family = lane_families[g.lane];
-            for (i, (color_info, count)) in expressed.iter().enumerate() {
-                let c = g.clue_box_center(i);
-                let points = crate::layout::tri_clue_rhombus(
-                    c,
-                    family,
-                    g.edge_dir,
-                    crate::layout::CLUE_BOX,
-                    crate::layout::CLUE_BOX_SHORT,
-                )
-                .map(|p| to_screen * Pos2::new(p.x, p.y));
+            for (i, (color_info, count, clue_idx)) in expressed.iter().enumerate() {
+                let points = clue_box_points(g, family, i).map(|p| to_screen * Pos2::new(p.x, p.y));
                 let text = match count {
                     Some(n) => n.to_string(),
                     None => color_info.ch.to_string(),
                 };
-                solver::draw_string_in_rhombus(ui, painter, &points, &text, scale, color_info.rgb);
+                // A resolved clue loses its box: nothing about it is left to work out.
+                let id = (g.lane, *clue_idx);
+                if checked.contains(&id) || overlay.auto_fixed(picture, id) {
+                    solver::draw_bare_number_in_rhombus(
+                        ui,
+                        painter,
+                        &points,
+                        &text,
+                        scale,
+                        color_info.rgb,
+                    );
+                } else {
+                    solver::draw_string_in_rhombus(
+                        ui,
+                        painter,
+                        &points,
+                        &text,
+                        scale,
+                        color_info.rgb,
+                    );
+                }
             }
 
             // The indicator strip between the clues and the grid: the hovered block's
@@ -410,7 +507,9 @@ fn draw_clue_gutters(
     }
 }
 
-pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui::Shape {
+/// A corner triangle's corners, in a box of `scale` at the origin: two full sides meeting at the
+/// right angle, and a hypotenuse across the other two.
+pub fn triangle_points(corner: Corner, scale: Vec2) -> Vec<Pos2> {
     let Corner { left, upper } = corner;
 
     let mut points = vec![];
@@ -428,7 +527,11 @@ pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui
         points.push((Vec2::new(0.0, 1.0) * scale + Vec2::new(0.25, 0.5)).to_pos2());
     }
 
-    Shape::convex_polygon(points, color, (0.0, color))
+    points
+}
+
+pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui::Shape {
+    Shape::convex_polygon(triangle_points(corner, scale), color, (0.0, color))
 }
 
 /// Build the shapes for one cell. `shape` and `origin` come from the geometry, so a triangle is

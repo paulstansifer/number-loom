@@ -1,6 +1,6 @@
 use super::{
-    Action, ActionMood, BacktrackSolver, CanvasGui, Disambiguator, Staleable, Tool, default_color,
-    outline_text,
+    Action, ActionMood, BacktrackSolver, CanvasGui, ClueId, Disambiguator, Staleable, Tool,
+    default_color, outline_text,
 };
 use crate::{
     puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
@@ -8,6 +8,7 @@ use crate::{
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
+use std::collections::HashSet;
 use web_time::Instant;
 
 use crate::puzzle::{Document, DynSolution};
@@ -18,7 +19,11 @@ pub struct SolveGui {
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
+    /// Per clue family, per line: can line-logic fully solve any cells?
     pub line_analysis: Staleable<Option<Vec<Vec<LineStatus>>>>,
+    pub mark_fixed_clues: bool,
+    /// Per clue family, per line: which of that line's clues are "done"
+    pub fixed_clues: Staleable<Option<Vec<Vec<Vec<usize>>>>>,
     pub render_style: RenderStyle,
     last_inferred_version: u32,
     pub hovered_cell: Option<u32>,
@@ -95,6 +100,7 @@ impl SolveGui {
                 selection: None,
                 annotations: vec![],
                 annotate_drag: None,
+                checked_clues: HashSet::new(),
                 solving: true,
                 middle_pans: false,
                 picture_rect: None,
@@ -126,6 +132,11 @@ impl SolveGui {
                 val: None,
                 version: u32::MAX,
             },
+            mark_fixed_clues: UserSettings::get_bool(consts::SOLVER_MARK_FIXED_CLUES),
+            fixed_clues: Staleable {
+                val: None,
+                version: u32::MAX,
+            },
             render_style: UserSettings::get(consts::SOLVER_RENDER_STYLE)
                 .and_then(|name| RenderStyle::from_setting_name(&name))
                 .unwrap_or(RenderStyle::Experimental),
@@ -133,6 +144,14 @@ impl SolveGui {
             hovered_cell: None,
             replay: None,
         }
+    }
+
+    /// Check a clue off, or un-check it. Clues the solver has checked off itself never get here:
+    /// the gutters swallow those clicks, since un-checking one would last only until the next
+    /// repaint.
+    fn toggle_checked_clue(&mut self, id: ClueId) {
+        self.canvas
+            .perform(Action::ToggleClue { clue: id }, ActionMood::Normal);
     }
 
     fn detect_any_errors(&self) -> bool {
@@ -377,6 +396,27 @@ impl SolveGui {
                     .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }
 
+            if ui
+                .checkbox(&mut self.mark_fixed_clues, "Mark resolved clues")
+                .changed()
+            {
+                let _ = UserSettings::set(
+                    consts::SOLVER_MARK_FIXED_CLUES,
+                    &self.mark_fixed_clues.to_string(),
+                );
+                if !self.mark_fixed_clues {
+                    // As with the analysis marks: turning the aid off takes its marks with it.
+                    self.fixed_clues.update(None, u32::MAX);
+                }
+            }
+            if self.mark_fixed_clues {
+                let clues = &self.clues;
+                let picture = self.canvas.document.try_solution().unwrap();
+                let grid = picture.to_partial();
+                self.fixed_clues
+                    .get_or_refresh(self.canvas.version, || Some(clues.fixed_clues(&grid)));
+            }
+
             ui.separator();
 
             if ui.checkbox(&mut self.detect_errors, "[auto]").changed() {
@@ -432,12 +472,17 @@ impl SolveGui {
             let overlay = super::ClueOverlay {
                 puzzle: &self.clues,
                 analysis: self.line_analysis.val.as_ref(),
+                fixed: self.fixed_clues.val.as_ref(),
                 is_stale,
                 hover,
             };
-            self.hovered_cell =
+            let (hovered, clicked) =
                 self.canvas
                     .canvas_with_clues(ui, scale, self.render_style, Some(overlay));
+            self.hovered_cell = hovered;
+            if let Some(id) = clicked {
+                self.toggle_checked_clue(id);
+            }
             return;
         }
 
@@ -462,6 +507,7 @@ impl SolveGui {
         // Family 0 is the rows, drawn by the horizontal gutter; family 1 is the columns.
         let (row_hint, col_hint) = (hint(0), hint(1));
 
+        let mut clicked_clue = None;
         ui.vertical(|ui| {
             // No spacing between the cells: each clue gutter reserves its own gap against the
             // grid (`CLUE_PAD`, in cell units), and egui's default few pixels on top of that
@@ -471,30 +517,42 @@ impl SolveGui {
                 .show(ui, |ui| {
                     ui.label(""); // Top-left is empty
                     let line_analysis = self.line_analysis.val.as_ref();
-                    draw_dyn_clues(
+                    let fixed_clues = self.fixed_clues.val.as_ref();
+                    // Family 0 is the rows, family 1 the columns, in both analyses.
+                    let checked = &self.canvas.checked_clues;
+                    let marks = |family: usize, hint: Option<BlockHint>| GutterMarks {
+                        analysis: line_analysis.and_then(|la| la.get(family)).map(|v| &v[..]),
+                        fixed: fixed_clues.and_then(|fc| fc.get(family)).map(|v| &v[..]),
+                        checked,
+                        is_stale,
+                        hover: hint,
+                    };
+                    let col_clicked = draw_dyn_clues(
                         ui,
                         &self.clues,
                         scale,
                         Orientation::Vertical,
-                        line_analysis.and_then(|la| la.get(1)).map(|v| &v[..]),
-                        is_stale,
-                        col_hint,
+                        &marks(1, col_hint),
                     );
                     ui.end_row();
 
-                    draw_dyn_clues(
+                    let row_clicked = draw_dyn_clues(
                         ui,
                         &self.clues,
                         scale,
                         Orientation::Horizontal,
-                        line_analysis.and_then(|la| la.first()).map(|v| &v[..]),
-                        is_stale,
-                        row_hint,
+                        &marks(0, row_hint),
                     );
+                    // A click lands in one gutter or the other, never both.
+                    clicked_clue = col_clicked.or(row_clicked);
                     self.hovered_cell = self.canvas.canvas(ui, scale, self.render_style);
                     ui.end_row();
                 });
         });
+
+        if let Some(id) = clicked_clue {
+            self.toggle_checked_clue(id);
+        }
     }
 }
 
@@ -513,11 +571,7 @@ fn replay_scale(across: f32, available: f32) -> f32 {
 
 /// A finished solve, played back a step at a time.
 ///
-/// The undo stack *is* the recording: it holds one entry per step, each naming the cells that
-/// step painted and the colors they had before it. So this stores no picture data of its own —
-/// just how long the solve was and when the animation started — and rebuilds each frame on
-/// demand from the stack as it stands. Frames cost a grid copy and a walk over the steps above
-/// the one being shown, which at a few frames a second is nothing.
+/// This uses the undo stack, skipping over clue-check-off actions
 pub struct Replay {
     /// How many steps the solve took, frozen when it came out right, so that whatever the user
     /// does to the grid afterwards isn't replayed as part of it.
@@ -544,20 +598,37 @@ impl Replay {
         (self.started.elapsed().as_secs_f32() * REPLAY_STEPS_PER_SECOND) as usize
     }
 
-    /// How many steps there are left to show: the solve's length, except that undoing back past
-    /// where it finished really does take those steps off the stack, leaving less to replay.
-    fn len(&self, canvas: &CanvasGui) -> usize {
-        self.steps.min(canvas.undo_stack.len())
+    /// Where in the undo stack each frame of the replay stands: the picture before the solve
+    /// started, then one frame after each step that painted. Checking a clue off is on the stack
+    /// too but changes no cell, so it gets no frame of its own and the replay steps past it.
+    fn frames(&self, canvas: &CanvasGui) -> Vec<usize> {
+        // Undoing back past where the solve finished really does take those steps off the stack,
+        // leaving less to replay.
+        let stack = &canvas.undo_stack[..self.steps.min(canvas.undo_stack.len())];
+        let mut frames = vec![0];
+        for (i, action) in stack.iter().enumerate() {
+            if matches!(action, Action::ChangeColor { .. }) {
+                frames.push(i + 1);
+            }
+        }
+        frames
     }
 
-    /// The picture as it stood after `step` steps of the solve.
+    /// How many steps there are left to show.
+    fn len(&self, canvas: &CanvasGui) -> usize {
+        self.frames(canvas).len() - 1
+    }
+
+    /// The picture as it stood after `step` painting steps of the solve.
     ///
     /// Each undo entry holds the colors its step painted over, so starting from the picture as it
     /// stands *now* and applying them newest-first walks backwards through the solve. Anything
     /// the user painted after finishing gets unwound on the way past.
     fn frame(&self, canvas: &CanvasGui, step: usize) -> Vec<Color> {
+        let frames = self.frames(canvas);
+        let position = frames[step.min(frames.len() - 1)];
         let mut cells = canvas.document.try_solution().unwrap().cells().to_vec();
-        for undone in canvas.undo_stack[step..].iter().rev() {
+        for undone in canvas.undo_stack[position..].iter().rev() {
             // Painting is the only thing that reaches the solver's undo stack: its palette editor
             // is read-only, and every `ReplaceDocument` in the app goes to the editor's canvas.
             if let Action::ChangeColor { changes } = undone {
@@ -650,6 +721,21 @@ pub struct BlockHint {
     pub line: usize,
     pub len: usize,
     pub rgb: (u8, u8, u8),
+}
+
+/// What a square clue gutter draws besides the clues themselves: the indicator strip's contents,
+/// and which clues have been resolved (and so are drawn without their boxes).
+#[derive(Clone, Copy)]
+pub struct GutterMarks<'a> {
+    /// This family's per-line analysis marks, if the analysis is being shown.
+    pub analysis: Option<&'a [LineStatus]>,
+    /// Per line of this family, the indices of that line's fully-resolved clues.
+    pub fixed: Option<&'a [Vec<usize>]>,
+    /// The clues the user has checked off by hand, keyed by `(lane, index within the lane)`.
+    pub checked: &'a HashSet<ClueId>,
+    /// Whether the analysis predates the picture as it now stands.
+    pub is_stale: bool,
+    pub hover: Option<BlockHint>,
 }
 
 use crate::solve::line_solve::SolveMode;
@@ -769,6 +855,114 @@ fn luminance(c: Color32) -> f32 {
     (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0
 }
 
+/// The color to outline something drawn in `rgb` with, so that it stays legible against the panel
+/// it sits on — `None` when the color already stands out on its own.
+pub(crate) fn contrast_outline(ui: &egui::Ui, (r, g, b): (u8, u8, u8)) -> Option<Color32> {
+    /// Below this much difference in lightness, a color needs an outline to be legible.
+    const MIN_CONTRAST: f32 = 0.4;
+
+    let fill = Color32::from_rgb(r, g, b);
+    if (luminance(fill) - luminance(ui.visuals().panel_fill)).abs() >= MIN_CONTRAST {
+        return None;
+    }
+    Some(if luminance(fill) > 0.5 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    })
+}
+
+/// How wide to stroke the halo around a bare number. Doubled because half of a stroke hides under
+/// the glyphs it outlines, so the border shows `scale * 0.05` wide.
+pub(crate) fn outline_width(scale: f32) -> f32 {
+    2.0 * (scale * 0.05).max(1.0)
+}
+
+/// How wide to stroke a resolved clue's own outline. Thinner than a number's halo: all of this
+/// stroke shows, rather than half of it hiding under the glyphs.
+fn clue_outline_width(scale: f32) -> f32 {
+    (scale * 0.04).max(1.0)
+}
+
+/// The corners of the smallest convex polygon containing `points` (Andrew's monotone chain),
+/// counter-clockwise. Fewer than three distinct points have no outline to draw, and come back as
+/// they are.
+fn convex_hull(mut points: Vec<Pos2>) -> Vec<Pos2> {
+    if points.len() < 3 {
+        return points;
+    }
+    points.sort_by(|a, b| {
+        (a.x, a.y)
+            .partial_cmp(&(b.x, b.y))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let cross = |o: Pos2, a: Pos2, b: Pos2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+    let mut hull: Vec<Pos2> = Vec::with_capacity(points.len() + 1);
+    // The lower chain, then the upper one; each drops any corner that doesn't actually turn, and
+    // stops short of eating into the chain before it.
+    for pass in 0..2 {
+        let base = hull.len();
+        for &p in points.iter() {
+            while hull.len() >= base + 2
+                && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop(); // Where this chain ends is where the next one starts.
+        if pass == 0 {
+            points.reverse();
+        }
+    }
+    hull
+}
+
+/// One clue box's corners as it is drawn: a cap's triangle, or the whole box.
+fn clue_box_corners(color_info: &crate::puzzle::ColorInfo, rect: Rect) -> Vec<Pos2> {
+    match color_info.corner {
+        Some(corner) => super::triangle_points(corner, rect.size())
+            .iter()
+            .map(|p| *p + rect.min.to_vec2())
+            .collect(),
+        None => vec![
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+        ],
+    }
+}
+
+/// The outline a resolved triano clue keeps in place of its filled boxes: its whole silhouette,
+/// caps included, so it still reads as one clue rather than a loose number between two gaps.
+fn draw_clue_outline(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    corners: Vec<Pos2>,
+    scale: f32,
+    rgb: (u8, u8, u8),
+) {
+    let hull = convex_hull(corners);
+    if hull.len() < 3 {
+        return; // Nothing with an inside; not a shape we can outline.
+    }
+    let width = clue_outline_width(scale);
+    // A pale outline against a pale panel would vanish, so it gets the same backing a bare
+    // number's glyphs do.
+    if let Some(halo) = contrast_outline(ui, rgb) {
+        painter.add(egui::Shape::closed_line(
+            hull.clone(),
+            egui::Stroke::new(width * 2.0, halo),
+        ));
+    }
+    painter.add(egui::Shape::closed_line(
+        hull,
+        egui::Stroke::new(width, Color32::from_rgb(rgb.0, rgb.1, rgb.2)),
+    ));
+}
+
 /// A number written straight onto the canvas in its own color, with no clue box behind it: the
 /// gutters' hover readout.
 ///
@@ -781,27 +975,37 @@ pub(crate) fn draw_bare_number(
     center: Pos2,
     txt: &str,
     scale: f32,
-    (r, g, b): (u8, u8, u8),
+    rgb: (u8, u8, u8),
 ) {
     /// The size of a square clue's own label — the indicator strip is a clue box wide, so a
     /// number fills it the same way a clue fills its box.
     const FONT_SCALE: f32 = 0.7;
-    /// Below this much difference in lightness, the number needs an outline to be legible.
-    const MIN_CONTRAST: f32 = 0.4;
 
-    let font = clue_font(ui, txt, scale, FONT_SCALE);
+    draw_bare_number_sized(ui, painter, center, txt, scale, rgb, FONT_SCALE);
+}
+
+/// As `draw_bare_number`, but for a box whose label isn't a square clue's size — a rhombus's is
+/// smaller, so the number that replaces it has to be too.
+fn draw_bare_number_sized(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    center: Pos2,
+    txt: &str,
+    scale: f32,
+    (r, g, b): (u8, u8, u8),
+    font_scale: f32,
+) {
+    let font = clue_font(ui, txt, scale, font_scale);
     let fill = Color32::from_rgb(r, g, b);
 
-    if (luminance(fill) - luminance(ui.visuals().panel_fill)).abs() < MIN_CONTRAST {
-        let outline = if luminance(fill) > 0.5 {
-            Color32::BLACK
-        } else {
-            Color32::WHITE
-        };
-        // Half the stroke hides under the number, so the border shows `scale * 0.05` wide.
-        let width = 2.0 * (scale * 0.05).max(1.0);
+    if let Some(outline) = contrast_outline(ui, (r, g, b)) {
         painter.extend(outline_text::halo_shapes(
-            ui, center, txt, &font, outline, width,
+            ui,
+            center,
+            txt,
+            &font,
+            outline,
+            outline_width(scale),
         ));
     }
 
@@ -869,9 +1073,40 @@ pub(crate) fn draw_string_in_rhombus(
     rgb: (u8, u8, u8),
 ) {
     fill_polygon(painter, points, rgb);
-    const FONT_SCALE: f32 = 0.5;
     let center = polygon_centroid(points);
-    draw_string_at(ui, painter, center, clue_txt, scale, rgb, FONT_SCALE);
+    draw_string_at(
+        ui,
+        painter,
+        center,
+        clue_txt,
+        scale,
+        rgb,
+        RHOMBUS_FONT_SCALE,
+    );
+}
+
+/// A rhombus clue box's label is smaller than a square one's; see `draw_string_in_rhombus`.
+const RHOMBUS_FONT_SCALE: f32 = 0.5;
+
+/// `draw_bare_number` for a rhombus clue box: what a resolved clue in a triddler's gutter gets in
+/// place of its filled rhombus.
+pub(crate) fn draw_bare_number_in_rhombus(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    points: &[Pos2],
+    txt: &str,
+    scale: f32,
+    rgb: (u8, u8, u8),
+) {
+    draw_bare_number_sized(
+        ui,
+        painter,
+        polygon_centroid(points),
+        txt,
+        scale,
+        rgb,
+        RHOMBUS_FONT_SCALE,
+    );
 }
 
 fn draw_clues<C: crate::puzzle::Clue>(
@@ -879,10 +1114,8 @@ fn draw_clues<C: crate::puzzle::Clue>(
     puzzle: &crate::puzzle::Puzzle<C, crate::geometry::Square>,
     scale: f32,
     orientation: Orientation,
-    line_analysis: Option<&[LineStatus]>,
-    is_stale: bool,
-    hover: Option<BlockHint>,
-) {
+    marks: &GutterMarks<'_>,
+) -> Option<ClueId> {
     // The strip between the grid and the first clue box, where the per-line analysis mark goes.
     // It's in cell units like everything else here, so it holds its proportions at any zoom (and
     // stays wide enough for a bare number to be drawn there instead of the mark).
@@ -911,8 +1144,23 @@ fn draw_clues<C: crate::puzzle::Clue>(
             Orientation::Horizontal => Vec2::new(max_size, scale * puzzle.row_clues().len() as f32),
             Orientation::Vertical => Vec2::new(scale * puzzle.col_clues().len() as f32, max_size),
         } + Vec2::new(2.0, 2.0),
-        egui::Sense::empty(),
+        // Clicking a clue box checks it off by hand; see `SolveGui::toggle_checked_clue`.
+        egui::Sense::click(),
     );
+
+    // Where a click landed, if this gutter took one this frame, and which clue it fell on.
+    let click_pos = response
+        .interact_pointer_pos()
+        .filter(|_| response.clicked());
+    let hover_pos = response.hover_pos();
+    let mut clicked = None;
+
+    // Rows are family 0 and columns family 1, so this gutter's lanes start here.
+    let family = match orientation {
+        Orientation::Horizontal => 0,
+        Orientation::Vertical => 1,
+    };
+    let family_start = puzzle.geometry.lane_map().family(family).start;
 
     for i in 0..clues_vec.len() {
         // The indicator strip against the grid: the hovered line's block length if there is one,
@@ -927,13 +1175,13 @@ fn draw_clues<C: crate::puzzle::Clue>(
                 response.rect.max.y - puzz_padding / 2.0,
             ),
         };
-        match hover.filter(|h| h.line == i) {
+        match marks.hover.filter(|h| h.line == i) {
             Some(h) => {
                 draw_bare_number(ui, &painter, center, &h.len.to_string(), scale, h.rgb);
             }
             None => {
-                if let Some(analysis) = line_analysis {
-                    draw_analysis_mark(&painter, center, scale, &analysis[i], is_stale);
+                if let Some(analysis) = marks.analysis {
+                    draw_analysis_mark(&painter, center, scale, &analysis[i], marks.is_stale);
                 }
             }
         }
@@ -944,57 +1192,116 @@ fn draw_clues<C: crate::puzzle::Clue>(
             Orientation::Vertical => response.rect.max.y - puzz_padding,
         };
 
-        for clue in line_clues.iter().rev() {
-            let expressed_clues = clue.express(&puzzle.palette);
+        // A resolved clue is drawn as a bare number: its box has nothing left to tell the solver,
+        // so it stops competing for attention with the ones that do.
+        let fixed_here = marks.fixed.and_then(|f| f.get(i));
+        for (clue_idx, clue) in line_clues.iter().enumerate().rev() {
+            let auto_fixed = fixed_here.is_some_and(|fixed| fixed.contains(&clue_idx));
+            let fixed = auto_fixed || marks.checked.contains(&(family_start + i, clue_idx));
+            // A triano clue is a shape as much as a number — the caps say which way its ends
+            // slant — so it's drawn as one silhouette: filled while there's still work in it, and
+            // outlined once it's resolved. A nonogram clue is a lone box, and needs neither.
+            let shaped = C::style() == crate::puzzle::ClueStyle::Triano;
 
-            for (color_info, len) in expressed_clues.into_iter().rev() {
-                let (r, g, b) = color_info.rgb;
-                let bg_color = egui::Color32::from_rgb(r, g, b);
-
+            // Lay the clue's boxes out before painting any of them, since the silhouette has to
+            // go down before the boxes that sit on it.
+            let mut boxes: Vec<(&crate::puzzle::ColorInfo, Option<u16>, Rect)> = vec![];
+            for (color_info, len) in clue.express(&puzzle.palette).into_iter().rev() {
                 let corner = match orientation {
                     Orientation::Horizontal => Pos2::new(
-                        current_pos,
+                        current_pos - box_side,
                         response.rect.min.y + (i as f32) * scale + box_margin,
                     ),
                     Orientation::Vertical => Pos2::new(
                         response.rect.min.x + (i as f32) * scale + box_margin,
-                        current_pos,
+                        current_pos - box_side,
                     ),
                 };
+                boxes.push((
+                    color_info,
+                    len,
+                    Rect::from_min_size(corner, Vec2::new(box_side, box_side)),
+                ));
+                current_pos -= box_side;
+            }
+            current_pos -= between_clues;
 
+            // Every box of a clue answers for the whole clue, caps included. A clue the solver
+            // checked off itself takes no clicks, though: unchecking it would last only until the
+            // next repaint.
+            if !auto_fixed {
+                let on_clue = |p: Pos2| boxes.iter().any(|(_, _, rect)| rect.contains(p));
+                if hover_pos.is_some_and(on_clue) {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if click_pos.is_some_and(on_clue) {
+                    clicked = Some((family_start + i, clue_idx));
+                }
+            }
+
+            // The body's color speaks for the whole clue; a clue that is nothing but caps falls
+            // back to the first of those.
+            let clue_rgb = boxes
+                .iter()
+                .find(|(_, len, _)| len.is_some())
+                .or(boxes.first())
+                .map(|(color_info, _, _)| color_info.rgb);
+            if shaped && let Some(rgb) = clue_rgb {
+                let corners = boxes
+                    .iter()
+                    .flat_map(|(color_info, _, rect)| clue_box_corners(color_info, *rect))
+                    .collect();
+                if fixed {
+                    draw_clue_outline(ui, &painter, corners, scale, rgb);
+                } else {
+                    // Under the boxes, so that the seams between them don't show.
+                    painter.add(egui::Shape::convex_polygon(
+                        convex_hull(corners),
+                        Color32::from_rgb(rgb.0, rgb.1, rgb.2),
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+
+            for (color_info, len, rect) in boxes {
                 if let Some(len) = len {
                     assert!(len > 0);
 
-                    let translated_corner = corner
-                        + match orientation {
-                            Orientation::Horizontal => Vec2::new(-box_side, 0.0),
-                            Orientation::Vertical => Vec2::new(0.0, -box_side),
-                        };
-
-                    let rect =
-                        Rect::from_min_size(translated_corner, Vec2::new(box_side, box_side));
-                    draw_string_in_box(ui, &painter, rect, &len.to_string(), scale, color_info.rgb);
-                    current_pos -= box_side;
-                } else {
+                    if fixed {
+                        draw_bare_number(
+                            ui,
+                            &painter,
+                            rect.center(),
+                            &len.to_string(),
+                            scale,
+                            color_info.rgb,
+                        );
+                    } else {
+                        draw_string_in_box(
+                            ui,
+                            &painter,
+                            rect,
+                            &len.to_string(),
+                            scale,
+                            color_info.rgb,
+                        );
+                    }
+                } else if !fixed {
+                    // A resolved clue's caps are left to the outline drawn above.
+                    let (r, g, b) = color_info.rgb;
                     let mut triangle = super::triangle_shape(
                         color_info.corner.expect("must be a corner"),
-                        bg_color,
-                        Vec2::new(box_side, box_side),
+                        Color32::from_rgb(r, g, b),
+                        rect.size(),
                     );
-                    let translated_corner = corner
-                        + match orientation {
-                            Orientation::Horizontal => Vec2::new(-box_side, 0.0),
-                            Orientation::Vertical => Vec2::new(0.0, -box_side),
-                        };
-                    triangle.translate(translated_corner.to_vec2());
-                    current_pos -= box_side;
-
+                    triangle.translate(rect.min.to_vec2());
                     painter.add(triangle);
                 }
             }
-            current_pos -= between_clues;
         }
     }
+
+    clicked
 }
 
 pub fn draw_dyn_clues(
@@ -1002,36 +1309,80 @@ pub fn draw_dyn_clues(
     puzzle: &DynPuzzle,
     scale: f32,
     orientation: Orientation,
-    line_analysis: Option<&[LineStatus]>,
-    is_stale: bool,
-    hover: Option<BlockHint>,
-) {
+    marks: &GutterMarks<'_>,
+) -> Option<ClueId> {
     // Clue gutters are still laid out as two axis-aligned rectangles, so only square puzzles
     // can be drawn. `Geometry::gutters` has the per-lane anchors a six-way version needs.
     match puzzle {
-        DynPuzzle::SquareNono(puzzle) => {
-            draw_clues(
-                ui,
-                puzzle,
-                scale,
-                orientation,
-                line_analysis,
-                is_stale,
-                hover,
-            );
+        DynPuzzle::SquareNono(puzzle) => draw_clues(ui, puzzle, scale, orientation, marks),
+        DynPuzzle::SquareTriano(puzzle) => draw_clues(ui, puzzle, scale, orientation, marks),
+        DynPuzzle::TriNono(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod hull_tests {
+    use super::*;
+
+    fn hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+        let mut out: Vec<(f32, f32)> =
+            convex_hull(points.iter().map(|(x, y)| Pos2::new(*x, *y)).collect())
+                .iter()
+                .map(|p| (p.x, p.y))
+                .collect();
+        // The hull is a cycle, so normalize where it starts to compare it.
+        if let Some(first) = out
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+        {
+            out.rotate_left(first);
         }
-        DynPuzzle::SquareTriano(puzzle) => {
-            draw_clues(
-                ui,
-                puzzle,
-                scale,
-                orientation,
-                line_analysis,
-                is_stale,
-                hover,
-            );
-        }
-        DynPuzzle::TriNono(_) => {}
+        out
+    }
+
+    /// A resolved triano clue hands over every corner of every box it covers; what comes back is
+    /// the silhouette, with the seams between the boxes gone.
+    #[test]
+    fn hull_of_a_capped_clue() {
+        // A cap slanting in, a square body, a cap slanting out — three unit boxes in a row.
+        let cap_in = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)];
+        let body = [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)];
+        let cap_out = [(2.0, 0.0), (3.0, 0.0), (2.0, 1.0)];
+        let points: Vec<(f32, f32)> = cap_in
+            .iter()
+            .chain(&body)
+            .chain(&cap_out)
+            .copied()
+            .collect();
+
+        assert_eq!(
+            hull(&points),
+            vec![(0.0, 0.0), (3.0, 0.0), (2.0, 1.0), (1.0, 1.0)],
+            "the seams between the three boxes shouldn't survive"
+        );
+    }
+
+    /// A capless clue is a plain box, and keeps its four corners.
+    #[test]
+    fn hull_of_a_square_clue() {
+        assert_eq!(
+            hull(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
+            vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        );
+    }
+
+    /// Nothing here has an inside to outline, but nothing panics either.
+    #[test]
+    fn degenerate_hulls() {
+        assert!(hull(&[]).is_empty());
+        assert_eq!(hull(&[(1.0, 1.0)]), vec![(1.0, 1.0)]);
+        assert_eq!(hull(&[(1.0, 1.0), (2.0, 2.0)]).len(), 2);
+        // Collinear, and repeated points: fewer than three corners come back, so
+        // `draw_clue_outline` draws nothing.
+        assert!(hull(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]).len() < 3);
+        assert!(hull(&[(1.0, 1.0), (1.0, 1.0), (1.0, 1.0)]).len() < 3);
     }
 }
 
@@ -1133,6 +1484,25 @@ mod replay_tests {
 
         assert_eq!(replay.len(&canvas), 0);
         assert_eq!(replay.frame(&canvas, 0), start);
+    }
+
+    /// Checking a clue off goes on the undo stack, but it isn't a step of the *solve*: the replay
+    /// has one frame per painting step and steps straight past the rest.
+    #[test]
+    fn check_offs_are_not_replayed() {
+        let mut canvas = canvas();
+        let start = cells(&canvas);
+        paint(&mut canvas, &[0], Color(1));
+        let after_painting = cells(&canvas);
+        canvas.perform(Action::ToggleClue { clue: (0, 0) }, ActionMood::Normal);
+        paint(&mut canvas, &[8], Color(1));
+
+        let replay = Replay::new(&canvas);
+        assert_eq!(canvas.undo_stack.len(), 3, "the check-off is on the stack");
+        assert_eq!(replay.len(&canvas), 2, "but it isn't a step of the solve");
+        assert_eq!(replay.frame(&canvas, 0), start);
+        assert_eq!(replay.frame(&canvas, 1), after_painting);
+        assert_eq!(replay.frame(&canvas, 2), cells(&canvas));
     }
 
     /// Cells get whole pixels whenever the puzzle fits at one pixel per cell, and the replay

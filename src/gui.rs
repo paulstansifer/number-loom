@@ -10,14 +10,20 @@ mod toolbar;
 mod tools;
 
 pub use annotate::{AnnotateDrag, Annotation};
-pub use canvas::{ClueOverlay, HoverBlocks, triangle_shape};
+pub use canvas::{ClueId, ClueOverlay, HoverBlocks, triangle_points, triangle_shape};
 pub use palette::default_color;
 pub use selection::{Selection, cells_in_lasso};
 pub use toolbar::LibraryStatus;
 use toolbar::NewPuzzleDialog;
 pub use tools::Tool;
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::mpsc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::mpsc,
+    time::Duration,
+};
 
 use web_time::Instant;
 
@@ -276,6 +282,10 @@ pub struct CanvasGui {
     /// The annotate tool's scratch marks. Deliberately outside the undo system: none of these is
     /// an `Action`, and none of them bumps `version`.
     pub annotations: Vec<Annotation>,
+    /// The clues the solver's gutters have been checked off by hand, keyed by `(lane, index
+    /// within the lane)`. Undoable (`Action::ToggleClue`), but no part of the picture, so it
+    /// doesn't bump `version` and the solve replay steps straight past it.
+    pub checked_clues: HashSet<ClueId>,
     /// The annotation being dragged out right now, if any.
     pub annotate_drag: Option<AnnotateDrag>,
     /// Whether this canvas is solving a puzzle rather than editing one. That decides which tools
@@ -343,6 +353,11 @@ pub enum Action {
     ReplaceDocument {
         document: Box<Document>,
     },
+    /// Check a clue off in the solver's gutters, or un-check it. Its own inverse, so undo and
+    /// redo are both just the same toggle again.
+    ToggleClue {
+        clue: ClueId,
+    },
 }
 
 #[derive(PartialEq, Eq)]
@@ -385,6 +400,7 @@ impl CanvasGui {
             Action::ReplaceDocument { document: _ } => Action::ReplaceDocument {
                 document: Box::new(self.document.clone()),
             },
+            Action::ToggleClue { clue } => Action::ToggleClue { clue: *clue },
         }
     }
 
@@ -462,15 +478,23 @@ impl CanvasGui {
                     self.version += 1;
                     // A mask means nothing against a picture that was swapped out from under it,
                     // and a floating layer belongs to the picture it was lifted from. Annotations
-                    // name lanes, which the new picture may not have at all.
+                    // and check-offs name lanes, which the new picture may not have at all.
                     self.selection = None;
                     self.annotations.clear();
                     self.annotate_drag = None;
+                    self.checked_clues.clear();
                     // The new palette may not have the color the old one did.
                     self.clamp_colors_to_palette();
                 } else {
                     self.status
                         .set(StatusMessage::error("That puzzle has no solution"));
+                }
+            }
+            // No `version` bump: the picture is untouched, so nothing that watches it — the line
+            // analysis, the solved mask, the replay — has any reason to recompute.
+            Action::ToggleClue { clue } => {
+                if !self.checked_clues.remove(&clue) {
+                    self.checked_clues.insert(clue);
                 }
             }
         }
@@ -608,6 +632,7 @@ impl NonogramGui {
                 selection: None,
                 annotations: vec![],
                 annotate_drag: None,
+                checked_clues: HashSet::new(),
                 solving: false,
                 middle_pans: false,
                 picture_rect: None,

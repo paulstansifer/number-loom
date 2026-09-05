@@ -6,11 +6,12 @@
 * HTML export support for all puzzle types
 * Webpbn import by ID
 * Multicolor trianograms
-* Manual + automatic clue cross-off
 * Lock clues onscreen in solve mode
 * Actually record useful statistics in backtracking mode
 * Let the picker choose how long to keep going at a particular level (instead of having a fixed budget)
 * Write information into children instead of nuking them
+* Audit use of "gutter": I think it may mean 2-3 different things in the codebase.
+  * Proposal: use "gutter" for the space between clues and the puzzle (where annotations go), "header"s for where the clues actually live, and "header padding" for the space between two clue lanes"
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)

@@ -109,7 +109,9 @@ mod tests {
         harness.get_by_label("Solve").click();
         harness.run();
         assert!(
-            harness.query_by_label_contains("unsolved cells: 0").is_some(),
+            harness
+                .query_by_label_contains("unsolved cells: 0")
+                .is_some(),
             "the plain solve should have reported back on the same frame"
         );
 
@@ -126,7 +128,9 @@ mod tests {
             harness.run();
         }
         assert!(
-            harness.query_by_label_contains("unsolved cells: 0").is_some(),
+            harness
+                .query_by_label_contains("unsolved cells: 0")
+                .is_some(),
             "the plain solve's report should still be showing once backtracking lands"
         );
 
@@ -135,7 +139,9 @@ mod tests {
         harness.get_by_label("Solve").click();
         harness.run();
         assert!(
-            harness.query_by_label_contains("unsolved cells: 0").is_some(),
+            harness
+                .query_by_label_contains("unsolved cells: 0")
+                .is_some(),
             "re-clicking Solve should still show its own report, not backtracking's"
         );
         assert!(
@@ -984,6 +990,254 @@ mod tests {
 
     /// Finishing a puzzle puts a replay of the solve in the sidebar, and drawing it doesn't
     /// panic on a real puzzle's geometry and palette.
+    /// Clicking a clue in the gutter checks it off by hand, and clicking it again un-checks it.
+    /// A clue the solver has already checked off ignores clicks.
+    #[test]
+    fn test_click_to_check_off_clues() {
+        use number_loom::gui::{Action, ActionMood};
+        use number_loom::with_puzzle;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+
+        // The row gutter's clue nearest the grid, on the first row that has any clues. Derived
+        // from where the picture was drawn, since hardcoding a point goes stale with the layout.
+        let solve_gui = harness.state().solve_gui.as_ref().unwrap();
+        let row_clues: Vec<usize> = with_puzzle!(&solve_gui.clues, |p| {
+            let rows = p.geometry.lane_map().family(0);
+            p.lines[rows].iter().map(|l| l.len()).collect()
+        });
+        let row = row_clues.iter().position(|n| *n > 0).unwrap();
+        let clue = (row, row_clues[row] - 1);
+
+        // `draw_clues`' own layout, in reverse: one cell per row, a `CLUE_PAD` gap against the
+        // grid, and then the boxes marching outward. The picture's rect is inset by the canvas's
+        // one-pixel border; the gutter beside it is not.
+        const SCALE: f32 = 16.0; // `NonogramGui`'s starting zoom
+        let box_side = SCALE * 0.9;
+        let picture = solve_gui.canvas.picture_rect.unwrap();
+        let at = Pos2::new(
+            picture.min.x - 1.0 - SCALE * number_loom::layout::CLUE_PAD - box_side / 2.0,
+            picture.min.y - 1.0 + (row as f32 + 0.5) * SCALE,
+        );
+
+        let click = |harness: &mut Harness<NonogramGui>| {
+            for pressed in [true, false] {
+                harness.input_mut().events.push(Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+            harness.run();
+        };
+        let checked = |harness: &Harness<NonogramGui>| {
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .canvas
+                .checked_clues
+                .clone()
+        };
+
+        click(&mut harness);
+        assert_eq!(
+            checked(&harness).iter().copied().collect::<Vec<_>>(),
+            vec![clue]
+        );
+
+        // Clicking it again puts it back.
+        click(&mut harness);
+        assert!(checked(&harness).is_empty());
+
+        // Check-offs are undoable like anything else, and a redo puts them back.
+        click(&mut harness);
+        harness
+            .state_mut()
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .canvas
+            .un_or_re_do(true);
+        harness.run();
+        assert!(
+            checked(&harness).is_empty(),
+            "undo should un-check the clue"
+        );
+        harness
+            .state_mut()
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .canvas
+            .un_or_re_do(false);
+        harness.run();
+        assert_eq!(
+            checked(&harness).iter().copied().collect::<Vec<_>>(),
+            vec![clue],
+            "redo should check it off again"
+        );
+        harness
+            .state_mut()
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .canvas
+            .un_or_re_do(true);
+        harness.run();
+
+        // Once the solver has checked a clue off itself, clicks on it do nothing.
+        harness
+            .state_mut()
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .mark_fixed_clues = true;
+        let solution = harness
+            .state()
+            .solve_gui
+            .as_ref()
+            .unwrap()
+            .intended_solution
+            .cells()
+            .to_vec();
+        let changes = solution
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i as u32, *c))
+            .collect();
+        harness
+            .state_mut()
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .canvas
+            .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+        // `step`, not `run`: the finished solve's replay asks to be repainted forever.
+        harness.step();
+        // The clue under the pointer really is one the solver has checked off, so the click below
+        // is genuinely being ignored rather than missing.
+        assert!(
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .fixed_clues
+                .val
+                .as_ref()
+                .unwrap()[0][row]
+                .contains(&clue.1),
+            "the solver should have resolved the clue being clicked"
+        );
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+        assert!(
+            checked(&harness).is_empty(),
+            "an auto-resolved clue should ignore clicks"
+        );
+    }
+
+    /// The solver's "Mark resolved clues" aid reports a clue as resolved once it is pinned down
+    /// *and* painted: nothing is resolved on an empty grid, and everything is on a finished one.
+    #[test]
+    fn test_mark_fixed_clues() {
+        use number_loom::gui::{Action, ActionMood};
+        use number_loom::with_puzzle;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+        // Set directly rather than clicking the checkbox, which would persist the setting into
+        // the real user preferences.
+        harness
+            .state_mut()
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .mark_fixed_clues = true;
+        harness.run();
+
+        let fixed = |harness: &Harness<NonogramGui>| -> Vec<Vec<Vec<usize>>> {
+            harness
+                .state()
+                .solve_gui
+                .as_ref()
+                .unwrap()
+                .fixed_clues
+                .val
+                .clone()
+                .expect("the aid is on, so it should have run")
+        };
+
+        // Nothing painted, so nothing is resolved yet.
+        assert!(fixed(&harness).iter().flatten().all(|line| line.is_empty()));
+
+        let solve_gui = harness.state().solve_gui.as_ref().unwrap();
+        let solution = solve_gui.intended_solution.cells().to_vec();
+        // One clue count per lane, in `lane_map` order: families, then lines within each.
+        let clue_counts: Vec<usize> = with_puzzle!(&solve_gui.clues, |p| p
+            .lines
+            .iter()
+            .map(|l| l.len())
+            .collect());
+
+        let changes = solution
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i as u32, *c))
+            .collect();
+        harness
+            .state_mut()
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .canvas
+            .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+        // `step`, not `run`: the finished solve's replay asks to be repainted, which `run` treats
+        // as a UI that never settles.
+        harness.step();
+
+        // A solved picture resolves every clue in it.
+        let counts: Vec<usize> = fixed(&harness)
+            .iter()
+            .flatten()
+            .map(|line| line.len())
+            .collect();
+        assert_eq!(counts, clue_counts);
+        assert!(clue_counts.iter().sum::<usize>() > 0);
+    }
+
     #[test]
     fn test_solve_replay() {
         use number_loom::gui::{Action, ActionMood};

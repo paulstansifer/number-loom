@@ -12,7 +12,7 @@ use crate::{
     },
     solve::line_solve::{
         Cell, ClueSummary, ModeMap, ScrubReport, SolveMode, count_lane, exhaust_line, score_counts,
-        skim_line,
+        skim_line, skim_to_find_fixed_clues,
     },
 };
 
@@ -879,6 +879,27 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
                     let mut gathered = vec![];
                     gather_into(lanes, lane, grid, &mut gathered);
                     analyze_line(&puzzle.lines[lane], &gathered)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Which clues each lane has fully resolved — pinned down and painted in. One `Vec<usize>` of
+/// clue indices per lane, grouped by clue family, indexed exactly like `analyze_lines`.
+pub fn fixed_clues<C: Clue, K: GridKind>(
+    puzzle: &Puzzle<C, K>,
+    grid: &PartialSolution,
+) -> Vec<Vec<Vec<usize>>> {
+    let lanes = puzzle.geometry.lane_map();
+    (0..lanes.family_count())
+        .map(|family| {
+            lanes
+                .family(family)
+                .map(|lane| {
+                    let mut gathered = vec![];
+                    gather_into(lanes, lane, grid, &mut gathered);
+                    skim_to_find_fixed_clues(&puzzle.lines[lane], &gathered)
                 })
                 .collect::<Vec<_>>()
         })

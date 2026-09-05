@@ -12,6 +12,7 @@ use gloo_storage::{LocalStorage, Storage};
 
 pub mod consts {
     pub const SOLVER_ANALYZE_LINES: &str = "solver.analyze_lines";
+    pub const SOLVER_MARK_FIXED_CLUES: &str = "solver.mark_fixed_clues";
     pub const SOLVER_DETECT_ERRORS: &str = "solver.detect_errors";
     pub const SOLVER_INFER_BACKGROUND: &str = "solver.infer_background";
     pub const SOLVER_RENDER_STYLE: &str = "solver.render_style";

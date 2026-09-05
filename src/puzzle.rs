@@ -520,6 +520,8 @@ pub trait PuzzleDynOps {
     }
     /// One `Vec<LineStatus>` per clue family — two for a square puzzle, three for a triddler.
     fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>>;
+    /// The clues each lane has fully resolved, grouped and indexed like `analyze_lines`.
+    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<Vec<usize>>>;
     fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()>;
 }
 
@@ -579,6 +581,10 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
         grid_solve::analyze_lines(self, partial)
     }
 
+    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<Vec<usize>>> {
+        grid_solve::fixed_clues(self, partial)
+    }
+
     fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()> {
         grid_solve::settle_solution(self, partial)
     }
@@ -615,6 +621,10 @@ impl PuzzleDynOps for DynPuzzle {
 
     fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>> {
         with_puzzle!(self, |p| p.analyze_lines(partial))
+    }
+
+    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<Vec<usize>>> {
+        with_puzzle!(self, |p| p.fixed_clues(partial))
     }
 
     fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()> {

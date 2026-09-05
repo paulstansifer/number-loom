@@ -183,21 +183,26 @@ impl CellShape {
     /// generally useful.
     pub fn contains(self, origin: Point, p: Point) -> bool {
         let (points, n) = self.vertices(origin);
-        // Convex polygon: inside iff `p` is on the same side of every edge.
-        let mut sign = 0.0f32;
-        for i in 0..n {
-            let (a, b) = (points[i], points[(i + 1) % n]);
-            let cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-            if cross != 0.0 {
-                if sign == 0.0 {
-                    sign = cross.signum();
-                } else if cross.signum() != sign {
-                    return false;
-                }
+        convex_contains(&points[..n], p)
+    }
+}
+
+/// Whether `p` is inside a convex polygon, given its corners in order (either winding).
+pub fn convex_contains(points: &[Point], p: Point) -> bool {
+    // Inside iff `p` is on the same side of every edge.
+    let mut sign = 0.0f32;
+    for i in 0..points.len() {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        let cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        if cross != 0.0 {
+            if sign == 0.0 {
+                sign = cross.signum();
+            } else if cross.signum() != sign {
+                return false;
             }
         }
-        true
     }
+    true
 }
 
 /// One boundary line between lanes, for drawing the grid.

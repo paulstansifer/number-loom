@@ -422,6 +422,43 @@ fn packed_extents<C: Clue>(
     Ok(extents)
 }
 
+/// Whether skim logic has pinned a clue down: the two packings leave it only one placement, and
+/// every cell it covers is already known. `left_extent` is the clue's rightmost possible start
+/// and `right_extent` its leftmost possible end, so a clue is pinned exactly when those two
+/// placements coincide. (Written as an addition, since the extents needn't overlap at all.)
+fn clue_is_fixed<C: Clue>(
+    clue: &C,
+    left_extent: usize,
+    right_extent: usize,
+    lane: &[Cell],
+) -> bool {
+    right_extent + 1 == left_extent + clue.len()
+        && (left_extent..=right_extent).all(|i| lane[i].is_known())
+}
+
+/// Returns indices of clues that are fully located by skim logic
+pub fn skim_to_find_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<usize> {
+    let (Ok(left_packed_right_extents), Ok(right_packed_left_extents)) = (
+        packed_extents(clues, lane, false),
+        packed_extents(clues, lane, true),
+    ) else {
+        return vec![];
+    };
+
+    let mut fixed_clues = vec![];
+
+    for (clue_idx, clue) in clues.iter().enumerate() {
+        let left_extent = right_packed_left_extents[clue_idx];
+        let right_extent = left_packed_right_extents[clue_idx];
+
+        if clue_is_fixed(clue, left_extent, right_extent, lane) {
+            fixed_clues.push(clue_idx);
+        }
+    }
+
+    fixed_clues
+}
+
 /// Packs all clues to their leftmost and rightmost possible locations. If any squares are
 /// guaranteed to be inside a clue, that's useful information!
 pub fn skim_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
@@ -559,8 +596,7 @@ pub fn settle_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<Sc
         let right_extent = left_packed_right_extents[i];
         let left_extent = right_packed_left_extents[i];
 
-        let is_known = (right_extent + 1) == clue.len() + left_extent
-            && (left_extent..=right_extent).all(|j| lane[j].is_known());
+        let is_known = clue_is_fixed(clue, left_extent, right_extent, lane);
 
         if !is_known {
             prev_known_end = None;
@@ -1306,6 +1342,10 @@ mod tests {
         );
     }
 
+    fn test_fixed<C: Clue>(clues: Vec<C>, init: &str) -> Vec<usize> {
+        skim_to_find_fixed_clues(&clues, &l(init))
+    }
+
     #[test]
     fn settle_test() {
         // TODO: I feel like it shouldn't need the separators around the final clue to get this.
@@ -1330,6 +1370,35 @@ mod tests {
         );
 
         assert_eq!(test_settle(n(""), "🔳 🔳 🔳 🔳 🔳"), l("⬜ ⬜ ⬜ ⬜ ⬜"));
+    }
+
+    #[test]
+    fn fixed_clues_test() {
+        // Pinned and painted:
+        assert_eq!(test_fixed(n("⬛3"), "⬛ ⬛ ⬛"), vec![0]);
+        assert_eq!(test_fixed(n("⬛1 ⬛1"), "⬛ ⬜ ⬛"), vec![0, 1]);
+
+        // Pinned, but the cells aren't painted yet, so the player hasn't resolved it:
+        assert_eq!(test_fixed(n("⬛3"), "🔳 🔳 🔳"), Vec::<usize>::new());
+
+        // Not pinned at all:
+        assert_eq!(test_fixed(n("⬛1 ⬛1"), "🔳 🔳 🔳 🔳"), Vec::<usize>::new());
+
+        // Only the second clue has been placed:
+        assert_eq!(test_fixed(n("⬛1 ⬛2"), "🔳 🔳 ⬜ ⬛ ⬛"), vec![1]);
+
+        // A clue is fixed once every part of it is, caps included:
+        assert_eq!(test_fixed(tri("🮞2"), "🮞 ⬛ ⬛"), vec![0]);
+        assert_eq!(
+            test_fixed(tri("🮞2"), "🮞⬛🮟⬜ 🮞⬛🮟⬜ 🮞⬛🮟⬜"),
+            Vec::<usize>::new()
+        );
+
+        // Nothing to fix:
+        assert_eq!(test_fixed(n(""), "🔳 🔳 🔳"), Vec::<usize>::new());
+
+        // A contradictory line reports nothing, rather than erroring:
+        assert_eq!(test_fixed(n("⬛4"), "🔳 🔳 🔳"), Vec::<usize>::new());
     }
 
     macro_rules! heur {
