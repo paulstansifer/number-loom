@@ -683,15 +683,28 @@ impl Replay {
                 Color32::from_rgb(r, g, b)
             };
             let cell = index as u32;
-            let (verts, n) = picture.cell_shape(cell).vertices(picture.cell_origin(cell));
-            shapes.push(egui::Shape::convex_polygon(
-                verts[..n]
-                    .iter()
-                    .map(|p| to_screen * Pos2::new(p.x, p.y))
-                    .collect(),
-                fill,
-                egui::Stroke::default(),
-            ));
+            let origin = picture.cell_origin(cell);
+            // A `Corner` color is a half-square — a trianogram's diagonal — and the canvas draws
+            // it as one, so the replay has to as well. (A triddler's triangular *cells* are a
+            // different thing, and come out of the geometry below.)
+            shapes.push(match palette[color].corner {
+                Some(corner) => {
+                    let mut half = super::triangle_shape(corner, fill, to_screen.scale());
+                    half.translate((to_screen * Pos2::new(origin.x, origin.y)).to_vec2());
+                    half
+                }
+                None => {
+                    let (verts, n) = picture.cell_shape(cell).vertices(origin);
+                    egui::Shape::convex_polygon(
+                        verts[..n]
+                            .iter()
+                            .map(|p| to_screen * Pos2::new(p.x, p.y))
+                            .collect(),
+                        fill,
+                        egui::Stroke::default(),
+                    )
+                }
+            });
         }
         painter.extend(shapes);
 
