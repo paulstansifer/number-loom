@@ -10,7 +10,7 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
   src/
     gui.rs - the core of the GUI: app state, the undo stack, the sidebar, and `main_ui`
     gui/
-      canvas.rs - drawing the picture and its clue gutters, and the pointer hit test
+      canvas.rs - drawing the picture, and the pointer hit test
       annotate.rs - the solver's scratch marks for counting out a line (undo never sees them)
       selection.rs - the lasso: drawing a loop, what it caught, and moving the catch around
       tools.rs - the other tools (pencil, line, flood fill)
@@ -18,6 +18,8 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
       resize.rs - growing and shrinking the picture (for triddlers, it's complex!)
       toolbar.rs - the controls across the top, and the dialogs they open
       solver.rs - the solving view: clue rendering, line analysis, and the solve replay
+      triddler.rs - special triangular grid drawing: rhombus clue gutters and the rosette
+      triano.rs - special trianogram drawing: half-square "cap" colors and clue silhouettes
       gallery.rs - for chosing a puzzle to solve
       outline_text.rs - overengineered halos for text readability on arbitrary backgrounds
     import.rs, export.rs - support for various file formats

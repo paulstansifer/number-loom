@@ -223,103 +223,41 @@ impl SolveGui {
             // ones, and a rhombus is wider across its short diagonal than it is long — so it
             // needs more room to keep adjacent arms from overlapping.
             let triangular = matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_));
-            let plus_size = if triangular { scale * 4.4 } else { scale * 3.0 };
+            let plus_size = if triangular {
+                scale * super::triddler::ROSETTE_SIZE
+            } else {
+                scale * 3.0
+            };
 
             if let Some(cell) = self.hovered_cell {
                 let picture = self.canvas.document.try_solution().unwrap();
-                let color = picture.cells()[cell as usize];
-                let rgb = picture.palette()[&color].rgb;
-
-                // One run per clue family: two arms each for a square grid, three for a triddler.
-                // `arm_directions` places them, so this becomes a hexagonal rosette by itself.
-                let runs = picture.runs_at_cell(cell);
-                let dirs = picture.arm_directions();
 
                 let (resp, painter) =
                     ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
-
                 let rect = resp.rect;
-                let text = if color == UNSOLVED { "?" } else { " " };
 
                 if triangular {
-                    let true_center = rect.center();
-                    // The centre swatch matches the hovered triangle's own shape (▲ or ▼)
-                    // instead of a generic square.
-                    let cell_shape = picture.cell_shape(cell);
-                    let mid_size =
-                        crate::layout::Vec2::new(scale, scale * crate::layout::TRI_ROW_HEIGHT);
-                    let (verts, n) = cell_shape.vertices_sized(
-                        crate::layout::Point::new(
-                            true_center.x - mid_size.x / 2.0,
-                            true_center.y - mid_size.y / 2.0,
-                        ),
-                        mid_size,
+                    super::triddler::draw_rosette(
+                        ui,
+                        &painter,
+                        picture,
+                        cell,
+                        rect.center(),
+                        scale,
                     );
-                    let mid_points: Vec<Pos2> =
-                        verts[..n].iter().map(|p| Pos2::new(p.x, p.y)).collect();
-                    draw_string_in_polygon(ui, &painter, &mid_points, text, scale, rgb);
-
-                    // Arms are shaped like the rhombus that lane's clue boxes use, so they read
-                    // as belonging to that lane, and pushed further out than a square grid's
-                    // arms so adjacent rhombuses (60° apart, wide across their short diagonal)
-                    // don't overlap each other or the centre swatch.
-                    let arm_size = scale * 0.68;
-                    let arm_distance = scale * 1.7;
-                    for (family, (back, forward)) in runs.iter().enumerate() {
-                        for (i, count) in [back, forward].into_iter().enumerate() {
-                            let Some(dir) = dirs.get(family * 2 + i) else {
-                                continue;
-                            };
-                            if *count == 0 {
-                                continue;
-                            }
-                            let arm_center = true_center + Vec2::new(dir.x, dir.y) * arm_distance;
-                            // The arm's short side should sit flush against this cell's real
-                            // edge for the *other* family it borders — "near" (leading to the
-                            // previous cell) for the back arm, "far" for the forward arm.
-                            let (ea, eb) = super::annotate::lane_step_edge(
-                                cell_shape,
-                                crate::layout::Point::new(0.0, 0.0),
-                                family,
-                                i == 0,
-                            );
-                            let (edx, edy) = (eb.x - ea.x, eb.y - ea.y);
-                            let elen = (edx * edx + edy * edy).sqrt();
-                            let edge_dir = if elen > 0.0 {
-                                crate::layout::Vec2::new(edx / elen, edy / elen)
-                            } else {
-                                crate::layout::Vec2::new(0.0, 1.0)
-                            };
-                            // Same long/short proportion as a real clue box, so this preview
-                            // actually looks like the gutter boxes it's previewing.
-                            let arm_short = arm_size
-                                * (crate::layout::CLUE_BOX_SHORT / crate::layout::CLUE_BOX);
-                            let points: Vec<Pos2> = crate::layout::tri_clue_rhombus(
-                                crate::layout::Point::new(arm_center.x, arm_center.y),
-                                family,
-                                edge_dir,
-                                arm_size,
-                                arm_short,
-                            )
-                            .iter()
-                            .map(|p| Pos2::new(p.x, p.y))
-                            .collect();
-                            draw_string_in_rhombus(
-                                ui,
-                                &painter,
-                                &points,
-                                &count.to_string(),
-                                scale,
-                                rgb,
-                            );
-                        }
-                    }
                 } else {
+                    let color = picture.cells()[cell as usize];
+                    let rgb = picture.palette()[&color].rgb;
+                    let text = if color == UNSOLVED { "?" } else { " " };
+
+                    // One run per clue family: two arms each for a square grid.
+                    // `arm_directions` lists each family's two directions adjacently, matching
+                    // the `(backward, forward)` pairs `runs_at_cell` returns.
+                    let runs = picture.runs_at_cell(cell);
+                    let dirs = picture.arm_directions();
                     let size = Vec2::new(20.0, 20.0);
                     let center = rect.min + Vec2::new(scale, scale);
 
-                    // `arm_directions` lists each family's two directions adjacently, matching
-                    // the `(backward, forward)` pairs `runs_at_cell` returns.
                     for (family, (back, forward)) in runs.iter().enumerate() {
                         for (i, count) in [back, forward].into_iter().enumerate() {
                             let Some(dir) = dirs.get(family * 2 + i) else {
@@ -688,11 +626,12 @@ impl Replay {
             // it as one, so the replay has to as well. (A triddler's triangular *cells* are a
             // different thing, and come out of the geometry below.)
             shapes.push(match palette[color].corner {
-                Some(corner) => {
-                    let mut half = super::triangle_shape(corner, fill, to_screen.scale());
-                    half.translate((to_screen * Pos2::new(origin.x, origin.y)).to_vec2());
-                    half
-                }
+                Some(corner) => super::triano::half_cell(
+                    corner,
+                    fill,
+                    &to_screen,
+                    to_screen * Pos2::new(origin.x, origin.y),
+                ),
                 None => {
                     let (verts, n) = picture.cell_shape(cell).vertices(origin);
                     egui::Shape::convex_polygon(
@@ -839,7 +778,7 @@ pub(crate) fn clue_font(
     fonts_by_digit[clue_txt.len().min(fonts_by_digit.len() - 1)].clone()
 }
 
-fn draw_string_at(
+pub(super) fn draw_string_at(
     ui: &egui::Ui,
     painter: &egui::Painter,
     center: Pos2,
@@ -893,87 +832,8 @@ pub(crate) fn outline_width(scale: f32) -> f32 {
 
 /// How wide to stroke a resolved clue's own outline. Thinner than a number's halo: all of this
 /// stroke shows, rather than half of it hiding under the glyphs.
-fn clue_outline_width(scale: f32) -> f32 {
+pub(super) fn clue_outline_width(scale: f32) -> f32 {
     (scale * 0.04).max(1.0)
-}
-
-/// The corners of the smallest convex polygon containing `points` (Andrew's monotone chain),
-/// counter-clockwise. Fewer than three distinct points have no outline to draw, and come back as
-/// they are.
-fn convex_hull(mut points: Vec<Pos2>) -> Vec<Pos2> {
-    if points.len() < 3 {
-        return points;
-    }
-    points.sort_by(|a, b| {
-        (a.x, a.y)
-            .partial_cmp(&(b.x, b.y))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let cross = |o: Pos2, a: Pos2, b: Pos2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-
-    let mut hull: Vec<Pos2> = Vec::with_capacity(points.len() + 1);
-    // The lower chain, then the upper one; each drops any corner that doesn't actually turn, and
-    // stops short of eating into the chain before it.
-    for pass in 0..2 {
-        let base = hull.len();
-        for &p in points.iter() {
-            while hull.len() >= base + 2
-                && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
-            {
-                hull.pop();
-            }
-            hull.push(p);
-        }
-        hull.pop(); // Where this chain ends is where the next one starts.
-        if pass == 0 {
-            points.reverse();
-        }
-    }
-    hull
-}
-
-/// One clue box's corners as it is drawn: a cap's triangle, or the whole box.
-fn clue_box_corners(color_info: &crate::puzzle::ColorInfo, rect: Rect) -> Vec<Pos2> {
-    match color_info.corner {
-        Some(corner) => super::triangle_points(corner, rect.size())
-            .iter()
-            .map(|p| *p + rect.min.to_vec2())
-            .collect(),
-        None => vec![
-            rect.left_top(),
-            rect.right_top(),
-            rect.right_bottom(),
-            rect.left_bottom(),
-        ],
-    }
-}
-
-/// The outline a resolved triano clue keeps in place of its filled boxes: its whole silhouette,
-/// caps included, so it still reads as one clue rather than a loose number between two gaps.
-fn draw_clue_outline(
-    ui: &egui::Ui,
-    painter: &egui::Painter,
-    corners: Vec<Pos2>,
-    scale: f32,
-    rgb: (u8, u8, u8),
-) {
-    let hull = convex_hull(corners);
-    if hull.len() < 3 {
-        return; // Nothing with an inside; not a shape we can outline.
-    }
-    let width = clue_outline_width(scale);
-    // A pale outline against a pale panel would vanish, so it gets the same backing a bare
-    // number's glyphs do.
-    if let Some(halo) = contrast_outline(ui, rgb) {
-        painter.add(egui::Shape::closed_line(
-            hull.clone(),
-            egui::Stroke::new(width * 2.0, halo),
-        ));
-    }
-    painter.add(egui::Shape::closed_line(
-        hull,
-        egui::Stroke::new(width, Color32::from_rgb(rgb.0, rgb.1, rgb.2)),
-    ));
 }
 
 /// A number written straight onto the canvas in its own color, with no clue box behind it: the
@@ -999,7 +859,7 @@ pub(crate) fn draw_bare_number(
 
 /// As `draw_bare_number`, but for a box whose label isn't a square clue's size — a rhombus's is
 /// smaller, so the number that replaces it has to be too.
-fn draw_bare_number_sized(
+pub(super) fn draw_bare_number_sized(
     ui: &egui::Ui,
     painter: &egui::Painter,
     center: Pos2,
@@ -1039,12 +899,12 @@ pub(crate) fn draw_string_in_box(
 
 /// The mean of a convex polygon's vertices: the true centre for a parallelogram, and a triangle's
 /// centroid — exactly where `CellShape::center` puts it.
-fn polygon_centroid(points: &[Pos2]) -> Pos2 {
+pub(super) fn polygon_centroid(points: &[Pos2]) -> Pos2 {
     let sum = points.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2());
     Pos2::ZERO + sum / points.len() as f32
 }
 
-fn fill_polygon(painter: &egui::Painter, points: &[Pos2], (r, g, b): (u8, u8, u8)) {
+pub(super) fn fill_polygon(painter: &egui::Painter, points: &[Pos2], (r, g, b): (u8, u8, u8)) {
     painter.add(egui::Shape::convex_polygon(
         points.to_vec(),
         Color32::from_rgb(r, g, b),
@@ -1071,54 +931,6 @@ pub(crate) fn draw_string_in_polygon(
         scale,
         rgb,
         0.7,
-    );
-}
-
-/// As `draw_string_in_polygon`, but for a rhombus clue box specifically: the label is smaller
-/// than a square box's (the rhombus is narrower top-to-bottom than it is wide) and nudged up a
-/// bit from the geometric middle, since the rhombus's mass sits toward its bottom half.
-pub(crate) fn draw_string_in_rhombus(
-    ui: &egui::Ui,
-    painter: &egui::Painter,
-    points: &[Pos2],
-    clue_txt: &str,
-    scale: f32,
-    rgb: (u8, u8, u8),
-) {
-    fill_polygon(painter, points, rgb);
-    let center = polygon_centroid(points);
-    draw_string_at(
-        ui,
-        painter,
-        center,
-        clue_txt,
-        scale,
-        rgb,
-        RHOMBUS_FONT_SCALE,
-    );
-}
-
-/// A rhombus clue box's label is smaller than a square one's; see `draw_string_in_rhombus`.
-const RHOMBUS_FONT_SCALE: f32 = 0.5;
-
-/// `draw_bare_number` for a rhombus clue box: what a resolved clue in a triddler's gutter gets in
-/// place of its filled rhombus.
-pub(crate) fn draw_bare_number_in_rhombus(
-    ui: &egui::Ui,
-    painter: &egui::Painter,
-    points: &[Pos2],
-    txt: &str,
-    scale: f32,
-    rgb: (u8, u8, u8),
-) {
-    draw_bare_number_sized(
-        ui,
-        painter,
-        polygon_centroid(points),
-        txt,
-        scale,
-        rgb,
-        RHOMBUS_FONT_SCALE,
     );
 }
 
@@ -1260,20 +1072,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
                 .or(boxes.first())
                 .map(|(color_info, _, _)| color_info.rgb);
             if shaped && let Some(rgb) = clue_rgb {
-                let corners = boxes
-                    .iter()
-                    .flat_map(|(color_info, _, rect)| clue_box_corners(color_info, *rect))
-                    .collect();
-                if fixed {
-                    draw_clue_outline(ui, &painter, corners, scale, rgb);
-                } else {
-                    // Under the boxes, so that the seams between them don't show.
-                    painter.add(egui::Shape::convex_polygon(
-                        convex_hull(corners),
-                        Color32::from_rgb(rgb.0, rgb.1, rgb.2),
-                        egui::Stroke::NONE,
-                    ));
-                }
+                super::triano::draw_clue_silhouette(ui, &painter, &boxes, fixed, scale, rgb);
             }
 
             for (color_info, len, rect) in boxes {
@@ -1300,15 +1099,8 @@ fn draw_clues<C: crate::puzzle::Clue>(
                         );
                     }
                 } else if !fixed {
-                    // A resolved clue's caps are left to the outline drawn above.
-                    let (r, g, b) = color_info.rgb;
-                    let mut triangle = super::triangle_shape(
-                        color_info.corner.expect("must be a corner"),
-                        Color32::from_rgb(r, g, b),
-                        rect.size(),
-                    );
-                    triangle.translate(rect.min.to_vec2());
-                    painter.add(triangle);
+                    // A resolved clue's caps are left to the silhouette outline drawn above.
+                    super::triano::draw_cap(&painter, color_info, rect);
                 }
             }
         }
@@ -1330,72 +1122,6 @@ pub fn draw_dyn_clues(
         DynPuzzle::SquareNono(puzzle) => draw_clues(ui, puzzle, scale, orientation, marks),
         DynPuzzle::SquareTriano(puzzle) => draw_clues(ui, puzzle, scale, orientation, marks),
         DynPuzzle::TriNono(_) => None,
-    }
-}
-
-#[cfg(test)]
-mod hull_tests {
-    use super::*;
-
-    fn hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
-        let mut out: Vec<(f32, f32)> =
-            convex_hull(points.iter().map(|(x, y)| Pos2::new(*x, *y)).collect())
-                .iter()
-                .map(|p| (p.x, p.y))
-                .collect();
-        // The hull is a cycle, so normalize where it starts to compare it.
-        if let Some(first) = out
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .map(|(i, _)| i)
-        {
-            out.rotate_left(first);
-        }
-        out
-    }
-
-    /// A resolved triano clue hands over every corner of every box it covers; what comes back is
-    /// the silhouette, with the seams between the boxes gone.
-    #[test]
-    fn hull_of_a_capped_clue() {
-        // A cap slanting in, a square body, a cap slanting out — three unit boxes in a row.
-        let cap_in = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)];
-        let body = [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)];
-        let cap_out = [(2.0, 0.0), (3.0, 0.0), (2.0, 1.0)];
-        let points: Vec<(f32, f32)> = cap_in
-            .iter()
-            .chain(&body)
-            .chain(&cap_out)
-            .copied()
-            .collect();
-
-        assert_eq!(
-            hull(&points),
-            vec![(0.0, 0.0), (3.0, 0.0), (2.0, 1.0), (1.0, 1.0)],
-            "the seams between the three boxes shouldn't survive"
-        );
-    }
-
-    /// A capless clue is a plain box, and keeps its four corners.
-    #[test]
-    fn hull_of_a_square_clue() {
-        assert_eq!(
-            hull(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
-            vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
-        );
-    }
-
-    /// Nothing here has an inside to outline, but nothing panics either.
-    #[test]
-    fn degenerate_hulls() {
-        assert!(hull(&[]).is_empty());
-        assert_eq!(hull(&[(1.0, 1.0)]), vec![(1.0, 1.0)]);
-        assert_eq!(hull(&[(1.0, 1.0), (2.0, 2.0)]).len(), 2);
-        // Collinear, and repeated points: fewer than three corners come back, so
-        // `draw_clue_outline` draws nothing.
-        assert!(hull(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]).len() < 3);
-        assert!(hull(&[(1.0, 1.0), (1.0, 1.0), (1.0, 1.0)]).len() < 3);
     }
 }
 

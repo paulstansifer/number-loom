@@ -2,7 +2,7 @@
 //!
 //! Shape-specific work happens in exactly two places: the hit test, and the render loop.
 //! Everything else — the tools, undo, the overlays — works in dense cell indices and is the same
-//! for every shape.
+//! for every shape. See "triano.rs" and "triddler.rs" for their rendering details.
 
 use super::annotate::AnnotatePointer;
 use super::selection::{LassoPointer, marching_ants, selection_outline};
@@ -48,71 +48,13 @@ pub struct ClueOverlay<'a> {
 impl ClueOverlay<'_> {
     /// Whether the solver has worked a clue out for itself. Those ignore clicks: there's nothing
     /// for the user to check off, and unchecking it would only last until the next repaint.
-    fn auto_fixed(&self, picture: &DynSolution, (lane, clue_idx): ClueId) -> bool {
+    pub(super) fn auto_fixed(&self, picture: &DynSolution, (lane, clue_idx): ClueId) -> bool {
         let family = picture.lane_map().lanes()[lane].family;
         let line = lane - picture.lane_map().family(family).start;
         self.fixed
             .and_then(|f| f.get(family)?.get(line))
             .is_some_and(|fixed| fixed.contains(&clue_idx))
     }
-}
-
-/// One lane's clue boxes in the order they're drawn, counting outward from the grid: the color,
-/// the count (`None` for a triano cap), and which of the lane's clues the box belongs to.
-fn expressed_clues(
-    puzzle: &crate::puzzle::DynPuzzle,
-    g: &crate::layout::GutterLane,
-) -> Vec<(ColorInfo, Option<u16>, usize)> {
-    crate::with_puzzle!(puzzle, |p| {
-        let mut v: Vec<(ColorInfo, Option<u16>, usize)> = p.lines[g.lane]
-            .iter()
-            .enumerate()
-            .flat_map(|(clue_idx, c)| {
-                c.express(&p.palette)
-                    .into_iter()
-                    .map(move |(ci, n)| (ci.clone(), n, clue_idx))
-            })
-            .collect();
-        // Clues run in the lane's own direction, so the box nearest the grid is the last one;
-        // `reversed` covers the families whose clues are labelled at the far end from where the
-        // lane is stored.
-        if !g.reversed {
-            v.reverse();
-        }
-        v
-    })
-}
-
-/// The corners of a gutter's `i`th clue box, in abstract units.
-fn clue_box_points(g: &crate::layout::GutterLane, family: usize, i: usize) -> [Point; 4] {
-    crate::layout::tri_clue_rhombus(
-        g.clue_box_center(i),
-        family,
-        g.edge_dir,
-        crate::layout::CLUE_BOX,
-        crate::layout::CLUE_BOX_SHORT,
-    )
-}
-
-/// The clue whose gutter box covers `at` (in abstract units). A box the solver has checked off
-/// itself swallows the click rather than reporting it: there's nothing left to check off there.
-fn clue_box_at(
-    picture: &DynSolution,
-    overlay: &ClueOverlay<'_>,
-    at: crate::layout::Point,
-) -> Option<ClueId> {
-    for (_, gutter) in picture.gutters() {
-        for g in gutter {
-            let family = picture.lane_map().lanes()[g.lane].family;
-            for (i, (_, _, clue_idx)) in expressed_clues(overlay.puzzle, g).iter().enumerate() {
-                if crate::layout::convex_contains(&clue_box_points(g, family, i), at) {
-                    let id = (g.lane, *clue_idx);
-                    return (!overlay.auto_fixed(picture, id)).then_some(id);
-                }
-            }
-        }
-    }
-    None
 }
 
 impl CanvasGui {
@@ -142,7 +84,7 @@ impl CanvasGui {
     }
 
     /// As `canvas`, but growing the drawing area to cover wherever the clues reach, and handing
-    /// the gutters themselves to `draw_clue_gutters`. Returns the hovered cell and whichever clue
+    /// the gutters themselves to `triddler::draw_clue_gutters`. Returns the hovered cell and whichever clue
     /// box the pointer clicked, if any.
     pub fn canvas_with_clues(
         &mut self,
@@ -346,12 +288,12 @@ impl CanvasGui {
                 && let Some(pointer_pos) = response.hover_pos()
             {
                 let p = from_screen * pointer_pos;
-                if let Some(clue) = clue_box_at(picture, overlay, Point::new(p.x, p.y)) {
+                if let Some(clue) = triddler::clue_box_at(picture, overlay, Point::new(p.x, p.y)) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     clicked_clue = response.clicked().then_some(clue);
                 }
             }
-            draw_clue_gutters(
+            triddler::draw_clue_gutters(
                 ui,
                 &painter,
                 picture,
@@ -410,130 +352,6 @@ impl CanvasGui {
     }
 }
 
-/// The clue gutters: the numbers ringing the picture, and the indicator strip between them and
-/// the grid.
-///
-/// Clues share the picture's painter and coordinate system rather than living in their own
-/// widgets, because a hexagon's three clue blocks are not axis-aligned rectangles and can't be
-/// laid out by a grid of separate panels.
-fn draw_clue_gutters(
-    ui: &egui::Ui,
-    painter: &egui::Painter,
-    picture: &DynSolution,
-    overlay: &ClueOverlay<'_>,
-    checked: &HashSet<ClueId>,
-    scale: f32,
-    to_screen: &egui::emath::RectTransform,
-) {
-    let lane_families: Vec<usize> = picture
-        .lane_map()
-        .lanes()
-        .iter()
-        .map(|l| l.family)
-        .collect();
-    let family_starts: Vec<usize> = (0..picture.lane_map().family_count())
-        .map(|f| picture.lane_map().family(f).start)
-        .collect();
-
-    for (_, gutter) in picture.gutters() {
-        for g in gutter {
-            // Each entry carries the clue it came from, since a clue can express as several
-            // boxes and it's the whole clue that gets resolved.
-            let expressed = expressed_clues(overlay.puzzle, g);
-
-            let family = lane_families[g.lane];
-            for (i, (color_info, count, clue_idx)) in expressed.iter().enumerate() {
-                let points = clue_box_points(g, family, i).map(|p| to_screen * Pos2::new(p.x, p.y));
-                let text = match count {
-                    Some(n) => n.to_string(),
-                    None => color_info.ch.to_string(),
-                };
-                // A resolved clue loses its box: nothing about it is left to work out.
-                let id = (g.lane, *clue_idx);
-                if checked.contains(&id) || overlay.auto_fixed(picture, id) {
-                    solver::draw_bare_number_in_rhombus(
-                        ui,
-                        painter,
-                        &points,
-                        &text,
-                        scale,
-                        color_info.rgb,
-                    );
-                } else {
-                    solver::draw_string_in_rhombus(
-                        ui,
-                        painter,
-                        &points,
-                        &text,
-                        scale,
-                        color_info.rgb,
-                    );
-                }
-            }
-
-            // The indicator strip between the clues and the grid: the hovered block's
-            // length on the three lanes it runs along, and the analysis mark (which the
-            // number deliberately covers up) everywhere else.
-            let at = to_screen
-                * Pos2::new(
-                    g.anchor.x + g.outward.x * (crate::layout::CLUE_PAD / 2.0),
-                    g.anchor.y + g.outward.y * (crate::layout::CLUE_PAD / 2.0),
-                );
-            let hovered = overlay
-                .hover
-                .as_ref()
-                .and_then(|h| Some((h.on_lane(g.lane)?, h.rgb)));
-            match hovered {
-                Some((len, rgb)) => {
-                    solver::draw_bare_number(ui, painter, at, &len.to_string(), scale, rgb)
-                }
-                None => {
-                    if let Some(analysis) = overlay.analysis {
-                        let family = lane_families[g.lane];
-                        let index = g.lane - family_starts[family];
-                        if let Some(status) = analysis.get(family).and_then(|f| f.get(index)) {
-                            solver::draw_analysis_mark(
-                                painter,
-                                at,
-                                scale,
-                                status,
-                                overlay.is_stale,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// A corner triangle's corners, in a box of `scale` at the origin: two full sides meeting at the
-/// right angle, and a hypotenuse across the other two.
-pub fn triangle_points(corner: Corner, scale: Vec2) -> Vec<Pos2> {
-    let Corner { left, upper } = corner;
-
-    let mut points = vec![];
-    // The `+`ed offsets are empirircally-set to make things fit better.
-    if left || upper {
-        points.push((Vec2::new(0.0, 0.0) * scale + Vec2::new(0.25, -0.5)).to_pos2());
-    }
-    if !left || upper {
-        points.push((Vec2::new(1.0, 0.0) * scale + Vec2::new(0.25, -0.5)).to_pos2());
-    }
-    if !left || !upper {
-        points.push((Vec2::new(1.0, 1.0) * scale + Vec2::new(0.25, 0.5)).to_pos2());
-    }
-    if left || !upper {
-        points.push((Vec2::new(0.0, 1.0) * scale + Vec2::new(0.25, 0.5)).to_pos2());
-    }
-
-    points
-}
-
-pub fn triangle_shape(corner: Corner, color: egui::Color32, scale: Vec2) -> egui::Shape {
-    Shape::convex_polygon(triangle_points(corner, scale), color, (0.0, color))
-}
-
 /// Build the shapes for one cell. `shape` and `origin` come from the geometry, so a triangle is
 /// drawn as a triangle and every overlay lands on the real centroid rather than the middle of a
 /// bounding box.
@@ -570,11 +388,7 @@ fn cell_shape(
     // from a triangular *cell*.
     let mut res = vec![match ci.corner {
         None => polygon(shape.vertices(origin), color),
-        Some(corner) => {
-            let mut half = triangle_shape(corner, color, to_screen.scale());
-            half.translate(screen(origin).to_vec2());
-            half
-        }
+        Some(corner) => triano::half_cell(corner, color, to_screen, screen(origin)),
     }];
 
     let center = screen(shape.center(origin));

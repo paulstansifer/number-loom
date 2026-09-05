@@ -8,9 +8,11 @@ mod selection;
 pub mod solver;
 mod toolbar;
 mod tools;
+mod triano;
+mod triddler;
 
 pub use annotate::{AnnotateDrag, Annotation};
-pub use canvas::{ClueId, ClueOverlay, HoverBlocks, triangle_points, triangle_shape};
+pub use canvas::{ClueId, ClueOverlay, HoverBlocks};
 pub use palette::default_color;
 pub use selection::{Selection, cells_in_lasso};
 pub use toolbar::LibraryStatus;
@@ -105,7 +107,7 @@ use crate::{
     // grid space, and only the painter converts.
     layout::Point,
     puzzle::{
-        BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Document, DynSolution, Palette,
+        BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Document, DynSolution, Palette,
         PuzzleDynOps, Solution, UNSOLVED,
     },
     solve::bt_solve,
