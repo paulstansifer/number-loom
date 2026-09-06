@@ -43,12 +43,12 @@ impl NonogramGui {
             if ui.button(icons::ICON_ZOOM_IN).clicked()
                 || (!typing && ui.input(|i| i.key_pressed(egui::Key::Equals)))
             {
-                self.scale = (self.scale + 2.0).min(50.0);
+                self.scale = (self.scale + ZOOM_STEP).min(MAX_SCALE);
             }
             if ui.button(icons::ICON_ZOOM_OUT).clicked()
                 || (!typing && ui.input(|i| i.key_pressed(egui::Key::Minus)))
             {
-                self.scale = (self.scale - 2.0).max(1.0);
+                self.scale = (self.scale - ZOOM_STEP).max(MIN_SCALE);
             }
             if ui.button("New").clicked() {
                 let clue_style = self.editor_gui.document.solution_mut().clue_style();

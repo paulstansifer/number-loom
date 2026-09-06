@@ -329,6 +329,10 @@ impl CanvasGui {
     }
 }
 
+/// How much of their square-grid size the in-cell marks (the "not solvable" dot, and the
+/// traditional styles' background dot and cross) keep on a triangular cell.
+const TRI_MARK_SHRINK: f32 = 2.0 / 3.0;
+
 /// Build the shapes for one cell. `shape` and `origin` come from the geometry, so a triangle is
 /// drawn as a triangle and every overlay lands on the real centroid rather than the middle of a
 /// bounding box.
@@ -371,18 +375,30 @@ fn cell_shape(
     let center = screen(shape.center(origin));
     let unit = to_screen.scale().x;
 
+    // A triangular cell has half a square one's area, and its centroid — where these markers go
+    // — has the sloping sides closing in on it, so a mark sized against the cell edge crowds a
+    // triddler in a way it never does a square grid.
+    let mark = match shape {
+        crate::layout::CellShape::Square => 1.0,
+        crate::layout::CellShape::UpTriangle | crate::layout::CellShape::DownTriangle => {
+            TRI_MARK_SHRINK
+        }
+    };
+
     if ci.color == BACKGROUND {
         match render_style {
             RenderStyle::TraditionalDots => {
                 res.push(egui::Shape::circle_filled(
                     center,
-                    unit * 0.1,
+                    unit * 0.1 * mark,
                     egui::Color32::from_rgb(190, 190, 190),
                 ));
             }
             RenderStyle::TraditionalXes => {
-                let stroke = egui::Stroke::new(2.0, Color32::from_rgb(190, 190, 190));
-                let radius = unit * 0.2;
+                // The stroke shrinks with the cross, so the mark keeps its proportions rather
+                // than turning into a blob on a triangular cell.
+                let stroke = egui::Stroke::new(2.0 * mark, Color32::from_rgb(190, 190, 190));
+                let radius = unit * 0.2 * mark;
                 res.push(egui::Shape::line_segment(
                     [
                         center + Vec2::new(-radius, -radius),
@@ -412,7 +428,7 @@ fn cell_shape(
     if !solved {
         res.push(egui::Shape::circle_filled(
             center,
-            unit * 0.3,
+            unit * 0.3 * mark,
             egui::Color32::from_rgb(190, 190, 190),
         ))
     }

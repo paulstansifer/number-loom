@@ -842,6 +842,21 @@ impl NonogramGui {
             });
         });
     }
+    /// What to actually draw at: `scale` is what the zoom controls set, but triddlers are drawn
+    /// `TRIDDLER_ZOOM_STEPS` clicks further in than square puzzles.
+    fn render_scale(&self) -> f32 {
+        let shape = match &self.solve_gui {
+            Some(solve_gui) => Some(solve_gui.clues.shape()),
+            None => self.editor_gui.document.try_solution().map(|s| s.shape()),
+        };
+
+        if matches!(shape, Some(crate::geometry::Shape::Triangular(_))) {
+            self.scale + TRIDDLER_ZOOM_STEPS * ZOOM_STEP
+        } else {
+            self.scale
+        }
+    }
+
     /// The canvas the user is working in right now.
     fn current_canvas(&mut self) -> &mut CanvasGui {
         match &mut self.solve_gui {
@@ -931,6 +946,17 @@ fn bar_frame(ctx: &egui::Context, separator_on: Edge) -> egui::Frame {
 
 /// Breathing room between the canvas and the panels around it.
 const CANVAS_MARGIN: i8 = 16;
+
+/// One click of the zoom buttons, in pixels per cell edge.
+pub(crate) const ZOOM_STEP: f32 = 2.0;
+/// How far the zoom controls can go, in pixels per cell edge.
+pub(crate) const MIN_SCALE: f32 = 1.0;
+pub(crate) const MAX_SCALE: f32 = 50.0;
+
+/// How far ahead of the zoom the user set a triddler is drawn. A triangular cell has half a
+/// square one's area, and its three clue gutters are rhombuses full of slanted numerals, so the
+/// same scale buys a good deal less legibility than it does on a square grid.
+const TRIDDLER_ZOOM_STEPS: f32 = 3.0;
 
 /// This frame's wheel motion over the canvas, in notches, with the events taken away from the
 /// scroll area beneath — over the canvas the wheel steps through the palette instead of
@@ -1087,6 +1113,9 @@ impl NonogramGui {
 
                 let (pannable, panning) = (self.pannable, self.panning);
 
+                // Read out here, because the closure below borrows `self` mutably.
+                let scale = self.render_scale();
+
                 // A zoomed-in puzzle is routinely bigger than the window in both directions.
                 // `animated(false)` because the only thing that scrolls this programmatically is
                 // the pan below, which has to keep up with the pointer exactly.
@@ -1096,11 +1125,10 @@ impl NonogramGui {
                     }
                     if let Some(solve_gui) = &mut self.solve_gui {
                         solve_gui.canvas.middle_pans = pannable;
-                        solve_gui.body(ui, self.scale);
+                        solve_gui.body(ui, scale);
                     } else {
                         self.editor_gui.middle_pans = pannable;
-                        self.editor_gui
-                            .canvas(ui, self.scale, RenderStyle::Experimental);
+                        self.editor_gui.canvas(ui, scale, RenderStyle::Experimental);
                     }
                 });
 
@@ -1119,7 +1147,7 @@ impl NonogramGui {
                 if pointer_here {
                     let zoom = ui.input(|i| i.zoom_delta());
                     if zoom != 1.0 {
-                        self.scale = (self.scale * zoom).clamp(1.0, 50.0);
+                        self.scale = (self.scale * zoom).clamp(MIN_SCALE, MAX_SCALE);
                     }
                 }
             });

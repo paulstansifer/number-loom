@@ -27,6 +27,50 @@ mod tests {
         harness.run();
     }
 
+    /// A triddler's cells and clue gutters are smaller and busier than a square puzzle's at the
+    /// same scale, so it's drawn several zoom steps ahead of the zoom the controls report.
+    #[test]
+    fn test_triddler_is_drawn_zoomed_in() {
+        // The pixels per cell edge the picture came out at, in the editor and then in the
+        // solving view — the two read the puzzle's shape from different places.
+        let scales = |path: &str| -> (f32, f32) {
+            let doc = import::load_path(&path.into(), None).unwrap();
+            let mut harness = Harness::new_state(
+                |ctx, nonogram_gui: &mut NonogramGui| {
+                    nonogram_gui.main_ui(ctx);
+                },
+                NonogramGui::new(doc),
+            );
+            harness.run();
+
+            let cell_size = |gui: &mut number_loom::gui::CanvasGui| -> f32 {
+                let extent = gui.document.solution_mut().extent();
+                let rect = gui.picture_rect.expect("the canvas hasn't been drawn yet");
+                assert!((rect.width() / extent.x - rect.height() / extent.y).abs() < 0.1);
+                rect.width() / extent.x
+            };
+
+            let editing = cell_size(&mut harness.state_mut().editor_gui);
+            harness.get_by_label("Puzzle").click();
+            harness.run();
+            let solving = cell_size(&mut harness.state_mut().solve_gui.as_mut().unwrap().canvas);
+            (editing, solving)
+        };
+
+        // `NonogramGui`'s starting zoom, and three clicks of `ZOOM_STEP` past it. Compared
+        // loosely, because a triddler's extent isn't a whole number of cell edges.
+        for (path, expected) in [
+            ("examples/woven/square_bw.0.woven", 16.0),
+            ("examples/triddler/blob.g", 22.0),
+        ] {
+            let (editing, solving) = scales(path);
+            assert!(
+                (editing - expected).abs() < 0.01 && (solving - expected).abs() < 0.01,
+                "{path} drew at {editing} editing and {solving} solving, not {expected}"
+            );
+        }
+    }
+
     #[test]
     fn test_solve_button() {
         let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
