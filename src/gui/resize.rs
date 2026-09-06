@@ -247,7 +247,7 @@ impl NonogramGui {
                         base + edge_dir * (sign * BUTTON_GAP / 2.0 + sign * BUTTON_ALONG / 2.0);
                     // A small rectangle with one axis along the edge and the other along the
                     // outward normal — the same "centre ± dir*half ± perp*half" construction
-                    // `layout::tri_clue_rhombus` uses for the (differently-shaped) clue boxes.
+                    // `layout::clue_box` uses for the (differently-shaped) clue boxes.
                     let along = edge_dir * (BUTTON_ALONG / 2.0);
                     let across = outward * (BUTTON_ACROSS / 2.0);
                     let corners = [

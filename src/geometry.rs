@@ -2171,21 +2171,19 @@ fn build_gutters<K: GridKind>(
             let coord = coords[*end as usize];
             let origin = K::cell_origin(dims, lookup, coord);
             let center = K::cell_shape(coord).center(origin);
-            // Step off the end of the lane; that direction leads away from the grid.
+            // Leaving the lane by its clued end leads away from the grid, and that is exactly
+            // one of the arm directions: `arm_directions` lists each family's as (back, forward),
+            // "forward" meaning the way the lane is stored. So the clued end's outward direction
+            // is the forward arm when the clues sit at the lane's last cell, and the back arm
+            // when they sit at its first.
             //
-            // Two steps, not one: consecutive cells of a triangular lane alternate ▲/▼, and the
-            // two displacements differ. Only their sum is parallel to the lane itself.
-            let outward = {
-                let past = K::step(K::step(coord, family, at_last), family, at_last);
-                let far = K::cell_origin(dims, lookup, past);
-                let d = Vec2::new(far.x - origin.x, far.y - origin.y);
-                let len = (d.x * d.x + d.y * d.y).sqrt();
-                if len > 0.0 {
-                    Vec2::new(d.x / len, d.y / len)
-                } else {
-                    Vec2::new(-1.0, 0.0)
-                }
-            };
+            // Taking it from there rather than by stepping off the end matters: a square grid's
+            // coordinates are unsigned, so stepping backward off lane 0 underflowed to
+            // `usize::MAX`, and normalizing that displacement overflowed `f32` to infinity —
+            // leaving every square gutter with an `outward` of `(0, 0)` and, downstream of that,
+            // a meaningless `anchor`. Nothing noticed, because until now only triddlers drew
+            // their gutters from this table.
+            let outward = K::arm_directions()[family * 2 + usize::from(at_last)];
             // The midpoint of the edge the lane exits through — *not* the centroid pushed
             // outward. A ▲ and a ▼ have centroids at different heights, so using those would
             // bunch adjacent rows' clues together; their exit edges are properly spaced.
@@ -2280,6 +2278,71 @@ mod typed_tests {
                 height: 7,
             },
         ]
+    }
+
+    /// Every gutter lane leaves the grid along a real direction, from the midpoint of the edge
+    /// its lane actually exits through. Square grids get this wrong easily: their coordinates are
+    /// unsigned, so anything derived by stepping backward off the first cell underflows.
+    #[test]
+    fn gutters_point_away_from_the_grid() {
+        let geo = Geometry::<Square>::new(Rect {
+            width: 4,
+            height: 3,
+        });
+        let mut seen = vec![];
+        for (_, lanes) in geo.gutters() {
+            for g in lanes {
+                let family = geo.lane(g.lane).family;
+                let unit = (g.outward.x * g.outward.x + g.outward.y * g.outward.y).sqrt();
+                assert!((unit - 1.0).abs() < 1e-5, "outward must be a unit vector");
+                // Rows are clued on the left, columns above.
+                let expected = if family == 0 {
+                    (-1.0, 0.0)
+                } else {
+                    (0.0, -1.0)
+                };
+                assert_eq!((g.outward.x, g.outward.y), expected);
+                seen.push((family, g.anchor.x, g.anchor.y));
+            }
+        }
+        // Three rows anchored on the left edge at each row's midpoint, four columns on the top.
+        assert_eq!(
+            seen,
+            vec![
+                (0, 0.0, 0.5),
+                (0, 0.0, 1.5),
+                (0, 0.0, 2.5),
+                (1, 0.5, 0.0),
+                (1, 1.5, 0.0),
+                (1, 2.5, 0.0),
+                (1, 3.5, 0.0),
+            ]
+        );
+    }
+
+    /// The same, for every triangular shape: each lane's clues sit outside the picture's bounding
+    /// box, or on its boundary, and never back inside the grid.
+    #[test]
+    fn tri_gutters_leave_the_picture() {
+        for outline in tri_shapes() {
+            let geo = Geometry::<Tri>::new(outline);
+            let extent = geo.extent();
+            for (_, lanes) in geo.gutters() {
+                for g in lanes {
+                    let tip = Point::new(
+                        g.anchor.x + g.outward.x * GutterLane::clue_run_length(1),
+                        g.anchor.y + g.outward.y * GutterLane::clue_run_length(1),
+                    );
+                    assert!(
+                        tip.x < 1e-3
+                            || tip.x > extent.x - 1e-3
+                            || tip.y < 1e-3
+                            || tip.y > extent.y - 1e-3,
+                        "a clue at {tip:?} landed inside the {extent:?} picture"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2861,12 +2924,21 @@ mod typed_tests {
         true
     }
 
+    /// Clue boxes have to stay out of the picture and out of each other's way, whatever the
+    /// shape: a square grid's are axis-aligned rectangles marching left and up, a triddler's are
+    /// rhombuses marching outward in six directions at 60° to each other. The HTML export draws
+    /// straight from this geometry, so an overlap here is an unreadable clue on the page.
     #[test]
     fn clue_boxes_clear_the_grid_and_each_other() {
-        use crate::layout::{CLUE_BOX, CLUE_BOX_SHORT, GutterLane, tri_clue_rhombus};
+        check_clue_boxes(&Geometry::<Tri>::new(Outline::hexagon(3)));
+        check_clue_boxes(&Geometry::<Square>::new(Rect {
+            width: 14,
+            height: 11,
+        }));
+    }
 
-        let outline = Outline::hexagon(3);
-        let geo = Geometry::<Tri>::new(outline);
+    fn check_clue_boxes<K: GridKind>(geo: &Geometry<K>) {
+        use crate::layout::{CLUE_BOX, CLUE_BOX_SHORT, GutterLane, clue_box};
 
         // A pattern with a decent spread of clue counts.
         let filled: Vec<bool> = (0..geo.cell_count())
@@ -2891,15 +2963,19 @@ mod typed_tests {
         let mut boxes: Vec<(usize, usize, Point, [Point; 4])> = vec![];
         for (_, gutter) in geo.gutters() {
             for g in gutter {
-                let family = geo.lane(g.lane).family;
                 for i in 0..clue_counts[g.lane] {
                     let c = g.clue_box_center(i);
-                    let corners = tri_clue_rhombus(c, family, g.edge_dir, CLUE_BOX, CLUE_BOX_SHORT);
+                    let corners = clue_box(c, g.outward, g.edge_dir, CLUE_BOX, CLUE_BOX_SHORT);
                     boxes.push((g.lane, i, c, corners));
                 }
             }
         }
-        assert!(boxes.len() > 40, "expected a decent number of clues");
+        assert!(
+            boxes.len() > geo.lane_count(),
+            "expected a decent number of clues, got {} across {} lanes",
+            boxes.len(),
+            geo.lane_count()
+        );
 
         // No clue box centre may land on a cell.
         for (lane, i, c, _) in &boxes {
@@ -2911,7 +2987,7 @@ mod typed_tests {
             }
         }
 
-        // Nor may two clue boxes' actual rhombi overlap.
+        // Nor may two clue boxes overlap each other.
         for (i, (la, ia, _, poly_a)) in boxes.iter().enumerate() {
             for (lb, ib, _, poly_b) in &boxes[i + 1..] {
                 assert!(

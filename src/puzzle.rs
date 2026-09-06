@@ -28,11 +28,6 @@ pub trait Clue: Clone + Copy + Debug + PartialEq + Eq + Hash + Send {
     // Summary string (for display while solving)
     fn to_string(&self, palette: &Palette) -> String;
 
-    // TODO: these are a hack!
-    fn html_color(&self, palette: &Palette) -> String;
-
-    fn html_text(&self, palette: &Palette) -> String;
-
     fn express<'a>(&self, palette: &'a Palette) -> Vec<(&'a ColorInfo, Option<u16>)>;
 }
 
@@ -70,15 +65,6 @@ impl Clue for Nono {
 
     fn to_string(&self, palette: &Palette) -> String {
         format!("{}{}", palette[&self.color].ch, self.count)
-    }
-
-    fn html_color(&self, palette: &Palette) -> String {
-        let (r, g, b) = palette[&self.color].rgb;
-        format!("color:rgb({},{},{})", r, g, b)
-    }
-
-    fn html_text(&self, _: &Palette) -> String {
-        format!("{}", self.count)
     }
 
     fn express<'a>(&self, palette: &'a Palette) -> Vec<(&'a ColorInfo, Option<u16>)> {
@@ -149,25 +135,6 @@ impl Clue for Triano {
         res.push_str(&self.body_len.to_string());
         if let Some(back_cap) = self.back_cap {
             res.push(palette[&back_cap].ch);
-        }
-        res
-    }
-
-    fn html_color(&self, palette: &Palette) -> String {
-        let (r, g, b) = palette[&self.body_color].rgb;
-        format!("color:rgb({},{},{})", r, g, b)
-    }
-
-    fn html_text(&self, palette: &Palette) -> String {
-        let mut res = String::new();
-        if let Some(front_cap) = self.front_cap {
-            let color_info = &palette[&front_cap];
-            res.push(color_info.ch);
-        }
-        res.push_str(&self.body_len.to_string());
-        if let Some(back_cap) = self.back_cap {
-            let color_info = &palette[&back_cap];
-            res.push(color_info.ch);
         }
         res
     }
@@ -426,6 +393,45 @@ impl<C: Clue, K: GridKind> Puzzle<C, K> {
     pub fn lane_map(&self) -> &crate::geometry::LaneMap {
         self.geometry.lane_map()
     }
+
+    /// How far out from the grid lane `lane`'s clues reach, in abstract units.
+    pub fn clue_run_length(&self, lane: usize) -> f32 {
+        let parts = self.lines[lane]
+            .iter()
+            .map(|c| c.express(&self.palette).len())
+            .sum::<usize>();
+        crate::layout::GutterLane::clue_run_length(parts)
+    }
+
+    /// The whole drawing's bounding box in abstract units — the picture plus however far its clue
+    /// gutters reach. Shared by the editor canvas and the HTML export, which both have to size a
+    /// drawing surface around a puzzle of any shape.
+    ///
+    /// Not simply the picture's extent: a triddler's six gutters run off at 60°, so the clues
+    /// reach past every side, and even a square puzzle's reach left and up.
+    pub fn drawing_bounds(&self) -> (crate::layout::Point, crate::layout::Point) {
+        use crate::layout::Point;
+        let extent = self.geometry.extent();
+        let (mut lo, mut hi) = (Point::new(0.0, 0.0), Point::new(extent.x, extent.y));
+        for (_, gutter) in self.geometry.gutters() {
+            for g in gutter {
+                let len = self.clue_run_length(g.lane);
+                let tip = Point::new(
+                    g.anchor.x + g.outward.x * len,
+                    g.anchor.y + g.outward.y * len,
+                );
+                // A box is centred on the gutter's line, so it sticks out sideways as well as
+                // along it; half of `CLUE_BOX_SHORT` would do for the sides, but the long side is
+                // the safe bound in every direction.
+                let half = crate::layout::CLUE_BOX;
+                lo.x = lo.x.min(tip.x - half);
+                lo.y = lo.y.min(tip.y - half);
+                hi.x = hi.x.max(tip.x + half);
+                hi.y = hi.y.max(tip.y + half);
+            }
+        }
+        (lo, hi)
+    }
 }
 
 /// A puzzle of whatever kind was loaded.
@@ -643,6 +649,11 @@ impl DynPuzzle {
 
     pub fn clue_lines(&self) -> usize {
         with_puzzle!(self, |p| p.lines.len())
+    }
+
+    /// See `Puzzle::drawing_bounds`.
+    pub fn drawing_bounds(&self) -> (crate::layout::Point, crate::layout::Point) {
+        with_puzzle!(self, |p| p.drawing_bounds())
     }
 
     pub fn as_square_nono(&self) -> Option<&Puzzle<Nono, Square>> {

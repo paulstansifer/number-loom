@@ -103,10 +103,10 @@ fn expressed_clues(
 }
 
 /// The corners of a gutter's `i`th clue box, in abstract units.
-fn clue_box_points(g: &crate::layout::GutterLane, family: usize, i: usize) -> [Point; 4] {
-    crate::layout::tri_clue_rhombus(
+fn clue_box_points(g: &crate::layout::GutterLane, i: usize) -> [Point; 4] {
+    crate::layout::clue_box(
         g.clue_box_center(i),
-        family,
+        g.outward,
         g.edge_dir,
         crate::layout::CLUE_BOX,
         crate::layout::CLUE_BOX_SHORT,
@@ -122,9 +122,8 @@ pub(super) fn clue_box_at(
 ) -> Option<ClueId> {
     for (_, gutter) in picture.gutters() {
         for g in gutter {
-            let family = picture.lane_map().lanes()[g.lane].family;
             for (i, (_, _, clue_idx)) in expressed_clues(overlay.puzzle, g).iter().enumerate() {
-                if crate::layout::convex_contains(&clue_box_points(g, family, i), at) {
+                if crate::layout::convex_contains(&clue_box_points(g, i), at) {
                     let id = (g.lane, *clue_idx);
                     return (!overlay.auto_fixed(picture, id)).then_some(id);
                 }
@@ -165,9 +164,8 @@ pub(super) fn draw_clue_gutters(
             // boxes and it's the whole clue that gets resolved.
             let expressed = expressed_clues(overlay.puzzle, g);
 
-            let family = lane_families[g.lane];
             for (i, (color_info, count, clue_idx)) in expressed.iter().enumerate() {
-                let points = clue_box_points(g, family, i).map(|p| to_screen * Pos2::new(p.x, p.y));
+                let points = clue_box_points(g, i).map(|p| to_screen * Pos2::new(p.x, p.y));
                 let text = match count {
                     Some(n) => n.to_string(),
                     None => color_info.ch.to_string(),
@@ -279,9 +277,9 @@ pub(super) fn draw_rosette(
             // Same long/short proportion as a real clue box, so this preview actually looks like
             // the gutter boxes it's previewing.
             let arm_short = arm_size * (crate::layout::CLUE_BOX_SHORT / crate::layout::CLUE_BOX);
-            let points: Vec<Pos2> = crate::layout::tri_clue_rhombus(
+            let points: Vec<Pos2> = crate::layout::clue_box(
                 Point::new(arm_center.x, arm_center.y),
-                family,
+                *dir,
                 edge_dir,
                 arm_size,
                 arm_short,

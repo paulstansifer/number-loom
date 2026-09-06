@@ -205,6 +205,44 @@ pub fn convex_contains(points: &[Point], p: Point) -> bool {
     true
 }
 
+/// The corners of the smallest convex polygon containing `points` (Andrew's monotone chain),
+/// counter-clockwise. Fewer than three distinct points enclose nothing, and come back as they are.
+///
+/// Used to turn a capped clue's boxes into one silhouette: hand it every corner of every box and
+/// the seams between them don't survive.
+pub fn convex_hull(mut points: Vec<Point>) -> Vec<Point> {
+    if points.len() < 3 {
+        return points;
+    }
+    points.sort_by(|a, b| {
+        (a.x, a.y)
+            .partial_cmp(&(b.x, b.y))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let cross =
+        |o: Point, a: Point, b: Point| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+    let mut hull: Vec<Point> = Vec::with_capacity(points.len() + 1);
+    // The lower chain, then the upper one; each drops any corner that doesn't actually turn, and
+    // stops short of eating into the chain before it.
+    for pass in 0..2 {
+        let base = hull.len();
+        for &p in points.iter() {
+            while hull.len() >= base + 2
+                && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop(); // Where this chain ends is where the next one starts.
+        if pass == 0 {
+            points.reverse();
+        }
+    }
+    hull
+}
+
 /// One boundary line between lanes, for drawing the grid.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Guide {
@@ -244,6 +282,9 @@ pub const ANALYSIS_MARK_RADIUS: f32 = 0.2;
 const _: () = assert!(2.0 * ANALYSIS_MARK_RADIUS < CLUE_PAD);
 
 /// Unit vectors along each triangular family's own lane direction: rows, `/` lines, `\` lines.
+///
+/// Only the triangular resize controls need these by family; a gutter's own direction reaches
+/// [`clue_box`] through `GutterLane::outward`, which every shape has.
 pub(crate) const TRI_LANE_DIR: [Vec2; 3] = [
     Vec2 { x: 1.0, y: 0.0 },
     Vec2 {
@@ -256,21 +297,20 @@ pub(crate) const TRI_LANE_DIR: [Vec2; 3] = [
     },
 ];
 
-/// A clue box shaped like a rhombus pointing along the lane: its long *side* runs along the
-/// lane's own direction (i.e. along `outward`), and its short side runs along `edge_dir` — the
-/// puzzle boundary edge the box is lined up against — so a chain of clues reads as beads strung
-/// along the gutter, each one flush against the grid. `size` is the box's extent along the lane's
-/// own direction; `short` is its extent across the lane; `edge_dir` need not be perpendicular to
-/// `size`'s direction (for a triangular grid it's 60° off).
-pub fn tri_clue_rhombus(
-    center: Point,
-    family: usize,
-    edge_dir: Vec2,
-    size: f32,
-    short: f32,
-) -> [Point; 4] {
-    let dir = TRI_LANE_DIR[family];
-    let (ax, ay) = (dir.x * size / 2.0, dir.y * size / 2.0);
+/// A clue box: the quadrilateral one clue's number is written in, out in a gutter.
+///
+/// Its long *side* runs along `axis` — the lane's own direction, which is what `GutterLane`'s
+/// `outward` already is — and its short side along `edge_dir`, the puzzle boundary edge the box
+/// is lined up against, so a chain of clues reads as beads strung along the gutter, each one
+/// flush against the grid. `size` is the extent along `axis` and `short` the extent across it.
+///
+/// `edge_dir` need not be perpendicular to `axis`: on a square grid it is, and the box comes out
+/// an axis-aligned rectangle, but a triangular cell's outward-facing edge is 60° off its lane, so
+/// there the box is a rhombus. The two cases are the same arithmetic.
+///
+/// `axis` may point either way along the lane; the box is symmetric about its centre either way.
+pub fn clue_box(center: Point, axis: Vec2, edge_dir: Vec2, size: f32, short: f32) -> [Point; 4] {
+    let (ax, ay) = (axis.x * size / 2.0, axis.y * size / 2.0);
     let (bx, by) = (edge_dir.x * short / 2.0, edge_dir.y * short / 2.0);
     [
         Point::new(center.x + ax + bx, center.y + ay + by),
@@ -278,6 +318,38 @@ pub fn tri_clue_rhombus(
         Point::new(center.x - ax - bx, center.y - ay - by),
         Point::new(center.x + ax - bx, center.y + ay - by),
     ]
+}
+
+/// A trianogram cap: the half of an axis-aligned box on one side of a diagonal, as a polygon.
+///
+/// `upper`/`left` are a `puzzle::Corner`'s two fields, naming which corner the *right angle* sits
+/// in; the hypotenuse runs across the other two. Taken as plain bools so that this module stays
+/// free of the rest of the crate.
+///
+/// Note this is a half-*square*, which is what a trianogram's extra colors are. It has nothing to
+/// do with a triddler's triangular cells; those are [`CellShape`].
+pub fn corner_triangle(upper: bool, left: bool, origin: Point, size: Vec2) -> ([Point; 4], usize) {
+    let (x, y) = (origin.x, origin.y);
+    let (w, h) = (size.x, size.y);
+    let mut points = [Point::default(); 4];
+    let mut n = 0;
+    let mut push = |p: Point| {
+        points[n] = p;
+        n += 1;
+    };
+    if left || upper {
+        push(Point::new(x, y));
+    }
+    if !left || upper {
+        push(Point::new(x + w, y));
+    }
+    if !left || !upper {
+        push(Point::new(x + w, y + h));
+    }
+    if left || !upper {
+        push(Point::new(x, y + h));
+    }
+    (points, n)
 }
 
 /// Where one lane's clues should be drawn.
@@ -290,7 +362,7 @@ pub struct GutterLane {
     /// The unit vector clue boxes march along, pointing away from the grid.
     pub outward: Vec2,
     /// The direction of the puzzle boundary edge the clue chain is lined up against — the short
-    /// side of `tri_clue_rhombus`'s boxes runs along this. For a square grid it's perpendicular
+    /// side of [`clue_box`]'s boxes runs along this. For a square grid it's perpendicular
     /// to `outward`; for a triangular grid it's 60° off, since that's the only angle a triangle's
     /// edges come in.
     pub edge_dir: Vec2,
@@ -315,5 +387,71 @@ impl GutterLane {
         } else {
             CLUE_PAD + count as f32 * (CLUE_BOX + CLUE_GAP)
         }
+    }
+}
+
+#[cfg(test)]
+mod hull_tests {
+    use super::*;
+
+    fn hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+        let mut out: Vec<(f32, f32)> =
+            convex_hull(points.iter().map(|(x, y)| Point::new(*x, *y)).collect())
+                .iter()
+                .map(|p| (p.x, p.y))
+                .collect();
+        // The hull is a cycle, so normalize where it starts to compare it.
+        if let Some(first) = out
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+        {
+            out.rotate_left(first);
+        }
+        out
+    }
+
+    /// A resolved triano clue hands over every corner of every box it covers; what comes back is
+    /// the silhouette, with the seams between the boxes gone.
+    #[test]
+    fn hull_of_a_capped_clue() {
+        // A cap slanting in, a square body, a cap slanting out — three unit boxes in a row.
+        let cap_in = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)];
+        let body = [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)];
+        let cap_out = [(2.0, 0.0), (3.0, 0.0), (2.0, 1.0)];
+        let points: Vec<(f32, f32)> = cap_in
+            .iter()
+            .chain(&body)
+            .chain(&cap_out)
+            .copied()
+            .collect();
+
+        assert_eq!(
+            hull(&points),
+            vec![(0.0, 0.0), (3.0, 0.0), (2.0, 1.0), (1.0, 1.0)],
+            "the seams between the three boxes shouldn't survive"
+        );
+    }
+
+    /// A capless clue is a plain box, and keeps its four corners.
+    #[test]
+    fn hull_of_a_square_clue() {
+        assert_eq!(
+            hull(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
+            vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        );
+    }
+
+    /// Nothing here has an inside to outline, but nothing panics either.
+    #[test]
+    fn degenerate_hulls() {
+        assert!(hull(&[]).is_empty());
+        assert_eq!(hull(&[(1.0, 1.0)]), vec![(1.0, 1.0)]);
+        assert_eq!(hull(&[(1.0, 1.0), (2.0, 2.0)]).len(), 2);
+        // Collinear, and repeated points: fewer than three corners come back, so a caller has
+        // nothing to outline.
+        assert!(hull(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]).len() < 3);
+        assert!(hull(&[(1.0, 1.0), (1.0, 1.0), (1.0, 1.0)]).len() < 3);
     }
 }

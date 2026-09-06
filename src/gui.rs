@@ -107,8 +107,8 @@ use crate::{
     // grid space, and only the painter converts.
     layout::Point,
     puzzle::{
-        BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Document, DynSolution, Palette,
-        PuzzleDynOps, Solution, UNSOLVED,
+        BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynSolution, Palette, PuzzleDynOps,
+        Solution, UNSOLVED,
     },
     solve::bt_solve,
     solve::grid_solve::{self, DisambigResult, SolveOptions, disambig_candidates},

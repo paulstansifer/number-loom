@@ -7,6 +7,7 @@
  - There is now a backtracking solver, for non-line-logic nonograms
  - Chargrid now supports triddlers.
  - It's now possible to manually or (optionally) automatically indicate that clues have been satisfied.
+ - All puzzles are now supported for HTML export, which now uses SVG
 ### Changed
  - Triddler sizes are now shown in griddlers.net's notation (e.g. "(5+3)x(6+2)")
  - A simpler way to determine which line to look at while solving is a substantial performance improvement, but it changes how scores are calculated.

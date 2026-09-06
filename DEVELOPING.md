@@ -22,7 +22,8 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
       triano.rs - special trianogram drawing: half-square "cap" colors and clue silhouettes
       gallery.rs - for chosing a puzzle to solve
       outline_text.rs - overengineered halos for text readability on arbitrary backgrounds
-    import.rs, export.rs - support for various file formats
+    import.rs, export.rs - read and write files
+    formats/ - some formats have implementations broken out here
     solve/ - the automatic solver (as opposed to gui/solver.rs, the interactive solving view)
       line_solve.rs - quick ("skim") and exhaustive ("scrub") line-logic implementation
       grid_solve.rs - uses repeated line-logic to solve a puzzle

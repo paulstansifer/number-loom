@@ -13,27 +13,23 @@ use egui::{Color32, Pos2, Rect, Vec2};
 
 use crate::puzzle::{ColorInfo, Corner};
 
-/// A corner triangle's corners, in a box of `scale` at the origin: two full sides meeting at the
-/// right angle, and a hypotenuse across the other two.
+/// A cap's corners, in a box of `scale` at the origin. `layout::corner_triangle` has the shape;
+/// this adds the half-pixel nudges that make the seams between adjacent shapes on screen close up
+/// (the `+`ed offsets are empirically set to make things fit better), and converts to egui.
 fn triangle_points(corner: Corner, scale: Vec2) -> Vec<Pos2> {
-    let Corner { left, upper } = corner;
-
-    let mut points = vec![];
-    // The `+`ed offsets are empirircally-set to make things fit better.
-    if left || upper {
-        points.push((Vec2::new(0.0, 0.0) * scale + Vec2::new(0.25, -0.5)).to_pos2());
-    }
-    if !left || upper {
-        points.push((Vec2::new(1.0, 0.0) * scale + Vec2::new(0.25, -0.5)).to_pos2());
-    }
-    if !left || !upper {
-        points.push((Vec2::new(1.0, 1.0) * scale + Vec2::new(0.25, 0.5)).to_pos2());
-    }
-    if left || !upper {
-        points.push((Vec2::new(0.0, 1.0) * scale + Vec2::new(0.25, 0.5)).to_pos2());
-    }
-
-    points
+    let (points, n) = crate::layout::corner_triangle(
+        corner.upper,
+        corner.left,
+        crate::layout::Point::new(0.0, 0.0),
+        crate::layout::Vec2::new(scale.x, scale.y),
+    );
+    points[..n]
+        .iter()
+        .map(|p| {
+            let fudge = if p.y > 0.0 { 0.5 } else { -0.5 };
+            Pos2::new(p.x + 0.25, p.y + fudge)
+        })
+        .collect()
 }
 
 fn triangle_shape(corner: Corner, color: Color32, scale: Vec2) -> egui::Shape {
@@ -138,103 +134,13 @@ fn draw_clue_outline(
     ));
 }
 
-/// The corners of the smallest convex polygon containing `points` (Andrew's monotone chain),
-/// counter-clockwise. Fewer than three distinct points have no outline to draw, and come back as
-/// they are.
-fn convex_hull(mut points: Vec<Pos2>) -> Vec<Pos2> {
-    if points.len() < 3 {
-        return points;
-    }
-    points.sort_by(|a, b| {
-        (a.x, a.y)
-            .partial_cmp(&(b.x, b.y))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let cross = |o: Pos2, a: Pos2, b: Pos2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-
-    let mut hull: Vec<Pos2> = Vec::with_capacity(points.len() + 1);
-    // The lower chain, then the upper one; each drops any corner that doesn't actually turn, and
-    // stops short of eating into the chain before it.
-    for pass in 0..2 {
-        let base = hull.len();
-        for &p in points.iter() {
-            while hull.len() >= base + 2
-                && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
-            {
-                hull.pop();
-            }
-            hull.push(p);
-        }
-        hull.pop(); // Where this chain ends is where the next one starts.
-        if pass == 0 {
-            points.reverse();
-        }
-    }
-    hull
-}
-
-#[cfg(test)]
-mod hull_tests {
-    use super::*;
-
-    fn hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
-        let mut out: Vec<(f32, f32)> =
-            convex_hull(points.iter().map(|(x, y)| Pos2::new(*x, *y)).collect())
-                .iter()
-                .map(|p| (p.x, p.y))
-                .collect();
-        // The hull is a cycle, so normalize where it starts to compare it.
-        if let Some(first) = out
+/// `layout::convex_hull`, in egui's coordinates.
+fn convex_hull(points: Vec<Pos2>) -> Vec<Pos2> {
+    let hull = crate::layout::convex_hull(
+        points
             .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .map(|(i, _)| i)
-        {
-            out.rotate_left(first);
-        }
-        out
-    }
-
-    /// A resolved triano clue hands over every corner of every box it covers; what comes back is
-    /// the silhouette, with the seams between the boxes gone.
-    #[test]
-    fn hull_of_a_capped_clue() {
-        // A cap slanting in, a square body, a cap slanting out — three unit boxes in a row.
-        let cap_in = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)];
-        let body = [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)];
-        let cap_out = [(2.0, 0.0), (3.0, 0.0), (2.0, 1.0)];
-        let points: Vec<(f32, f32)> = cap_in
-            .iter()
-            .chain(&body)
-            .chain(&cap_out)
-            .copied()
-            .collect();
-
-        assert_eq!(
-            hull(&points),
-            vec![(0.0, 0.0), (3.0, 0.0), (2.0, 1.0), (1.0, 1.0)],
-            "the seams between the three boxes shouldn't survive"
-        );
-    }
-
-    /// A capless clue is a plain box, and keeps its four corners.
-    #[test]
-    fn hull_of_a_square_clue() {
-        assert_eq!(
-            hull(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
-            vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
-        );
-    }
-
-    /// Nothing here has an inside to outline, but nothing panics either.
-    #[test]
-    fn degenerate_hulls() {
-        assert!(hull(&[]).is_empty());
-        assert_eq!(hull(&[(1.0, 1.0)]), vec![(1.0, 1.0)]);
-        assert_eq!(hull(&[(1.0, 1.0), (2.0, 2.0)]).len(), 2);
-        // Collinear, and repeated points: fewer than three corners come back, so
-        // `draw_clue_outline` draws nothing.
-        assert!(hull(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)]).len() < 3);
-        assert!(hull(&[(1.0, 1.0), (1.0, 1.0), (1.0, 1.0)]).len() < 3);
-    }
+            .map(|p| crate::layout::Point::new(p.x, p.y))
+            .collect(),
+    );
+    hull.iter().map(|p| Pos2::new(p.x, p.y)).collect()
 }

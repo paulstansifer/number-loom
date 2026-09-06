@@ -1,13 +1,13 @@
 use anyhow::Context;
 use std::path::{Path, PathBuf};
 
-use axohtml::{html, text};
 use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 
 use crate::{
+    formats::html::as_html,
     formats::woven::to_woven,
     geometry::{Shape, Square},
-    puzzle::{self, Clue, Document, DynPuzzle, NonogramFormat, Puzzle, Solution},
+    puzzle::{self, Document, DynPuzzle, NonogramFormat, Solution},
 };
 
 /// The square-only writers need a square picture; asking for one is how we find out.
@@ -34,14 +34,18 @@ pub fn to_bytes(
         )
     });
 
-    // Triangular puzzles round-trip through webpbn and olsak. The other writers all assume two
-    // clue directions and a rectangular grid of cells, and would quietly emit nonsense.
+    // Triangular puzzles round-trip through webpbn and olsak, and draw as HTML. The other
+    // writers all assume two clue directions and a rectangular grid of cells, and would quietly
+    // emit nonsense.
     if let Some(puzzle) = document.try_puzzle() {
         let triangular = matches!(puzzle.shape(), Shape::Triangular(_));
-        let supports_triddlers = matches!(format, NonogramFormat::Webpbn | NonogramFormat::Olsak);
+        let supports_triddlers = matches!(
+            format,
+            NonogramFormat::Webpbn | NonogramFormat::Olsak | NonogramFormat::Html
+        );
         if triangular && !supports_triddlers {
             anyhow::bail!(
-                "{:?} can't represent a triddler; use the webpbn or olsak format",
+                "{:?} can't represent a triddler; use the webpbn, olsak or html format",
                 format
             );
         }
@@ -58,11 +62,10 @@ pub fn to_bytes(
                 DynPuzzle::SquareTriano(p) => as_olsak_triano(p),
             },
             NonogramFormat::Webpbn => as_webpbn(document),
-            NonogramFormat::Html => match document.puzzle() {
-                DynPuzzle::SquareNono(p) => as_html(p),
-                DynPuzzle::SquareTriano(p) => as_html(p),
-                DynPuzzle::TriNono(_) => unreachable!("refused above"),
-            },
+            NonogramFormat::Html => {
+                let (title, author) = (document.title.clone(), document.author.clone());
+                crate::with_puzzle!(document.puzzle(), |p| as_html(p, &title, &author))
+            }
             NonogramFormat::Image => panic!(),
             NonogramFormat::Woven => to_woven(document)?,
             NonogramFormat::CharGrid => as_char_grid(square_solution(document)?),
@@ -88,81 +91,6 @@ pub fn save(
         std::fs::write(path, bytes)?
     }
     Ok(())
-}
-
-pub fn as_html<C: Clue>(puzzle: &Puzzle<C, Square>) -> String {
-    let html: axohtml::dom::DOMTree<String> = html!(
-        <html>
-            <head>
-            <title></title>
-            <style>
-            {text!(
-"
-table, td, th {
-    border-collapse: collapse;
-}
-td {
-    border: 1px solid black;
-    width: 40px;
-    height: 40px;
-}
-
-table tr:nth-of-type(5n) td {
-    border-bottom: 3px solid;
-}
-table td:nth-of-type(5n) {
-    border-right: 3px solid;
-}
-
-table tr:last-child td {
-    border-bottom: 1px solid;
-}
-table td:last-child {
-    border-right: 1px solid;
-}
-.col {
-  vertical-align: bottom;
-  border-top: none;
-  font-family: courier;
-}
-.row {
-  text-align: right;
-  border-left: none;
-  font-family: courier;
-  padding-right: 6px;
-}
-
-
-    ")}
-            </style>
-            </head>
-            <body>
-                <table>
-                    <thead>
-                        <tr>
-                        <th></th>
-                        { puzzle.col_clues().iter().map(|col| html!(<th class="col">{
-                            col.iter().map(|clue| html!(<div style=(clue.html_color(&puzzle.palette))>{text!("{} ", clue.html_text(&puzzle.palette))} </div>))
-                        }</th>))}
-                        </tr>
-                    </thead>
-                    <tbody>
-                    {
-                        puzzle.row_clues().iter().map(|row| html!(<tr><th class="row">{
-                            row.iter().map(|clue| html!(<span style=(clue.html_color(&puzzle.palette))>{text!("{} ", clue.html_text(&puzzle.palette))} </span>))
-                        }</th>
-                        {
-                            puzzle.col_clues().iter().map(|_| html!(<td></td>))
-                        }
-                        </tr>))
-                    }
-                    </tbody>
-                </table>
-            </body>
-        </html>
-    );
-
-    html.to_string()
 }
 
 pub fn as_image_bytes<P>(

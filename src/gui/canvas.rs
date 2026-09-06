@@ -58,17 +58,6 @@ impl ClueOverlay<'_> {
 }
 
 impl CanvasGui {
-    /// How far each lane's clues reach out from the grid, in abstract units.
-    fn clue_run_length(puzzle: &crate::puzzle::DynPuzzle, lane: usize) -> f32 {
-        let parts = crate::with_puzzle!(puzzle, |p| {
-            p.lines[lane]
-                .iter()
-                .map(|c| c.express(&p.palette).len())
-                .sum::<usize>()
-        });
-        crate::layout::GutterLane::clue_run_length(parts)
-    }
-
     /// Draw the picture and handle pointer input. Returns the hovered cell, if any.
     ///
     /// Shape-specific work happens in exactly two places: the hit test, and the render loop.
@@ -95,27 +84,15 @@ impl CanvasGui {
     ) -> (Option<u32>, Option<ClueId>) {
         let extent = self.document.solution_mut().extent();
 
-        // Grow the drawing area to cover wherever the clues reach.
-        let (mut lo, mut hi) = (
-            crate::layout::Point::new(0.0, 0.0),
-            crate::layout::Point::new(extent.x, extent.y),
-        );
-        if let Some(overlay) = &clues {
-            for (_, gutter) in self.document.solution_mut().gutters() {
-                for g in gutter {
-                    let len = Self::clue_run_length(overlay.puzzle, g.lane);
-                    let tip = crate::layout::Point::new(
-                        g.anchor.x + g.outward.x * len,
-                        g.anchor.y + g.outward.y * len,
-                    );
-                    let half = crate::layout::CLUE_BOX;
-                    lo.x = lo.x.min(tip.x - half);
-                    lo.y = lo.y.min(tip.y - half);
-                    hi.x = hi.x.max(tip.x + half);
-                    hi.y = hi.y.max(tip.y + half);
-                }
-            }
-        }
+        // Grow the drawing area to cover wherever the clues reach — the same bounds the HTML
+        // export sizes its drawing to.
+        let (lo, hi) = match &clues {
+            Some(overlay) => overlay.puzzle.drawing_bounds(),
+            None => (
+                crate::layout::Point::new(0.0, 0.0),
+                crate::layout::Point::new(extent.x, extent.y),
+            ),
+        };
         let full = Vec2::new(hi.x - lo.x, hi.y - lo.y);
 
         let (mut response, painter) = ui.allocate_painter(
