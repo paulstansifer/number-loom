@@ -309,15 +309,16 @@ impl NonogramGui {
                 }
                 *ui.style().interact(&button_response)
             } else {
-                // Grey out exactly the way `Ui::disable` does (`Visuals::gray_out`), and — to
-                // match plain `egui::Button`, whose outline only appears on hover — force no
-                // border at all rather than reusing `noninteractive`'s (which is meant for
-                // window/separator outlines and is always visible).
+                // Grey out exactly the way `Ui::disable` does (`Visuals::gray_out`) — outline
+                // included, since `main_ui` gives every button at rest one of those.
                 let base = ui.visuals().widgets.inactive;
                 egui::style::WidgetVisuals {
                     bg_fill: ui.visuals().gray_out(base.bg_fill),
                     weak_bg_fill: ui.visuals().gray_out(base.weak_bg_fill),
-                    bg_stroke: egui::Stroke::NONE,
+                    bg_stroke: egui::Stroke::new(
+                        base.bg_stroke.width,
+                        ui.visuals().gray_out(base.bg_stroke.color),
+                    ),
                     fg_stroke: egui::Stroke::new(
                         base.fg_stroke.width,
                         ui.visuals().gray_out(base.fg_stroke.color),
@@ -326,14 +327,18 @@ impl NonogramGui {
                     expansion: base.expansion,
                 }
             };
-            painter.add(egui::Shape::convex_polygon(
-                corners.to_vec(),
-                visuals.bg_fill,
-                // `bg_stroke`, not `fg_stroke`: egui only draws a button's outline when it's
-                // hovered or active (`inactive.bg_stroke` is `Stroke::NONE`), so using it here
-                // gets that same "no outline at rest" look for free.
-                visuals.bg_stroke,
-            ));
+            painter.add(egui::epaint::PathShape {
+                points: corners.to_vec(),
+                closed: true,
+                // `weak_bg_fill` and `bg_stroke` are the two `egui::Button` paints itself with
+                // (`bg_fill` is the checkbox's), so these track the rest of the buttons.
+                fill: visuals.weak_bg_fill,
+                // A `Stroke` becomes a `StrokeKind::Middle` `PathStroke`, which straddles the
+                // edge: half the line lands outside the fill, and on a pixel boundary it splits
+                // across two rows and comes out washed out next to a real button's crisp one.
+                // Buttons stroke `Inside`.
+                stroke: egui::epaint::PathStroke::from(visuals.bg_stroke).inside(),
+            });
 
             // Hand-drawn +/- (a rotated cross/dash), rather than rotated text: simpler and more
             // robust than centring a rotated glyph, and matches how `draw_analysis_mark` in

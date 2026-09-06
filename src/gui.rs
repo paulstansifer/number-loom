@@ -1,4 +1,5 @@
 mod annotate;
+mod auto_button;
 mod canvas;
 pub mod gallery;
 mod outline_text;
@@ -12,6 +13,7 @@ mod triano;
 mod triddler;
 
 pub use annotate::{AnnotateDrag, Annotation};
+pub use auto_button::{AutoButton, auto_button};
 pub use canvas::{ClueId, ClueOverlay, HoverBlocks};
 pub use palette::default_color;
 pub use selection::{Selection, cells_in_lasso};
@@ -712,7 +714,8 @@ impl NonogramGui {
             }
 
             ui.separator();
-            if ui.checkbox(&mut self.auto_solve, "auto-solve").changed() {
+            let solve = auto_button(ui, "Solve", &mut self.auto_solve);
+            if solve.auto.changed() {
                 let _ = UserSettings::set(consts::EDITOR_AUTO_SOLVE, &self.auto_solve.to_string());
                 if !self.auto_solve {
                     // The shading clears itself (it's only drawn while fresh), but the report is
@@ -721,7 +724,7 @@ impl NonogramGui {
                     self.solve_report_version = None;
                 }
             }
-            if (ui.button("Solve").clicked() || self.auto_solve)
+            if (solve.button.clicked() || self.auto_solve)
                 // Tracked separately from `solved_mask`'s own freshness: the backtracking solve
                 // writes there too (see `BacktrackSolver::widget`).
                 && self.solve_report_version != Some(self.editor_gui.version)
@@ -1014,8 +1017,15 @@ impl NonogramGui {
             interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
             ..egui::Spacing::default()
         };
+        // egui leaves a button outline-less until it's hovered, which makes a button hard to
+        // tell from a label until you go looking for it — and impossible to tell from a second
+        // button parked right behind it (see `gui/auto_button.rs`). Borrowing the separator
+        // stroke gives every widget at rest a quiet outline in whatever theme is in force.
+        let mut visuals = Visuals::light();
+        visuals.widgets.inactive.bg_stroke = visuals.widgets.noninteractive.bg_stroke;
+
         let style = Style {
-            visuals: Visuals::light(),
+            visuals,
             spacing,
 
             ..Style::default()

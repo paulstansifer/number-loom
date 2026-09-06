@@ -1,6 +1,6 @@
 use super::{
     Action, ActionMood, BacktrackSolver, CanvasGui, ClueId, Disambiguator, Staleable, Tool,
-    default_color, outline_text,
+    auto_button, default_color, outline_text,
 };
 use crate::{
     puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
@@ -315,7 +315,8 @@ impl SolveGui {
 
             ui.separator();
 
-            if ui.checkbox(&mut self.analyze_lines, "[auto]").changed() {
+            let analyze = auto_button(ui, "Analyze Lines", &mut self.analyze_lines);
+            if analyze.auto.changed() {
                 let _ = UserSettings::set(
                     consts::SOLVER_ANALYZE_LINES,
                     &self.analyze_lines.to_string(),
@@ -326,7 +327,7 @@ impl SolveGui {
                     self.line_analysis.update(None, u32::MAX);
                 }
             }
-            if ui.button("Analyze Lines").clicked() || self.analyze_lines {
+            if analyze.button.clicked() || self.analyze_lines {
                 let clues = &self.clues;
                 let picture = self.canvas.document.try_solution().unwrap();
                 let grid = picture.to_partial();
@@ -357,26 +358,27 @@ impl SolveGui {
 
             ui.separator();
 
-            if ui.checkbox(&mut self.detect_errors, "[auto]").changed() {
+            let detect = auto_button(ui, "Detect errors", &mut self.detect_errors);
+            if detect.auto.changed() {
                 let _ = UserSettings::set(
                     consts::SOLVER_DETECT_ERRORS,
                     &self.detect_errors.to_string(),
                 );
             }
-            if (ui.button("Detect errors").clicked() || self.detect_errors)
-                && self.detect_any_errors()
+            if (detect.button.clicked() || self.detect_errors) && self.detect_any_errors()
             {
                 ui.colored_label(egui::Color32::DARK_RED, "Error detected");
             }
             ui.separator();
 
-            if ui.checkbox(&mut self.infer_background, "[auto]").changed() {
+            let infer = auto_button(ui, "Infer background", &mut self.infer_background);
+            if infer.auto.changed() {
                 let _ = UserSettings::set(
                     consts::SOLVER_INFER_BACKGROUND,
                     &self.infer_background.to_string(),
                 );
             }
-            if (ui.button("Infer background").clicked() || self.infer_background)
+            if (infer.button.clicked() || self.infer_background)
                 && self.last_inferred_version != self.canvas.version
             {
                 self.infer_background();
