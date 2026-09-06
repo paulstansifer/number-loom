@@ -1,6 +1,6 @@
 # `number-loom`
 
-`number-loom` is a powerful tool for constructing puzzles variously known as "Nonograms", "Paint By Numbers", "Griddlers" (and **many** other names), plus a couple of related kinds of puzzles.
+`number-loom` is a powerful tool for constructing the puzzles variously known as "Nonograms", "Paint By Numbers", "Griddlers", "Picross" (and **many** other names), plus a couple of variants.
 
 You can also use it to test-solve your puzzles... or to solve puzzles for fun, if you like!
 
@@ -8,18 +8,18 @@ You can also use it to test-solve your puzzles... or to solve puzzles for fun, i
 
 *Spot a change that makes the puzzle totally solveable and still look good!*
 
-It's still pretty janky, but it's also the most powerful such tool I know of. In particular, it can offer suggestions for how to make an unsolveable puzzle more solveable!  You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
+Number Loom helps you explore how edits affect solveability. Not only can it automatically solve your puzzle after each edit, it can suggest edits for how to make an unsolveable puzzle solveable! You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
 
 ## Features
 
 * Supports the following file formats:
   * `webpbn`'s XML-based format (extension: `.xml` or `.pbn`)
   * The format used by the Olšák solver (extension: `.g`)
-  * Images (typical extension: `.png`)
+  * Images (typically `.png`, but many formats are supported.)
   * `char-grid`, a plaintext grid of characters, which it attempts to infer a reasonable character-to-color mapping (extension: `.txt`)
   * `.woven`, a format designed for Number Loom, mostly to facilitate transmitting puzzles as short(ish) text strings.
-  * HTML, for export only, as a printable puzzle (extension `.html`)
-* Supports various kinds of puzzles:
+  * HTML, an export-only noninteractive view of the puzzle
+* The following puzzles in the nonogram family are supported:
   * Regular nonograms
   * Trianograms, in which triangles may appear as "caps" for clues: black-and-white only.
   * Triddlers, in which cells are triangles on a hex grid, and clues appear on three axes
@@ -46,15 +46,30 @@ To convert a puzzle from the command line, do `number-loom examples/png/hair_dry
 
 ## Solver
 
-The `number-loom` solver is a line-logic solver only.
+In addition to requiring more steps or more attention, some nonograms require more advanced reasoning than others to solve. This sort of difficulty is tricky to usefully quantify, but there's one important distinction: "line logic" puzzles 
 
-Internally, it has two modes:
+
+### Line logic
+
+Line logic examines each line in isolation: if it can prove that a particular cell is or isn't a particular color, it "writes that down" and gets to use that fact in the future. This proceeds until it solves the puzzle or no more isolated line deductions can be made.
+
+The "solve" (and auto-solve mode), as well as the disambiguator operate using line logic only: line logic is inherently pretty fast.
+
+Internally, Number Loom's line logic solver has two modes:
   * "skim", which shoves all clues in a line as far as possible to one side and then the other, and checks to see if any of the clues (or gaps) overlap themselves between the two positions.
-  * "scrub", which determines all possible locations of each clue, and then observes what cells are fixed. This gets all information it is possible to get from a particular line.
+  * "scrub", which determines all possible locations of each clue, and then observes what cells are fixed. This gets all information it is possible to get from a particular line; it's more powerful, but slower than "skim".
 
-It stores progress by noting each possibly-remaining color in each cell. Even though a human solver typically only writes down all-the-way-known cells, in my experience this corresponds pretty well to the sort of ad-hoc logic that human solvers perform on color nonograms when they glance at the both lines that contain a cell.
+In color nonograms "this cell is **not** green" is a valid thing to write down. Even though a human solver typically only writes down all-the-way-known cells, in my experience this corresponds pretty well to the sort of ad-hoc logic that human solvers perform on color nonograms when they glance at the both lines that contain a cell.
 
 Looking at the number of scrubs and skims can tell you something about the difficulty of a puzzle. Unless you're aiming for an easy puzzle, the solver should have to do some scrubs. If the number of scrubs is higher than the width plus the length, or the number of skims is more than five times that, it's probably tedious relative to the size of the puzzle. This is a *very* rough guide: you should test-solve your puzzle to get an accurate view of the experience (click the "Puzzle" button!).
+
+### Backtracking 
+
+Adding the `--backtracking` argument in the CLI or pressing the "Solve (backtracking)" button in the GUI attempts to solve a puzzle that cannot be solved by line logic alone. The most common solving technique that people use that's outside the bounds of line logic is known as "edge logic".
+
+Nonogram solving is [NP-complete](https://en.wikipedia.org/wiki/NP-completeness): this means that it is possible to create not-too-huge puzzles that are nonetheless impractical to solve. Such puzzles are pretty rare, but be prepared to click "Stop" rather than waiting forever.
+
+Internally, Number Loom's backtracking solver works by alternatively making guesses and running the line-logic solver, keeping track of what guesses had what resulting grids; a guess that makes the puzzle impossible is a proof that the cell must be something else.
 
 ## GUI
 
@@ -74,21 +89,32 @@ When editing a nonogram, you can:
 
 #### Disambiguation
 
-This may take a little bit of time, but it's typically reasonably fast for puzzles under 50x50. Cells will get a small square with an alternate color, with an opacity proportional to the number of unsolved cells that are resolved if that single cell is changed to that color. (It only ever displays one color, but there might be others that work just as well!)
+This may take a little bit of time, but it's typically reasonably fast for puzzles under 50x50. Cells will get a small square with an alternate color, with an opacity proportional to the number of unsolved cells that are resolved if that single cell is changed to that color. (It only ever displays one color, but there might be others that work just as well! Also, please remember that "solveable" is defined using line logic only here.)
 
 It works by simply re-solving the puzzle with every possible one-square change, caching line configurations between solves. Typically, the more ambiguous the puzzle, the faster it is, so doing a guess-and-check with "auto-solve" turned on is sometimes a better way to hammer out small remaining ambiguities.
 
 ### Puzzle mode
 
-In puzzle mode, left-click paints the currently-selected color, right-click paints blank squares, and middle-click paints "unsolved" (undo/redo also work). There's also count of the current contiguous line (in each direction) in the "clue gutter", and a widget (a "rosette") that breaks it down by direction from the cursor. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
+In puzzle mode, left-click paints the currently-selected color, right-click paints blank squares, and middle-click paints "unsolved" (undo/redo also work). Mouse wheel cycles through the palette.
+
+Shift-drag draws an "annotation" on the puzzle, which measures the distance that you drag it. Annotations always appear on the right side of the cells you dragged them in, so overlapping drags in opposite directions should be readable:
+
+![Screenshot of annotations](annotation_example.png)
+
+Shift-click to delete annotations, or add a single-cell annotation.
+
+There's also count of the current contiguous line (in each direction) in the "clue gutter", and a widget (a "rosette") that breaks it down by direction from the cursor. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
 
 * Detection of errors
 * Inference of "obvious" background squares
 * Indicators on the clue gutter of lines that can be progressed (circle for "skim", diamond for "scrub")
+* Inference of which clues have been "finished"
 
 Note: indicators only appear if some cell can be shown to have a particular color (including the background color) with line logic. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solveable puzzle to at some point have no line-progress indicators!
 
-## Trianograms
+
+## Variants
+### Trianograms
 
 Trianograms are a rare variant. "Mindful Puzzle Books" publishes a book by that name. The Olšák solver also supports this variant, crediting the concept to "the journal Maľované krížovky, Silentium s.r.o, Bratislava", but I haven't been able to find out more. There are square-grid  puzzles with triangles at [griddlers.net](http://griddlers.net/), but I think they are merely traditional nonograms with triangular colors.
 
@@ -96,34 +122,10 @@ A trianogram has black, white, and four additional "colors": triangles that divi
 
 The Olšák solver, I believe, supports multi-color trianograms, but `number-loom` does not yet.
 
-Only the `olsak`, `woven` and `char-grid` formats can store trianograms (and `html` can export them, but not well).
+Only the `olsak`, `woven` and `char-grid` formats can store trianograms (and `.html` can export them)
 
 The "webpbn" format supports "triangular colors", but it does not support "clue cap" notion from trianograms; it's a purely cosmetic variation that `number-loom` doesn't support.
 
-## Triddlers
+### Triddlers
 
-Triddlers (named by analogy with "Griddler", one of the many names for ) are another variant in which the cells are triangles, arranged on a hexagonal grid, and there are *three* different axes of clues, rather than *two*. This provides more information, making triddlers, in a formal sense, easier to solve. However, counting out the triangular cells can be tricky, especially because each pair of lanes overlaps at *two* cells.
-
-## Usage with other solvers
-
-### `pbnsolve`
-
-You'll have to download and install `pbnsolve` [from a tarball] (and probably edit the `Makefile` to help it find `libxml2` -- under Ubuntu, you'll need to do `sudo apt install libxml2-dev`). Then (assuming it's on your `$PATH`):
-
-[`pbnsolve`]: https://webpbn.com/pbnsolve.html
-[from a tarball]: https://code.google.com/archive/p/pbnsolve/downloads
-
-```
-number-loom examples/png/stroller.png - --output-format webpbn | pbnsolve -tu
-```
-
-It gives some difficulty information. I believe that "Lines Processed" very roughly corresponds to `number-loom`'s measurement of skims and scrubs (summed together). `number-loom` should be equivalent to `pbnsolve`'s `-aE` mode, though `pbnsolve` can handle any solveable nonogram by doing a counterfactual tree search.
-
-### The Olšák solver
-The [Olšák solver] comes in a tarball and doesn't even have a makefile! (Just do `gcc grid.c -o grid` to build it.) It accepts a different input format. It does provide some difficulty information, but I haven't yet learned to understand it.
-
-[Olšák solver]:  http://www.olsak.net/grid.html
-
-```
-number-loom examples/png/stroller.png - --output-format olsak | grid -
-```
+Triddlers (named by analogy with "Griddler", one of the many names for this kind of puzzle) are another variant in which the cells are triangles, arranged on a hexagonal grid, and there are *three* different axes of clues, rather than *two*.
