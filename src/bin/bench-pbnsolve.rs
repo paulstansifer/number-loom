@@ -15,6 +15,10 @@
 //! to prove it unique: no `-u` for pbnsolve, `stop_at_first_solution` for ours. Comparing it
 //! against `--mode backtrack` says how much of a search is the hunt and how much the proof.
 //!
+//! `--mode conprop` swaps our side for `conprop_solve`, which searches one trail with a growing
+//! pile of nogoods instead of `backtrack_solve`'s tree of hypotheses. Both sides prove uniqueness,
+//! exactly as in `--mode backtrack`, so the two modes' rows are directly comparable.
+//!
 //! `--mode backtrack` benchmarks a smaller set than `--mode line` does: puzzles line logic
 //! finishes by itself never reach the backtracker's guessing, and the handful in `TOO_DIFFICULT`
 //! only ever spend `--loom-timeout` and report that they did. See `for_backtracking`.
@@ -28,6 +32,7 @@ use clap::Parser;
 use number_loom::formats::webpbn::as_webpbn;
 use number_loom::puzzle::{DynPuzzle, PuzzleDynOps};
 use number_loom::solve::bt_solve::{PickerMix, ScorerPair, backtrack_solve};
+use number_loom::solve::conprop::conprop_solve;
 use number_loom::solve::grid_solve::SolveOptions;
 use number_loom::{import, with_puzzle};
 
@@ -43,12 +48,35 @@ enum Mode {
     /// is an answer -- so the two modes' times aren't comparable puzzle-for-puzzle so much as in
     /// aggregate: what the proof half of the work costs.
     FirstSolution,
+    /// `Backtrack`, but ours is `conprop_solve` -- one trail and a pile of nogoods -- instead of
+    /// `backtrack_solve`'s tree of hypotheses. Both sides prove the solution unique, so the
+    /// numbers line up column-for-column with `Backtrack`'s.
+    Conprop,
+    /// `Conprop` without the uniqueness proof, the way `FirstSolution` is `Backtrack` without it:
+    /// no `-u` for pbnsolve, `stop_at_first_solution` for ours.
+    ConpropFirstSolution,
 }
 
 impl Mode {
-    /// Whether this mode runs the backtracking search at all (as opposed to line logic).
+    /// Whether this mode runs a search at all (as opposed to line logic).
     fn is_backtracking(self) -> bool {
-        matches!(self, Mode::Backtrack | Mode::FirstSolution)
+        !matches!(self, Mode::Line)
+    }
+
+    /// Whether our side is `conprop_solve` rather than `backtrack_solve`.
+    fn is_conprop(self) -> bool {
+        matches!(self, Mode::Conprop | Mode::ConpropFirstSolution)
+    }
+
+    /// Whether our side stops at the first complete grid instead of proving it the only one.
+    fn stops_early(self) -> bool {
+        matches!(self, Mode::FirstSolution | Mode::ConpropFirstSolution)
+    }
+
+    /// Whether both sides go on to prove the solution unique. `pbnsolve` needs `-u` to do that,
+    /// and it has to be asked for exactly when our side is doing the same work.
+    fn proves_unique(self) -> bool {
+        matches!(self, Mode::Backtrack | Mode::Conprop)
     }
 }
 
@@ -125,6 +153,11 @@ struct Args {
     /// once it has a grid instead of going on to prove it unique.
     #[arg(long, hide = true)]
     first_solution: bool,
+
+    /// Not for humans: what `--mode conprop` hands its child, so the child runs `conprop_solve`
+    /// rather than `backtrack_solve`.
+    #[arg(long, hide = true)]
+    conprop: bool,
 }
 
 impl Args {
@@ -132,14 +165,14 @@ impl Args {
         match (&self.pbn_algorithm, self.mode) {
             (Some(explicit), _) => Some(explicit.clone()),
             (None, Mode::Line) => Some("LE".to_string()),
-            (None, Mode::Backtrack | Mode::FirstSolution) => None,
+            (None, _) => None,
         }
     }
 
     fn reps(&self) -> u32 {
         self.reps.unwrap_or(match self.mode {
             Mode::Line => 5,
-            Mode::Backtrack | Mode::FirstSolution => 1,
+            _ => 1,
         })
     }
 }
@@ -468,10 +501,18 @@ fn solve_backtrack_child(
     picker: PickerMix,
     scorer: ScorerPair,
     first_solution: bool,
+    conprop: bool,
 ) -> anyhow::Result<()> {
     let mut document = import::load_path(&path.to_path_buf(), None)
         .with_context(|| format!("couldn't load {}", path.display()))?;
     let options = SolveOptions {
+        // The two solvers keep their own copies of the pickers while `bt_solve` is still around,
+        // so `--picker` reaches `conprop_solve` by way of the spelling they share. When `bt_*`
+        // goes, so does the round trip.
+        guess_picker_conprop: picker
+            .to_string()
+            .parse()
+            .expect("the two `PickerMix`es spell their rotations the same way"),
         guess_picker: picker,
         node_scorer: scorer,
         stop_at_first_solution: first_solution,
@@ -483,14 +524,18 @@ fn solve_backtrack_child(
         .build()?;
 
     let start = Instant::now();
-    let outcome = with_puzzle!(document.puzzle(), |p| {
-        rt.block_on(backtrack_solve(
-            p,
-            &options,
-            std::sync::mpsc::channel().0,
-            std::sync::mpsc::channel().1,
-        ))
-    });
+    let outcome = if conprop {
+        with_puzzle!(document.puzzle(), |p| conprop_solve(p, &options))
+    } else {
+        with_puzzle!(document.puzzle(), |p| {
+            rt.block_on(backtrack_solve(
+                p,
+                &options,
+                std::sync::mpsc::channel().0,
+                std::sync::mpsc::channel().1,
+            ))
+        })
+    };
     let seconds = start.elapsed().as_secs_f64();
 
     // `LOOM` prefixed so a stray line from anywhere else can't be mistaken for the report.
@@ -553,6 +598,7 @@ fn run_loom_backtrack(
     scorer: ScorerPair,
     timeout: u64,
     first_solution: bool,
+    conprop: bool,
 ) -> Result<LoomBt, PbnFailure> {
     let exe = std::env::current_exe().map_err(|e| PbnFailure::Crashed(e.to_string()))?;
 
@@ -570,6 +616,9 @@ fn run_loom_backtrack(
         .arg(puzzle);
     if first_solution {
         command.arg("--first-solution");
+    }
+    if conprop {
+        command.arg("--conprop");
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -795,6 +844,7 @@ fn main() -> anyhow::Result<()> {
             args.picker.clone().unwrap_or_default(),
             args.scorer.unwrap_or_default(),
             args.first_solution,
+            args.conprop,
         );
     }
 
@@ -844,7 +894,7 @@ fn main() -> anyhow::Result<()> {
 
     match args.mode {
         Mode::Line => print_line_table(&rows, args.verbose),
-        Mode::Backtrack | Mode::FirstSolution => print_backtrack_table(&rows),
+        _ => print_backtrack_table(&rows),
     }
 
     if let Some(csv_path) = &args.csv {
@@ -887,26 +937,11 @@ fn bench_one(
         algorithm,
         args.timeout,
         reps,
-        args.mode == Mode::Backtrack,
+        args.mode.proves_unique(),
     )
     .map_err(|failure| failure.label());
 
     match args.mode {
-        Mode::Backtrack | Mode::FirstSolution => Ok(Row::Backtrack {
-            name,
-            cells,
-            pbn,
-            // `path`, not `xml`: our own loader reads every format, and converting first would
-            // hand the backtracker a puzzle that had made a round trip through webpbn.
-            loom: run_loom_backtrack(
-                path,
-                &args.picker.clone().unwrap_or_default(),
-                args.scorer.unwrap_or_default(),
-                args.loom_timeout,
-                args.mode == Mode::FirstSolution,
-            )
-            .map_err(|f| f.label()),
-        }),
         Mode::Line => {
             let loom_start = Instant::now();
             let loom = run_number_loom(document.puzzle(), reps)?;
@@ -920,6 +955,22 @@ fn bench_one(
                 loom_wall,
             })
         }
+        _ => Ok(Row::Backtrack {
+            name,
+            cells,
+            pbn,
+            // `path`, not `xml`: our own loader reads every format, and converting first would
+            // hand the backtracker a puzzle that had made a round trip through webpbn.
+            loom: run_loom_backtrack(
+                path,
+                &args.picker.clone().unwrap_or_default(),
+                args.scorer.unwrap_or_default(),
+                args.loom_timeout,
+                args.mode.stops_early(),
+                args.mode.is_conprop(),
+            )
+            .map_err(|f| f.label()),
+        }),
     }
 }
 

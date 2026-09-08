@@ -12,6 +12,7 @@
   * Proposal: use "gutter" for the space between clues and the puzzle (where annotations go), "header"s for where the clues actually live, and "header padding" for the space between two clue lanes"
 * Break all formats into their own files
 * Support other formats
+* We don't need `verify_lines` to check everything; just look at invalidated lines.
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)

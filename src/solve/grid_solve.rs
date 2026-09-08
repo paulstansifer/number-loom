@@ -28,6 +28,7 @@ pub struct SolveOptions {
     /// How `bt_solve` decides where to guess, and in what rotation. Ignored by line logic,
     /// which never guesses.
     pub guess_picker: crate::solve::bt_solve::PickerMix,
+    pub guess_picker_conprop: crate::solve::conprop_picking::PickerMix,
     /// How `bt_solve` orders its queue of hypotheses. Ignored by line logic, which has no queue.
     pub node_scorer: crate::solve::bt_solve::ScorerPair,
     /// Stop as soon as any complete grid turns up, instead of going on to prove it is the only
@@ -46,6 +47,7 @@ impl Default for SolveOptions {
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
             guess_picker: crate::solve::bt_solve::PickerMix::default(),
+            guess_picker_conprop: crate::solve::conprop_picking::PickerMix::default(),
             node_scorer: crate::solve::bt_solve::ScorerPair::default(),
             stop_at_first_solution: false,
         }
@@ -134,11 +136,14 @@ impl<'a, C: Clue> LaneState<'a, C> {
         }
     }
 
-    /// Knowledge only ever grows — a cell's set of possible colors only shrinks — so `unknown`
-    /// can only ever move one way, and a change that doesn't cross that line costs nothing.
+    /// Fold a single cell's change into `unknown_cells`. Solving only ever shrinks a cell's set
+    /// of possible colors, but `SolveState::unwind` puts one back, so this has to move both ways;
+    /// a change that doesn't cross the known/unknown line costs nothing either way.
     fn note_change(&mut self, was: Cell, now: Cell) {
-        if !was.is_known() && now.is_known() {
-            self.unknown_cells -= 1;
+        match (was.is_known(), now.is_known()) {
+            (false, true) => self.unknown_cells -= 1,
+            (true, false) => self.unknown_cells += 1,
+            _ => (),
         }
     }
 }
@@ -546,8 +551,30 @@ impl<'p, C: Clue> SolveState<'p, C> {
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
     ) -> anyhow::Result<Step> {
+        self.run_inner(ctx, None)
+    }
+
+    /// `run`, appending the cells overwritten with more specific information to `trail`.
+    ///
+    /// The trail is complete even when this returns an error, which is the case that matters:
+    /// nothing reaches the grid until a line solver has finished with its private copy of a lane,
+    /// so the step that found the contradiction moved nothing, and unwinding what came before it
+    /// lands exactly where the run started.
+    pub fn run_recording<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        trail: &mut Vec<(usize, Cell)>,
+    ) -> anyhow::Result<Step> {
+        self.run_inner(ctx, Some(trail))
+    }
+
+    fn run_inner<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        mut trail: Option<&mut Vec<(usize, Cell)>>,
+    ) -> anyhow::Result<Step> {
         loop {
-            match self.step(ctx)? {
+            match self.step_inner(ctx, trail.as_deref_mut())? {
                 Step::Attempted => (),
                 done => return Ok(done),
             }
@@ -561,11 +588,21 @@ impl<'p, C: Clue> SolveState<'p, C> {
         ctx: &mut SolveContext<'p, '_, C, K>,
     ) -> anyhow::Result<Step> {
         let res = self.run(ctx)?;
-        if res == Step::Solved {
-            verify_lines(ctx.puzzle, &self.grid)?
-            // TODO: could we safely use the invalidation bits to make this faster?
-        }
+        // TODO: we can do this faster by only checking invalidated lines!
+        verify_lines(ctx.puzzle, &self.grid)?;
 
+        Ok(res)
+    }
+
+    /// like `run_recording`, but also check for contradictions
+    pub fn run_and_check_recording<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        trail: &mut Vec<(usize, Cell)>,
+    ) -> anyhow::Result<Step> {
+        let res = self.run_recording(ctx, trail)?;
+        // TODO: we can do this faster by only checking invalidated lines!
+        verify_lines(ctx.puzzle, &self.grid)?;
         Ok(res)
     }
 
@@ -596,6 +633,23 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn step<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
+    ) -> anyhow::Result<Step> {
+        self.step_inner(ctx, None)
+    }
+
+    /// `step`, recording what it takes to undo the cells it moves. See `run_recording`.
+    pub fn step_recording<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        trail: &mut Vec<(usize, Cell)>,
+    ) -> anyhow::Result<Step> {
+        self.step_inner(ctx, Some(trail))
+    }
+
+    fn step_inner<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        trail: Option<&mut Vec<(usize, Cell)>>,
     ) -> anyhow::Result<Step> {
         let puzzle = ctx.puzzle;
         let options = ctx.options;
@@ -680,10 +734,16 @@ impl<'p, C: Clue> SolveState<'p, C> {
         }
         self.cells_left -= newly_known;
 
+        let Scratch { changes, .. } = &mut ctx.scratch;
+
+        // We need what it *used* to be:
+        if let Some(trail) = trail {
+            trail.extend(changes.iter().map(|&(cell, was)| (cell as usize, was)));
+        }
+
         // Fold the changes into every lane that holds one, so that nothing below — the trace, a
         // caller that stops here because the puzzle is finished, a fork of this state — sees
         // stale queues.
-        let Scratch { changes, .. } = &mut ctx.scratch;
         self.invalidate(changes, Some(solved_lane), lane_map);
 
         if options.trace_solve {
@@ -714,6 +774,20 @@ impl<'p, C: Clue> SolveState<'p, C> {
         }
 
         Ok(Step::Attempted)
+    }
+
+    /// TODO: call this `learn` and the other one `try_learn`
+    pub fn learn_new<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        cell: usize,
+        is: bool,
+        color: Color,
+    ) {
+        let new = self
+            .learn(ctx, cell, is, color)
+            .expect("learned contradiction");
+        assert!(new)
     }
 
     /// Assume `cell` is `color` and mark everything that assumption bears on, so that a `step`
@@ -752,6 +826,48 @@ impl<'p, C: Clue> SolveState<'p, C> {
         Ok(new_info)
     }
 
+    /// Rewind a slice of the trail.
+    ///
+    /// This will always produce a stalled state (no invalidated lanes) ... but it doesn't make
+    /// sense to guess if we're not stalled.
+    pub fn unwind<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        trail: &[(usize, Cell)],
+    ) {
+        let lane_map = ctx.lane_map();
+
+        for &(cell, old_value) in trail.iter().rev() {
+            let narrowed = self.grid[cell];
+            // Undo only ever widens: whatever the cell says now must be among what it used to.
+            debug_assert_eq!(
+                narrowed.raw() & old_value.raw(),
+                narrowed.raw(),
+                "unwinding cell {cell} to a value that isn't a superset of what it holds"
+            );
+            if narrowed == old_value {
+                continue; // No-ops are okay
+            }
+            self.grid[cell] = old_value;
+
+            if narrowed.is_known() && !old_value.is_known() {
+                self.cells_left += 1;
+            }
+            for membership in lane_map.memberships(cell as u32) {
+                self.lanes[membership.lane as usize].note_change(narrowed, old_value);
+            }
+        }
+
+        // Report everything is stalled (per above, it ought to be!)
+        for mode in SolveMode::all() {
+            self.queues[*mode].clear();
+        }
+        for lane in &mut self.lanes {
+            lane.queued = ModeMap::new_uniform(false);
+            debug_assert_unknown_cells_agree(lane, lane_map, &self.grid);
+        }
+    }
+
     /// React to a batch of changed cells: fold each one into `unknown_cells` for every lane
     /// holding it, and — for each mode that lane isn't already waiting in — send it to the back
     /// of `queues[mode]` so `choose_lane` gets to it again eventually. `changes` pairs each cell
@@ -761,11 +877,6 @@ impl<'p, C: Clue> SolveState<'p, C> {
     /// `just_solved`, if given, is the lane the caller has just run a line solver over. It never
     /// gets re-queued here: it was already popped off its own mode's queue to run, and re-queuing
     /// it immediately would just hand it straight back next.
-    ///
-    /// We ask the geometry which lanes hold each cell rather than using the old "column `i` meets
-    /// row `j` at position `i`" shortcut: on a square grid the two agree, but that shortcut
-    /// doesn't survive a third axis, where lanes can meet at a position unrelated to their index
-    /// and two lanes can share more than one cell.
     fn invalidate(
         &mut self,
         changes: &[(u32, Cell)],
@@ -1220,6 +1331,154 @@ mod tests {
             .collect();
 
         assert_eq!(solve_triangular(outline, &filled), 0);
+    }
+
+    /// Guess, let line logic run with it, then rewind the trail and check that the state is
+    /// indistinguishable from the one we guessed in. `unknown_cells` is checked for us: every
+    /// `invalidate` debug-asserts it against a full walk of the lane.
+    #[test]
+    fn unwind_restores_the_state_a_guess_started_from() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+
+        let clue = |n| {
+            vec![Nono {
+                color: Color(1),
+                count: n,
+            }]
+        };
+        // Two cells filled on one diagonal or the other: line logic stalls, a guess settles it.
+        let puzzle = Puzzle::square(palette, vec![clue(1), clue(1)], vec![clue(1), clue(1)]);
+
+        let options = SolveOptions::default();
+        let mut line_cache = None;
+        let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
+        let mut state = SolveState::new(
+            &mut ctx,
+            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()],
+        );
+        assert_eq!(state.run(&mut ctx).unwrap(), Step::Stalled);
+
+        let stalled_grid = state.grid.clone();
+        let stalled_cells_left = state.cells_left;
+
+        // The guess goes on the trail by hand — `learn` is the caller's own move, so record what
+        // the cell held *before* making it — and `run_recording` appends the consequences.
+        let mut trail: Vec<(usize, Cell)> = vec![(0, state.grid[0])];
+        state.learn(&mut ctx, 0, true, Color(1)).unwrap();
+        assert_eq!(
+            state.run_recording(&mut ctx, &mut trail).unwrap(),
+            Step::Solved
+        );
+        assert_ne!(state.grid, stalled_grid);
+
+        let attempts_before_rewind: usize = SolveMode::all()
+            .iter()
+            .map(|m| state.solve_counts[*m])
+            .sum();
+        state.unwind(&mut ctx, &trail);
+
+        assert_eq!(state.grid, stalled_grid);
+        assert_eq!(state.cells_left, stalled_cells_left);
+
+        // Still stalled, and stalled for free: the grid is one line logic had already run itself
+        // out on, so `run` must report that without attempting a single lane.
+        assert_eq!(state.run(&mut ctx).unwrap(), Step::Stalled);
+        let attempts_after_rewind: usize = SolveMode::all()
+            .iter()
+            .map(|m| state.solve_counts[*m])
+            .sum();
+        assert_eq!(
+            attempts_after_rewind, attempts_before_rewind,
+            "a rewound stall re-attempted lanes it had already exhausted"
+        );
+
+        // Quiesced, but not frozen: a new fact still wakes the lanes that hold it.
+        state.learn(&mut ctx, 0, false, Color(1)).unwrap();
+        assert_eq!(state.run(&mut ctx).unwrap(), Step::Solved);
+    }
+
+    /// The case a search actually runs into: a guess that line logic proves wrong. The trail has
+    /// to be complete even though the run ended in an error, or there is no way back.
+    #[test]
+    fn unwind_backs_out_a_guess_that_turned_out_to_be_a_contradiction() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+
+        // Five cells, one run of three: skim pins the middle cell and then has nothing left.
+        let puzzle = Puzzle::single_lane(
+            palette.clone(),
+            5,
+            vec![Nono {
+                color: Color(1),
+                count: 3,
+            }],
+        );
+
+        let options = SolveOptions::default();
+        let mut line_cache = None;
+        let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
+        let mut state = SolveState::new(&mut ctx, vec![Cell::new(&puzzle.palette); 5]);
+        assert_eq!(state.run(&mut ctx).unwrap(), Step::Stalled);
+
+        let stalled_grid = state.grid.clone();
+        let stalled_cells_left = state.cells_left;
+
+        // Filling both ends needs a run of five, so this can't be completed.
+        let mut trail: Vec<(usize, Cell)> = vec![(0, state.grid[0])];
+        state.learn(&mut ctx, 0, true, Color(1)).unwrap();
+        trail.push((4, state.grid[4]));
+        state.learn(&mut ctx, 4, true, Color(1)).unwrap();
+
+        assert!(
+            state.run_recording(&mut ctx, &mut trail).is_err(),
+            "line logic should have caught this"
+        );
+
+        state.unwind(&mut ctx, &trail);
+        assert_eq!(state.grid, stalled_grid);
+        assert_eq!(state.cells_left, stalled_cells_left);
+        assert_eq!(state.run(&mut ctx).unwrap(), Step::Stalled);
+    }
+
+    /// A trail records every narrowing, so it can name one cell several times. Only the earliest
+    /// entry says what the cell goes back to, and `cells_left` and `unknown_cells` have to move
+    /// exactly once however many entries it took to get there — the `invalidate` debug-assert is
+    /// what checks the latter.
+    #[test]
+    fn unwind_widens_a_cell_narrowed_in_several_steps() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+        palette.insert(Color(2), ColorInfo::default_fg(Color(2)));
+
+        // No clues to satisfy, so nothing narrows the cells except what the test learns.
+        let puzzle: Puzzle<Nono, crate::geometry::Square> =
+            Puzzle::single_lane(palette.clone(), 4, vec![]);
+
+        let options = SolveOptions::default();
+        let mut line_cache = None;
+        let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
+        let mut state = SolveState::new(&mut ctx, vec![Cell::new(&puzzle.palette); 4]);
+
+        let wide = state.grid[2];
+        assert_eq!(state.cells_left, 4);
+
+        // Narrow one cell in two steps, recording the trail the way a solver would.
+        let mut trail = vec![(2, state.grid[2])];
+        state.learn(&mut ctx, 2, false, Color(2)).unwrap();
+        assert!(!state.grid[2].is_known()); // still {BACKGROUND, 1}
+        trail.push((2, state.grid[2]));
+        state.learn(&mut ctx, 2, true, Color(1)).unwrap();
+        assert!(state.grid[2].is_known_to_be(Color(1)));
+        assert_eq!(state.cells_left, 3);
+
+        state.unwind(&mut ctx, &trail);
+
+        assert_eq!(state.grid[2], wide);
+        assert_eq!(state.cells_left, 4);
     }
 
     #[test]

@@ -64,6 +64,9 @@ pointed at exactly the same puzzles. Build `pbnsolve` from source, then:
 cargo run --release --features bench-pbnsolve --bin bench-pbnsolve -- --pbnsolve /path/to/pbnsolve
 ```
 
+`--mode conprop` runs `solve/conprop.rs` -- one trail plus learned nogoods -- in place of the
+backtracker, against the same pbnsolve baseline, so its rows line up with `--mode backtrack`'s.
+
 `--mode backtrack` adds two knobs for the search itself: `--picker` (where to guess within a
 node; see `solve/bt_picking.rs`) and `--scorer` (which node to work on next; see
 `solve/bt_scoring.rs`). Both default to what `SolveOptions` ships, so leaving them off measures
