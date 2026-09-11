@@ -89,9 +89,8 @@ struct ConpropState<'p, C: Clue> {
     guesses_made: usize,
     // TODO: feed this to the picker, so it only picks things that contradict this
     solution_found: Option<PartialSolution>, // never actually "Partial", of course.
-    /// What the puzzle pins down on its own, and how many cells that leaves unknown — taken at
-    /// the root the moment `solution_found` was set, and never touched again. Set exactly when
-    /// `solution_found` is; this is what an ambiguous puzzle gets reported as.
+    /// Everything we know at the root (without assumptions) when a first solution is found.
+    /// (The search for a second solution requires assuming the first one is wrong).
     root_knowledge: Option<(PartialSolution, usize)>,
 }
 
@@ -228,9 +227,8 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         let mut run_res = state.propagate(linear_ctx);
         while run_res.is_err() {
             if state.guesses_in_trail.is_empty() {
-                // Nothing hypothetical is left to blame it on: the nogoods have made the root
-                // itself contradictory, so there is nothing further out there to find. (This is
-                // also what keeps `make_nogood` from ever being asked for an empty nogood.)
+                // We would create an empty nogood (which isn't supported),
+                // indicating an unsolveable puzzle.
                 return Some(state.no_guesses_left(puzzle));
             }
             let (nogood, backjump_guess_idx) = state.make_nogood(puzzle, linear_ctx);
@@ -247,10 +245,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
                     "TODO: I thought we couldn't reach the same solution multiple times"
                 );
 
-                // Puzzle has multiple valid solutions. Report what holds unconditionally, from
-                // before the first solution's nogood started ruling real grids out. Rewinding to
-                // the root *now* wouldn't do: the grid down there has that nogood's consequences
-                // baked into it, and this very branch is the proof that they aren't the puzzle's.
+                // Multiple valid solutions: report our snapshot of the cells we proved.
                 let (grid, cells_left) = state
                     .root_knowledge
                     .as_ref()
@@ -266,9 +261,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             state.solution_found = Some(state.ll_state.grid.clone());
 
             if linear_ctx.options.stop_at_first_solution {
-                // Only ever asked for *a* solution, so stop before spending the rest of the
-                // search proving there isn't a second one. `cells_left` of 0 means "a complete
-                // grid" here rather than "the only grid" -- nothing went looking for another.
+                // `cells_left` is a bit of a lie, since we don't know the solution is unique
                 return Some(Report::from_grid(
                     puzzle,
                     &state.ll_state.grid,
@@ -293,13 +286,9 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             let first_solution_is_nogood = state.solution_nogood();
             state.add_nogood(first_solution_is_nogood);
 
-            // Then unwind every guess and look at what's left. That grid is what line logic and
-            // the conflict nogoods settled with nothing assumed — exactly what the puzzle pins
-            // down by itself — and it's the last honest look we get at it: from here on the
-            // nogood above is in play, and it rules out a grid that really does fit the clues, so
-            // anything downstream of it is only true of solutions *other* than this one.
-            // Registering a nogood doesn't move any cells, so the picture is still clean.
+            // Now go back and try again!
             state.backjump(0, linear_ctx);
+            // Record what we know without any assumptions (and before using the fake nogood)
             state.root_knowledge = Some((state.ll_state.grid.clone(), state.ll_state.cells_left));
 
             return state.propagate_and_learn(puzzle, linear_ctx);
