@@ -21,7 +21,7 @@ readme = "README.md"
 repository = "https://github.com/paulstansifer/number-loom"
 default-run = "number-loom"
 
-# A purely 
+# (See the [[bin]] section)
 [features]
 bench-pbnsolve = []
 
