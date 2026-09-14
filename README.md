@@ -8,7 +8,7 @@ You can also use it to test-solve your puzzles... or to solve puzzles for fun, i
 
 *Spot a change that makes the puzzle totally solvable and still look good!*
 
-Number Loom helps you explore how edits affect solvability. Not only can it automatically solve your puzzle after each edit, it can suggest edits for how to make an unsolvable puzzle solvable! You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
+Number Loom helps you explore how edits affect solvability. It can automatically tell you if the puzzle is line-solvable, and even suggste edits that make it more solvable! You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
 
 ## Features
 
@@ -46,8 +46,7 @@ To convert a puzzle from the command line, do `number-loom examples/png/hair_dry
 
 ## Solver
 
-In addition to requiring more steps or more attention, some nonograms require more advanced reasoning than others to solve. This sort of difficulty is tricky to usefully quantify, but there's one important distinction: "line logic" puzzles 
-
+In addition to requiring more steps or more attention, some nonograms require more advanced reasoning than others to solve. This sort of difficulty is tricky to usefully quantify, but there's one important distinction: "line logic" puzzles rely on what can be proven one line at a time; more difficult puzzles require "backtracking" reasoning.
 
 ### Line logic
 
