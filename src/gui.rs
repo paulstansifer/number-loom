@@ -741,15 +741,18 @@ impl NonogramGui {
                         // Unsolved cells first: that's the number that says whether the puzzle
                         // works. The skim/scrub counts are solver diagnostics.
                         format!("unsolved cells: {cells_left}\n{solve_counts}"),
-                        solved_mask,
+                        Some(solved_mask),
                     ),
-                    Err(e) => (format!("Error: {:?}", e), vec![]),
+                    // Can't happen, because the puzzle has a solution!
+                    Err(e) => (format!("Error: {:?}", e), None),
                 };
                 self.solve_report = report.clone();
                 self.solve_report_version = Some(self.editor_gui.version);
-                self.editor_gui
-                    .solved_mask
-                    .update((report, mask), self.editor_gui.version);
+                if let Some(mask) = mask {
+                    self.editor_gui
+                        .solved_mask
+                        .update((report, mask), self.editor_gui.version);
+                }
             }
 
             ui.colored_label(
@@ -1282,7 +1285,7 @@ pub struct BacktrackSolver {
     /// The formatted report, alongside the mask `canvas.rs` shades unsolved cells with — the same
     /// shape `editor_gui.solved_mask` already holds for the line-logic `Solve` button, so the two
     /// buttons can share it.
-    report_r: mpsc::Receiver<(String, Vec<bool>)>,
+    report_r: mpsc::Receiver<(String, Option<Vec<bool>>)>,
 }
 
 impl Default for BacktrackSolver {
@@ -1318,7 +1321,9 @@ impl BacktrackSolver {
         if let Ok((report, mask)) = self.report_r.try_recv() {
             // Shared with the line-logic `Solve` button: whichever one ran last is the one
             // shading the canvas, with no indication of which of the two it was.
-            solved_mask.update((report.clone(), mask), version);
+            if let Some(mask) = mask {
+                solved_mask.update((report.clone(), mask), version);
+            }
             self.report = Some(report);
         }
 
@@ -1352,9 +1357,9 @@ impl BacktrackSolver {
                             "unsolved cells (upper bound): {}\n{}",
                             report.cells_left, report.solve_counts
                         ),
-                        report.solved_mask,
+                        Some(report.solved_mask),
                     ),
-                    Err(e) => (format!("Error: {:?}", e), vec![]),
+                    Err(e) => (format!("{:?}", e), None),
                 };
                 let _ = r_s.send((report, mask));
             });
