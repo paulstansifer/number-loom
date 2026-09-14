@@ -335,10 +335,8 @@ impl SolveGui {
                     .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }
 
-            if ui
-                .checkbox(&mut self.mark_fixed_clues, "Mark resolved clues")
-                .changed()
-            {
+            let mark = auto_button(ui, "Mark resolved clues", &mut self.mark_fixed_clues);
+            if mark.auto.changed() {
                 let _ = UserSettings::set(
                     consts::SOLVER_MARK_FIXED_CLUES,
                     &self.mark_fixed_clues.to_string(),
@@ -348,15 +346,13 @@ impl SolveGui {
                     self.fixed_clues.update(None, u32::MAX);
                 }
             }
-            if self.mark_fixed_clues {
+            if mark.button.clicked() || self.mark_fixed_clues {
                 let clues = &self.clues;
                 let picture = self.canvas.document.try_solution().unwrap();
                 let grid = picture.to_partial();
                 self.fixed_clues
                     .get_or_refresh(self.canvas.version, || Some(clues.fixed_clues(&grid)));
             }
-
-            ui.separator();
 
             let detect = auto_button(ui, "Detect errors", &mut self.detect_errors);
             if detect.auto.changed() {
@@ -365,11 +361,9 @@ impl SolveGui {
                     &self.detect_errors.to_string(),
                 );
             }
-            if (detect.button.clicked() || self.detect_errors) && self.detect_any_errors()
-            {
+            if (detect.button.clicked() || self.detect_errors) && self.detect_any_errors() {
                 ui.colored_label(egui::Color32::DARK_RED, "Error detected");
             }
-            ui.separator();
 
             let infer = auto_button(ui, "Infer background", &mut self.infer_background);
             if infer.auto.changed() {
