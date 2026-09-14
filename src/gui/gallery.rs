@@ -47,9 +47,9 @@ pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Respon
         (Some(s), _) => match (s.shape(), s.clue_style()) {
             (crate::geometry::Shape::Triangular(_), _) => "triddler",
             (_, crate::puzzle::ClueStyle::Nono) => "nonogram",
-            (_, crate::puzzle::ClueStyle::Triano) => "triangogram",
+            (_, crate::puzzle::ClueStyle::Triano) => "trianogram",
         },
-        (_, Some(crate::puzzle::DynPuzzle::SquareTriano(_))) => "triangogram",
+        (_, Some(crate::puzzle::DynPuzzle::SquareTriano(_))) => "trianogram",
         (_, Some(crate::puzzle::DynPuzzle::TriNono(_))) => "triddler",
         _ => "nonogram",
     };

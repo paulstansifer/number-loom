@@ -12,7 +12,7 @@ required-features = ["bench-pbnsolve"]
 [package]
 name = "number-loom"
 description = "Multipurpose GUI and CLI tool for constructing nonograms"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["Paul Stansifer <paul.stansifer@gmail.com>"]
 edition = "2024"
 license = "MIT"

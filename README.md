@@ -8,7 +8,7 @@ You can also use it to test-solve your puzzles... or to solve puzzles for fun, i
 
 *Spot a change that makes the puzzle totally solvable and still look good!*
 
-Number Loom helps you explore how edits affect solvability. It can automatically tell you if the puzzle is line-solvable, and even suggste edits that make it more solvable! You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
+Number Loom helps you explore how edits affect solvability. It can automatically tell you if the puzzle is line-solvable, and even suggests edits that make it more solvable! You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
 
 ## Features
 
@@ -64,7 +64,7 @@ Looking at the number of scrubs and skims can tell you something about the diffi
 
 ### Backtracking 
 
-Adding the `--backtracking` argument in the CLI or pressing the "Solve (backtracking)" button in the GUI attempts to solve a puzzle that cannot be solved by line logic alone. The most common solving technique that people use that's outside the bounds of line logic is known as "edge logic".
+Adding the `--backtrack` argument in the CLI or pressing the "Solve (backtracking)" button in the GUI attempts to solve a puzzle that cannot be solved by line logic alone. The most common solving technique that people use that's outside the bounds of line logic is known as "edge logic".
 
 Nonogram solving is [NP-complete](https://en.wikipedia.org/wiki/NP-completeness): this means that it is possible to create not-too-huge puzzles that are nonetheless impractical to solve. Such puzzles are pretty rare, but be prepared to click "Stop" rather than waiting forever.
 

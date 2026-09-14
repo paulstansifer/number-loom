@@ -1067,7 +1067,8 @@ pub enum NonogramFormat {
     /// The format used by the 'olsak' solver.
     Olsak,
     /// Informal text format: a grid of characters. Attempts some sensible matching of characters
-    /// to colors, but results will vary. This is the only format that supports Triano puzzles.
+    /// to colors, but results will vary. For some reason, this supports trianograms and triddlers,
+    /// but good luck writing them from scratch!
     CharGrid,
     /// Number Loom's format, mostly aimed at making copy-and-paste easier.
     Woven,
