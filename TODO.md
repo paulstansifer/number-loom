@@ -29,6 +29,7 @@
     * Need to experiment to see if this is good: \[mono-\]skim, only painting the largest unsolved clue (and spaces adjacent to solved clues, if relevant)
     * Given a skim, what clue sizes may fit in each gap?
     * Given a skim, what clue sizes may a particular foreground spot be?
+* Allow backtracking disambiguation (with a very small time budget for each solve)
 * Bottleneck difficulty measurement during solve
 * Inverted "disambiguate" to increase difficulty
 * PWA + touch input with cursor
