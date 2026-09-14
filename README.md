@@ -6,9 +6,9 @@ You can also use it to test-solve your puzzles... or to solve puzzles for fun, i
 
 ![Screenshot of a GUI editor](screenshot.png)
 
-*Spot a change that makes the puzzle totally solveable and still look good!*
+*Spot a change that makes the puzzle totally solvable and still look good!*
 
-Number Loom helps you explore how edits affect solveability. Not only can it automatically solve your puzzle after each edit, it can suggest edits for how to make an unsolveable puzzle solveable! You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
+Number Loom helps you explore how edits affect solvability. Not only can it automatically solve your puzzle after each edit, it can suggest edits for how to make an unsolvable puzzle solvable! You can use it [in your browser](https://paul-stansifer.itch.io/number-loom), or install it on your own machine (see below).
 
 ## Features
 
@@ -24,7 +24,7 @@ Number Loom helps you explore how edits affect solveability. Not only can it aut
   * Trianograms, in which triangles may appear as "caps" for clues: black-and-white only.
   * Triddlers, in which cells are triangles on a hex grid, and clues appear on three axes
 * An exhaustive line-logic solver that provides some difficulty information.
-* "Disambiguator": a tool that searches for one-cell edits that make puzzles closer to solveable.
+* "Disambiguator": a tool that searches for one-cell edits that make puzzles closer to solvable.
 * A mode for test-solving, with a variety of toggleable assistance features:
   * Immediate error reporting
   * Limited background square inference
@@ -89,7 +89,7 @@ When editing a nonogram, you can:
 
 #### Disambiguation
 
-This may take a little bit of time, but it's typically reasonably fast for puzzles under 50x50. Cells will get a small square with an alternate color, with an opacity proportional to the number of unsolved cells that are resolved if that single cell is changed to that color. (It only ever displays one color, but there might be others that work just as well! Also, please remember that "solveable" is defined using line logic only here.)
+This may take a little bit of time, but it's typically reasonably fast for puzzles under 50x50. Cells will get a small square with an alternate color, with an opacity proportional to the number of unsolved cells that are resolved if that single cell is changed to that color. (It only ever displays one color, but there might be others that work just as well! Also, please remember that "solvable" is defined using line logic only here.)
 
 It works by simply re-solving the puzzle with every possible one-square change, caching line configurations between solves. Typically, the more ambiguous the puzzle, the faster it is, so doing a guess-and-check with "auto-solve" turned on is sometimes a better way to hammer out small remaining ambiguities.
 
@@ -110,13 +110,12 @@ There's also count of the current contiguous line (in each direction) in the "cl
 * Indicators on the clue gutter of lines that can be progressed (circle for "skim", diamond for "scrub")
 * Inference of which clues have been "finished"
 
-Note: indicators only appear if some cell can be shown to have a particular color (including the background color) with line logic. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solveable puzzle to at some point have no line-progress indicators!
-
+Note: indicators only appear if some cell can be shown to have a particular color (including the background color) with line logic. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solvable puzzle to at some point have no line-progress indicators!
 
 ## Variants
 ### Trianograms
 
-Trianograms are a rare variant. "Mindful Puzzle Books" publishes a book by that name. The Olšák solver also supports this variant, crediting the concept to "the journal Maľované krížovky, Silentium s.r.o, Bratislava", but I haven't been able to find out more. There are square-grid  puzzles with triangles at [griddlers.net](http://griddlers.net/), but I think they are merely traditional nonograms with triangular colors.
+Trianograms are a rare variant. "Mindful Puzzle Books" publishes a book by that name. The Olšák solver also supports this variant, crediting the concept to "the journal Maľované krížovky, Silentium s.r.o, Bratislava", but I haven't been able to find out more. There are square-grid puzzles with triangles at [griddlers.net](http://griddlers.net/), but I think they are merely traditional nonograms with triangular colors.
 
 A trianogram has black, white, and four additional "colors": triangles that divide the cell into half-black and half-white. The triangles always serve as "caps" to a clue; for example "◢2◤" denotes that the four cells "◢■■◤" will appear. They will be consecutive, despite the fact that the caps are different "colors". Two consecutive clues will only be guaranteed to be separated by a space if neither of them is capped on the facing sides (if there are multiple identical consecutive triangles, they will each get their own clue).
 
@@ -128,4 +127,10 @@ The "webpbn" format supports "triangular colors", but it does not support "clue 
 
 ### Triddlers
 
-Triddlers (named by analogy with "Griddler", one of the many names for this kind of puzzle) are another variant in which the cells are triangles, arranged on a hexagonal grid, and there are *three* different axes of clues, rather than *two*.
+Triddlers (named by analogy with "Griddler", one of the many names for this kind of puzzle) are another variant in which the cells are equilateral triangles, arranged on a hexagonal grid, and there are *three* different axes of clues, rather than *two*.
+
+## Development
+
+`number-loom` originated as a tool called `convert-nonogram`, which could convert images into the WebPBN and Olšák formats. I would create a puzzle in an bitmap image editor and use it to quickly test for solvability and difficulty with `pbnsolve`. Then I got interested in trianograms, which can't be constructed in an image editor at all, so I threw together a GUI editor and changed the name. Auto-solve and the disambiguator were the first big features, to justify the existence of a dedicated GUI tool.
+
+After that, I've started using LLMs to make it possible to work faster. (I leaned on them heavily for triddler support, which would otherwise require a lot of tedious geometry, and for GUI improvements.) I try to keep the solver code mostly human-written (perhaps out of a misplaced sense of pride, but also because I think humans can write clearer code for that sort of stuff), along with the high-level data structures. I also don't like LLMs for prose, so UI text and the README and CHANGELOG are all human-written.

@@ -1,16 +1,16 @@
 ## Changelog
 
-## Future
+## 0.6.0 - 2026-09-14
 ### Added
+ - There is now a backtracking solver, for non-line-logic nonograms.
  - Annotation tool during solve to help count out lines. (Use "A" or shift-drag to activate it.)
  - There are now keyboard shortcuts for tools. Scrollwheel selects colors, and middle-drag pans the canvas.
- - There is now a backtracking solver, for non-line-logic nonograms
  - Chargrid now supports triddlers.
  - It's now possible to manually or (optionally) automatically indicate that clues have been satisfied.
- - All puzzles are now supported for HTML export, which now uses SVG
+ - All puzzles are now supported for HTML export, which now uses SVG.
 ### Changed
  - Triddler sizes are now shown in griddlers.net's notation (e.g. "(5+3)x(6+2)")
- - A simpler way to determine which line to look at while solving is a substantial performance improvement, but it changes how scores are calculated.
+ - A simpler way to determine which line to examine next during line-solving is a substantial performance improvement, but it changes how difficulty scores are calculated.
 ### Removed
  - Removed the pencil tool from solve mode; I don't believe it's ever the right choice.
 
@@ -23,7 +23,7 @@
  - Added a count of the whole contiguous line in the clue gutter in solve mode
     (this was inspired by the Webpbn solver)
 ### Fixed
- - Loading an unsolveable puzzle would cause a crash.
+ - Loading an unsolvable puzzle would cause a crash.
  - Removed various panics on malformed input.
 ### Internal improvements
  - Substantial solver performance improvements
@@ -71,7 +71,7 @@
 ## 0.2.0 - 2025-06-06
 ### Added
  - a GUI
- - a disambiguator to find single-cell changes that improve solveability
+ - a disambiguator to find single-cell changes that improve solvebility
  - read support for the `olsak` format.
  - support for trianograms
 ### Other

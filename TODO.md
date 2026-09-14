@@ -13,6 +13,12 @@
 * Break all formats into their own files
 * Support other formats
 * We don't need `verify_lines` to check everything; just look at invalidated lines.
+* More quality checks (and maybe an indicator attached to the puzzle mode somehow):
+  * Unused colors
+  * Too-similar colors
+  * Blank lines (especially on the edge)
+* Replace the line-logic quality check with a time-limited backtracking solve check.
+* Add CC-0 (public domain) as an license option
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)
@@ -24,7 +30,6 @@
     * Given a skim, what clue sizes may fit in each gap?
     * Given a skim, what clue sizes may a particular foreground spot be?
 * Bottleneck difficulty measurement during solve
-* Scale+quantize a picture into a puzzle
 * Inverted "disambiguate" to increase difficulty
 * PWA + touch input with cursor
 * If the user drags the line tool off of a lane, keep the rosette and helper numbers locked to the original lane

@@ -49,10 +49,6 @@ for `K = Square` or `Tri`, used by the editor). That split is why `grid_solve.rs
 `DynSolution` / `DynCoord` and the `with_puzzle!` / `with_solution!` macros handle it where it's
 only known at runtime (a loaded file, the GUI's current document).
 
-A triddler's size is written the way griddlers.net writes it — `(5+3)x(6+2)`, the lengths of
-four of the outline's six sides. See the doc comments in `geometry.rs` for that notation, the
-coordinate scheme, and lane details.
-
 # Benchmarking against `pbnsolve`
 
 `pbnsolve`, by Jan Wolter, is one of the fastest and most complete nonogram solvers. Wolter's

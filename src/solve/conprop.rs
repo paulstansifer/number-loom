@@ -228,7 +228,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         while run_res.is_err() {
             if state.guesses_in_trail.is_empty() {
                 // We would create an empty nogood (which isn't supported),
-                // indicating an unsolveable puzzle.
+                // indicating an unsolvable puzzle.
                 return Some(state.no_guesses_left(puzzle));
             }
             let (nogood, backjump_guess_idx) = state.make_nogood(puzzle, linear_ctx);

@@ -581,7 +581,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         }
     }
 
-    /// If we don't trust that the puzzle is solveable (crucially, if we've made a guess!),
+    /// If we don't trust that the puzzle is solvable (crucially, if we've made a guess!),
     /// we need to check that we haven't broken anything.
     pub fn run_and_check<K: GridKind>(
         &mut self,

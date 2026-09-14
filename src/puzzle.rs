@@ -1129,7 +1129,7 @@ impl Document {
         match puzzle.plain_solve() {
             Ok(report) => {
                 if report.cells_left > 0 {
-                    problems.push("puzzle is not solveable with line-logic".to_string());
+                    problems.push("puzzle is not solvable with line-logic".to_string());
                 }
             }
             Err(_) => {
