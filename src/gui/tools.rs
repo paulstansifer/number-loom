@@ -24,7 +24,6 @@ fn tool_appearance(tool: Tool) -> (&'static str, egui::Key, char) {
         Tool::Pencil => (icons::ICON_BRUSH, egui::Key::P, 'P'),
         Tool::LineAlongLane => (icons::ICON_LINE_START, egui::Key::L, 'L'),
         Tool::FloodFill => (icons::ICON_FORMAT_COLOR_FILL, egui::Key::F, 'F'),
-        // `L` is spoken for by the line tool, so the lasso gets "select" instead.
         Tool::Lasso => (icons::ICON_LASSO_SELECT, egui::Key::S, 'S'),
         Tool::Annotate => (icons::ICON_SQUARE_FOOT, egui::Key::A, 'A'),
     }

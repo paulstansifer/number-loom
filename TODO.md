@@ -19,6 +19,7 @@
   * Blank lines (especially on the edge)
 * Replace the line-logic quality check with a time-limited backtracking solve check.
 * Add CC-0 (public domain) as an license option
+* Hitting the GitHub API for all the files is slow. Figure something else out (maybe just host a manually-update .zip on GitHub pages?)
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)

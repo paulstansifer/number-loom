@@ -72,6 +72,16 @@ Internally, Number Loom's backtracking solver works by alternatively making gues
 
 ## GUI
 
+### Shortcuts
+
+The tools can all be selected with the key for their first letters: Pencil, Line, Flood fiil, Select, and Annotate. (Most tools only exist in one mode, though!)
+
+Use middle-drag to pan the view, and scrollwheel to cycle through the pallette.
+
+Left-click uses the current tool with the selected color, right-click uses it with the background color.
+
+Undo is "Z" and redo is "Y".
+
 ### Edit mode
 
 When editing a nonogram, you can:
@@ -79,9 +89,8 @@ When editing a nonogram, you can:
 * Paint by dragging / draw orthographic lines / flood fill
 * Lasso-select and move a part of the image around
 * Adjust the size of the canvas from any side
-* Undo or redo with buttons or the "Z" and "Y" keys
 * Add, remove, or recolor palette entries
-* Solve the puzzle (it paints gray dots over unsolved cells), optionally automatically after each edit
+s* Solve the puzzle (it paints gray dots over unsolved cells), optionally automatically after each edit
 * Disambiguate
 * Switch to "Puzzle" mode to test-solve
 * Edit metadata: title, description, author and license. The "title" is intended to be displayed before the puzzle is solved (typically, a vague hint), and the "description" is intended for display afterward (typically, a straightforward description of the puzzle).
@@ -104,10 +113,10 @@ Shift-click to delete annotations, or add a single-cell annotation.
 
 There's also count of the current contiguous line (in each direction) in the "clue gutter", and a widget (a "rosette") that breaks it down by direction from the cursor. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
 
+* Indicators on the clue gutter of lines that can be progressed (circle for "skim", diamond for "scrub")
+* Inference of which clues have been "finished" (or you can manually click on a clue to toggle it)
 * Detection of errors
 * Inference of "obvious" background squares
-* Indicators on the clue gutter of lines that can be progressed (circle for "skim", diamond for "scrub")
-* Inference of which clues have been "finished"
 
 Note: indicators only appear if some cell can be shown to have a particular color (including the background color) with line logic. However, the automatic solver can "partially solve" cells by ruling out some colors, and that partial information can be used by other lines. Therefore, on multicolor puzzles, it's possible for a solvable puzzle to at some point have no line-progress indicators!
 
@@ -120,13 +129,15 @@ A trianogram has black, white, and four additional "colors": triangles that divi
 
 The Olšák solver, I believe, supports multi-color trianograms, but `number-loom` does not yet.
 
-Only the `olsak`, `woven` and `char-grid` formats can store trianograms (and `.html` can export them)
+Only the `olsak`, `woven`, and `char-grid` formats can store trianograms (and `.html` can export them)
 
 The "webpbn" format supports "triangular colors", but it does not support "clue cap" notion from trianograms; it's a purely cosmetic variation that `number-loom` doesn't support.
 
 ### Triddlers
 
 Triddlers (named by analogy with "Griddler", one of the many names for this kind of puzzle) are another variant in which the cells are equilateral triangles, arranged on a hexagonal grid, and there are *three* different axes of clues, rather than *two*.
+
+Only `olsak`, `woven`, `webpbn`, and `char-grid`. Note that, even though `webpbn` can represent them, `pbnsolve` does cannot solve triddlers.
 
 ## Development
 
