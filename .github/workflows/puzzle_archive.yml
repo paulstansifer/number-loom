@@ -1,4 +1,9 @@
-name: Build Puzzle Archive
+name: Publish Puzzle Archive
+
+# The in-app puzzle library fetches https://paulstansifer.github.io/number-loom/puzzles.zip.
+# It has to be Pages rather than a release asset: a release download redirects to another host,
+# and neither hop sends the `Access-Control-Allow-Origin` header that the wasm build needs to
+# read it from itch.io. Pages sends `Access-Control-Allow-Origin: *`.
 
 on:
   push:
@@ -6,20 +11,35 @@ on:
       - main
     paths:
       - 'puzzles/**'  # watch this directory
+      - '.github/workflows/puzzle_archive.yml'
+  workflow_dispatch:  # to publish without waiting for a puzzle to change
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deployments race, but don't cancel one that's already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # needed to create releases
-    
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
       - uses: actions/checkout@v5
       - name: Create zip archive
-        run: zip -r puzzles.zip puzzles/      
-      - name: Update Latest Release
-        uses: softprops/action-gh-release@v2
+        # Zipped from inside `puzzles/`, so entries are bare filenames with no directory prefix.
+        run: |
+          mkdir -p _site
+          (cd puzzles && zip -r ../_site/puzzles.zip .)
+      - uses: actions/upload-pages-artifact@v3
         with:
-          tag_name: latest
-          files: puzzles.zip
-          body: "Latest puzzle archive"
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

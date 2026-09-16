@@ -946,60 +946,77 @@ pub fn bw_palette() -> HashMap<Color, ColorInfo> {
     palette
 }
 
-// It's impossible to get released assests from GitHub for CORS reasons (!?), so
-// we grab the raw files:
-pub async fn puzzles_from_github() -> anyhow::Result<Vec<Document>> {
-    let client = reqwest::Client::new();
+/// The puzzle library, published by `.github/workflows/puzzle_archive.yml`:
+const LIBRARY_URL: &str = "https://paulstansifer.github.io/number-loom/puzzles.zip";
 
-    let puzzles_url =
-        "https://api.github.com/repos/paulstansifer/number-loom/contents/puzzles?ref=main";
+/// Skip any stray files with extensions other than these:
+const LIBRARY_EXTENSIONS: &[&str] = &["xml", "pbn", "txt", "g", "woven", "png", "gif", "bmp"];
 
-    let contents = client
-        .get(puzzles_url)
-        .header("User-Agent", "number-loom")
-        .send()
-        .await?
-        .bytes()
-        .await?;
-
-    let files: Vec<serde_json::Value> = serde_json::from_slice(&contents)?;
-
-    let mut res: Vec<Document> = vec![];
-
-    for file in files {
-        if file["type"] == "file" {
-            let name = file["name"].as_str().unwrap();
-            let download_url = file["download_url"].as_str().unwrap();
-
-            let content = client.get(download_url).send().await?.bytes().await?;
-
-            res.push(load(name, content.to_vec(), None)?);
-        }
-    }
-
-    Ok(res)
+pub async fn load_library() -> anyhow::Result<Vec<Document>> {
+    load_zip_from_url(LIBRARY_URL).await
 }
 
+/// Fetches puzzles. Failing to reach or read the archive is an error; a puzzle inside it
+/// that won't load is not (see `documents_from_zip`).
 pub async fn load_zip_from_url(url: &str) -> anyhow::Result<Vec<Document>> {
-    let response = reqwest::get(url).await?;
-    let zip_bytes = response.bytes().await?;
-    let zip_cursor = Cursor::new(zip_bytes);
+    let response = reqwest::get(url)
+        .await
+        .with_context(|| format!("couldn't reach {url}"))?
+        // A 404 is a perfectly good response as far as `reqwest` is concerned, and without this
+        // we'd hand GitHub's 404 page to the zip reader and report "invalid Zip archive".
+        .error_for_status()
+        .with_context(|| format!("couldn't fetch {url}"))?;
 
-    let mut archive = zip::ZipArchive::new(zip_cursor)?;
+    documents_from_zip(&response.bytes().await?)
+}
+
+/// Loads every puzzle in a zip archive, in filename order.
+///
+/// Directories, files we have no reader for, and files that fail to parse are all skipped.
+/// Only an unreadable archive is an error.
+pub fn documents_from_zip(zip_bytes: &[u8]) -> anyhow::Result<Vec<Document>> {
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(zip_bytes)).context("not a valid zip archive")?;
+
     let mut documents = vec![];
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let filename = file.name().to_string();
+        let mut entry = match archive.by_index(i) {
+            Ok(entry) => entry,
+            Err(e) => {
+                eprintln!("Skipping unreadable library entry: {e}");
+                continue;
+            }
+        };
 
-        if file.is_dir() {
+        if entry.is_dir() {
+            continue;
+        }
+
+        let path = entry.name().to_string();
+        let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+
+        let readable = filename.rsplit_once('.').is_some_and(|(_, ext)| {
+            LIBRARY_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+        });
+        if !readable {
             continue;
         }
 
         let mut bytes = vec![];
-        file.read_to_end(&mut bytes)?;
-        documents.push(load(&filename, bytes, None)?);
+        if let Err(e) = entry.read_to_end(&mut bytes) {
+            eprintln!("Skipping library puzzle {path}: {e}");
+            continue;
+        }
+
+        match load(&filename, bytes, None) {
+            Ok(doc) => documents.push(doc),
+            Err(e) => eprintln!("Skipping library puzzle {path}: {e:#}"),
+        }
     }
+
+    // Put in a canonical order:
+    documents.sort_by(|a, b| a.file.cmp(&b.file));
 
     Ok(documents)
 }
@@ -1068,6 +1085,73 @@ pub fn triano_palette() -> HashMap<Color, ColorInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds a zip in memory. `Stored` keeps this from depending on any of `zip`'s compression
+    /// features; a name ending in `/` becomes a directory entry, as `zip -r` writes for a folder.
+    fn zip_containing(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+
+        for (name, bytes) in entries {
+            if let Some(dir) = name.strip_suffix('/') {
+                writer.add_directory(dir, options).unwrap();
+            } else {
+                writer.start_file(*name, options).unwrap();
+                writer.write_all(bytes).unwrap();
+            }
+        }
+
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn a_library_archive_yields_its_puzzles_in_order_without_their_directory_prefix() {
+        // Stored out of alphabetical order on purpose: `ZipArchive` hands entries back in archive
+        // order, but the gallery should look the same every time the archive is rebuilt. The
+        // `puzzles/` prefix is what `zip -r puzzles.zip puzzles/` writes, and it must not survive
+        // into `Document.file`, which the save dialog offers as a filename.
+        let zip = zip_containing(&[
+            ("puzzles/", b""),
+            ("puzzles/zebra.txt", b"XX.\n.XX\n"),
+            ("puzzles/apple.txt", b".X.\nXXX\n"),
+        ]);
+
+        let docs = documents_from_zip(&zip).unwrap();
+
+        assert_eq!(
+            docs.iter().map(|d| d.file.as_str()).collect::<Vec<_>>(),
+            vec!["apple.txt", "zebra.txt"]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_library_entry_is_skipped_instead_of_sinking_the_whole_library() {
+        // `broken.xml` is a hard parse error. `README.md` is the subtler one: without the
+        // extension check it would fall through `infer_format` to `CharGrid` and "succeed",
+        // putting a puzzle made of prose in the gallery.
+        let zip = zip_containing(&[
+            ("good.txt", b"XX.\n.XX\n"),
+            ("broken.xml", b"this is not xml at all"),
+            ("README.md", b"Puzzles live here.\n"),
+        ]);
+
+        let docs = documents_from_zip(&zip).unwrap();
+
+        assert_eq!(
+            docs.iter().map(|d| d.file.as_str()).collect::<Vec<_>>(),
+            vec!["good.txt"]
+        );
+    }
+
+    #[test]
+    fn something_that_is_not_a_zip_file_at_all_is_an_error() {
+        // What a 404 page would look like coming back from the wrong URL: it has to be an error,
+        // not an empty library that looks like the archive simply has no puzzles in it.
+        assert!(documents_from_zip(b"<html>404: Not Found</html>").is_err());
+    }
 
     #[test]
     fn a_leading_slash_after_whitespace_still_means_triddler() {

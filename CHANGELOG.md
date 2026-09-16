@@ -1,5 +1,7 @@
 ## Changelog
 
+## Future
+
 ## 0.6.0 - 2026-09-14
 ### Added
  - There is now a backtracking solver, for non-line-logic nonograms.

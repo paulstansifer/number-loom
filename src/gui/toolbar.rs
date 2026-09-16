@@ -128,7 +128,7 @@ impl NonogramGui {
                 self.library_dialog = Some(LibraryStatus::Loading);
 
                 spawn_async(async move {
-                    let result = crate::import::puzzles_from_github().await;
+                    let result = crate::import::load_library().await;
                     let _ = sender.send(result);
                 });
             }
@@ -136,7 +136,9 @@ impl NonogramGui {
             if let Ok(result) = self.library_receiver.try_recv() {
                 match result {
                     Ok(library) => self.library_dialog = Some(LibraryStatus::Loaded(library)),
-                    Err(e) => self.library_dialog = Some(LibraryStatus::Failed(e.to_string())),
+                    // `{:#}` rather than `to_string`, so the dialog shows the whole context chain
+                    // ("couldn't fetch https://...: HTTP status 404") and not just its last link.
+                    Err(e) => self.library_dialog = Some(LibraryStatus::Failed(format!("{e:#}"))),
                 }
             }
 
