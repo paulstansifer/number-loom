@@ -2,7 +2,6 @@
 * Store an ID, per webpbn format (use the hash)
 * Persistent K/V store: store which puzzles are solved and remember the author's name
 * https://github.com/emilk/egui/issues/3218 has a workaround for bold text (for puzzle titles)
-* The "unsolved cell" dots are too big in triddlers.
 * Webpbn import by ID
 * Lock clues onscreen in solve mode
 * Actually record useful statistics in backtracking mode
@@ -19,7 +18,6 @@
   * Blank lines (especially on the edge)
 * Replace the line-logic quality check with a time-limited backtracking solve check.
 * Add CC-0 (public domain) as an license option
-* Hitting the GitHub API for all the files is slow. Figure something else out (maybe just host a manually-update .zip on GitHub pages?)
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)
