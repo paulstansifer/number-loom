@@ -9,7 +9,6 @@
 * Write information into children instead of nuking them
 * Audit use of "gutter": I think it may mean 2-3 different things in the codebase.
   * Proposal: use "gutter" for the space between clues and the puzzle (where annotations go), "header"s for where the clues actually live, and "header padding" for the space between two clue lanes"
-* Break all formats into their own files
 * Support other formats
 * We don't need `verify_lines` to check everything; just look at invalidated lines.
 * More quality checks (and maybe an indicator attached to the puzzle mode somehow):
@@ -18,6 +17,7 @@
   * Blank lines (especially on the edge)
 * Replace the line-logic quality check with a time-limited backtracking solve check.
 * Add CC-0 (public domain) as an license option
+* Speed up the replay a little for larger puzzles.
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)

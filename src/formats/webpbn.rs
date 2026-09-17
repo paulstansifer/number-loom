@@ -374,7 +374,7 @@ impl ImageDelimiter for Tri {
     /// An upward-pointing triangle's left edge slopes like `/` and its right edge like `\`; a
     /// downward-pointing triangle's edges slope the other way — worked out (and cross-checked
     /// against every row of `webpbn_tridder.md`'s own worked example) alongside the chargrid
-    /// reader that shares this convention, `import::char_grid_to_tri_solution`.
+    /// reader that shares this convention, `char_grid::char_grid_to_tri_solution`.
     fn row_delimiters(geometry: &crate::geometry::Geometry<Self>, cells: &[u32]) -> (char, char) {
         let leftmost_points_up = geometry.coord(cells[0]).points_up();
         let rightmost_points_up = geometry.coord(*cells.last().unwrap()).points_up();
@@ -921,7 +921,7 @@ mod tests {
     /// called "white". The background has to survive a round trip anyway.
     #[test]
     fn an_oddly_named_background_survives_a_round_trip() {
-        let solution = crate::import::char_grid_to_solution("##\n#.").unwrap();
+        let solution = crate::formats::char_grid::char_grid_to_solution("##\n#.").unwrap();
         let mut document = crate::puzzle::Document::from_solution(solution, "t.txt".to_string());
         let original_bg_name = document.puzzle().palette()[&BACKGROUND].name.clone();
 
@@ -944,7 +944,7 @@ mod tests {
 
     #[test]
     fn a_square_puzzle_still_says_grid() {
-        let doc = crate::import::char_grid_to_solution("##\n#.").unwrap();
+        let doc = crate::formats::char_grid::char_grid_to_solution("##\n#.").unwrap();
         let document = crate::puzzle::Document::from_solution(doc, "t.txt".to_string());
         assert!(as_webpbn(&document).contains(r#"type="grid""#));
     }
