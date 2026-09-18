@@ -3,7 +3,6 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::{collections::HashMap, hash::Hasher};
 
-use crate::solve::bt_solve;
 use crate::{
     geometry::{Geometry, GridKind, Outline, Rect, Shape, Square, Tri, TriCoord},
     import::{solution_to_puzzle, solution_to_tri_puzzle, solution_to_triano_puzzle},
@@ -569,17 +568,7 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
 
             grid_solve::line_logic_solve(self, &mut None, options, &mut partial)
         } else {
-            // Not 100% sure this works in wasm, but this is only called by the CLI.
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(bt_solve::backtrack_solve(
-                    self,
-                    options,
-                    std::sync::mpsc::channel().0,
-                    std::sync::mpsc::channel().1,
-                ))
+            crate::solve::conprop::conprop_solve(self, options)
         }
     }
 

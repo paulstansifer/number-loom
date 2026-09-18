@@ -12,6 +12,7 @@ use crate::{
     },
 };
 
+#[derive(Clone)]
 struct Nogood {
     not_all_true: HashSet<(usize, Color)>,
     current_false_count: usize,
@@ -43,8 +44,12 @@ impl Nogood {
         }
 
         for &(cell_idx, color) in &self.not_all_true {
-            if !ll_state.grid[cell_idx].is_known_to_be(color) {
+            let cell = &ll_state.grid[cell_idx];
+            if !cell.is_known_to_be(color) {
                 return Ok(Some((cell_idx, color)));
+            }
+            if !cell.can_be(color) {
+                return Ok(None); // This nogood can't be relevant
             }
         }
         bail!("Nogood contradicted, and `current_false_count` was stale");
@@ -76,13 +81,14 @@ impl Nogood {
 
 // TODO: there are a bunch of indices
 
+#[derive(Clone)]
 struct ConpropState<'p, C: Clue> {
     nogoods: Vec<Nogood>,
     // Outer is indexable by `cell_idx`, inner contains indices to `nogoods`
     nogoods_by_cell: Vec<Vec<usize>>,
     trail: Vec<(usize, Cell)>, // (cell_idx, old_value)
 
-    nogoods_upated_to: usize, // index into trail: where are the nogoods current up to?
+    nogoods_updated_to: usize, // index into trail: where are the nogoods current up to?
     guesses_in_trail: Vec<(usize, Color)>, // (index into trail, guessed color)
     ll_state: SolveState<'p, C>,
 
@@ -95,6 +101,21 @@ struct ConpropState<'p, C: Clue> {
 }
 
 impl<'p, C: Clue> ConpropState<'p, C> {
+    // Typically, you'll call `propagate{,_and_learn}` after this.
+    // `Err(_)` if the guess is inherently wrong, `Ok(false)` if the guess was already true.
+    fn make_guess<'x, K: GridKind>(
+        &mut self,
+        (cell_idx, color): (usize, Color),
+        linear_ctx: &mut SolveContext<'p, 'x, C, K>,
+    ) -> anyhow::Result<bool> {
+        self.guesses_made += 1;
+        self.guesses_in_trail.push((self.trail.len(), color));
+        // TODO: fold the `trail` update in `.learn_new` ... if this wins out over `bt_solve`
+        self.trail.push((cell_idx, self.ll_state.grid[cell_idx]));
+        self.ll_state
+            .learn(linear_ctx, cell_idx, /*is*/ true, color)
+    }
+
     /// Rewind to just *before* `guess_idx` (including its consequences)...
     /// This pops stuff off `trail` and undoes progress towards `nogoods`
     fn backjump<'x, K: GridKind>(
@@ -106,7 +127,8 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             assert_eq!(guess_idx, 0); // We do `backjump(0)` without checking
             return;
         }
-        // Claude: please test for off-by-one errors in the backjump.
+        debug_assert_eq!(self.nogoods_updated_to, self.trail.len());
+
         let (trail_idx, _guess) = self.guesses_in_trail[guess_idx];
         self.update_nogood_counters(trail_idx);
         self.ll_state.unwind(linear_ctx, &self.trail[trail_idx..]);
@@ -124,12 +146,8 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         self.nogoods.push(nogood);
     }
 
-    /// "Not all of the guesses currently on the trail" — the nogood that rules out the solution
-    /// they led to, and nothing else, so the search can go looking for a second one.
-    ///
-    /// It's sound because propagation is: a complete grid that agreed with every one of these
-    /// guesses would agree with everything they imply, which is this whole grid. So any *other*
-    /// solution has to disagree with at least one guess on this list.
+    /// Make a simple nogood from the trail. This is used to *rule out* a valid solution
+    /// (whatever complete solution these implied) in hopes of finding a different one.
     fn solution_nogood(&self) -> Nogood {
         let not_all_true: HashSet<(usize, Color)> = self
             .guesses_in_trail
@@ -144,21 +162,26 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         }
     }
 
-    /// The `Nogood`s are out-of-date, adjust them.
+    /// Adjust any `Nogood`s that are out-of-date.
     fn update_nogood_counters(&mut self, new_idx: usize) {
-        let forwards = new_idx > self.nogoods_upated_to;
+        if new_idx == self.nogoods_updated_to {
+            return;
+        }
+
+        let forwards = new_idx > self.nogoods_updated_to;
         let range = if forwards {
-            self.nogoods_upated_to..new_idx
+            self.nogoods_updated_to..new_idx
         } else {
-            new_idx..self.nogoods_upated_to
+            new_idx..self.nogoods_updated_to
         };
 
-        // TODO: test that there are no off-by-one errors here
-
         let mut cells_seen = HashSet::<usize>::new();
-        for &(cell_idx, _) in &self.trail[range] {
+        for &(cell_idx, old_value) in &self.trail[range] {
             if !cells_seen.insert(cell_idx) {
                 continue; // don't double-count! All we're doing here is seeing whether the cell became known
+            }
+            if old_value.is_known() {
+                panic!("Made a redundant guess"); // `continue` would be safe.
             }
 
             // High end knows it:
@@ -175,7 +198,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             }
         }
 
-        self.nogoods_upated_to = new_idx;
+        self.nogoods_updated_to = new_idx;
     }
 
     /// Applies linear logic and nogoods until everything possible is deduced. `Ok(true)` if a solution is found.
@@ -183,39 +206,42 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         &mut self,
         linear_ctx: &mut SolveContext<'p, 'x, C, K>,
     ) -> anyhow::Result<bool> {
-        let linear_res = self
-            .ll_state
-            .run_and_check_recording(linear_ctx, &mut self.trail);
-        self.update_nogood_counters(self.trail.len());
+        let mut any_nogoods_fired = true;
+        while any_nogoods_fired {
+            any_nogoods_fired = false;
 
-        linear_res?; // Had to update the counters first.
+            let linear_res = self
+                .ll_state
+                .run_and_check_recording(linear_ctx, &mut self.trail);
+            self.update_nogood_counters(self.trail.len());
 
-        let mut any_nogoods_fired = false;
+            linear_res?; // Had to update the counters first.
 
-        for nogood in &mut self.nogoods {
-            if let Some((cell_idx, is_not_color)) = nogood.deduction(&self.ll_state)? {
-                any_nogoods_fired = true;
-                nogood.active = true;
+            for nogood_idx in 0..self.nogoods.len() {
+                self.update_nogood_counters(self.trail.len()); // Get it right before `deduction`.
 
-                let before = self.ll_state.grid[cell_idx];
-                if self
-                    .ll_state
-                    .learn(linear_ctx, cell_idx, /*is=*/ false, is_not_color)?
-                {
-                    // Only when it actually moved: a no-op entry is a cell the trail claims
-                    // changed when it didn't, and `update_nogood_counters` believes the trail.
-                    self.trail.push((cell_idx, before));
+                let nogood = &mut self.nogoods[nogood_idx];
+
+                if let Some((cell_idx, is_not_color)) = nogood.deduction(&self.ll_state)? {
+                    any_nogoods_fired = true;
+                    nogood.active = true;
+
+                    let before = self.ll_state.grid[cell_idx];
+                    if self.ll_state.learn(
+                        linear_ctx,
+                        cell_idx,
+                        /*is=*/ false,
+                        is_not_color,
+                    )? {
+                        // Only when it actually moved: a no-op entry is a cell the trail claims
+                        // changed when it didn't, and `update_nogood_counters` believes the trail.
+                        self.trail.push((cell_idx, before));
+                    }
                 }
-                // TODO: borrow checker fights against updating the counters here
-                // ...but that just means the next recursion picks them up. Right, Claude?
             }
         }
 
-        if any_nogoods_fired {
-            self.propagate(linear_ctx) // Go around again, see if there's more to do!
-        } else {
-            Ok(self.ll_state.cells_left == 0)
-        }
+        Ok(self.ll_state.cells_left == 0)
     }
 
     fn propagate_and_learn<'x, K: GridKind>(
@@ -231,7 +257,8 @@ impl<'p, C: Clue> ConpropState<'p, C> {
                 // indicating an unsolvable puzzle.
                 return Some(state.no_guesses_left(puzzle));
             }
-            let (nogood, backjump_guess_idx) = state.make_nogood(puzzle, linear_ctx);
+            let (nogood, backjump_guess_idx) = state.make_nogood(linear_ctx);
+
             state.add_nogood(nogood);
             state.backjump(backjump_guess_idx, linear_ctx);
 
@@ -280,9 +307,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
                 ));
             }
 
-            // Move the goalposts: now try to find a second solution. Build and register the
-            // nogood *before* rewinding, so that `update_nogood_counters` hears about the guesses
-            // coming off — it only tells nogoods it can already see.
+            // Move the goalposts: now try to find a second solution.
             let first_solution_is_nogood = state.solution_nogood();
             state.add_nogood(first_solution_is_nogood);
 
@@ -301,71 +326,46 @@ impl<'p, C: Clue> ConpropState<'p, C> {
     /// or `None` if all the guesses should be cleared.
     fn make_nogood<'x, K: GridKind>(
         &self,
-        puzzle: &Puzzle<C, K>,
         linear_ctx: &mut SolveContext<'p, 'x, C, K>,
     ) -> (Nogood, usize) {
-        let mut linear_state = SolveState::new(
-            linear_ctx,
-            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()],
-        );
+        // TODO: the close is expensive: we might want to try reusing `self` (and restoring it after)
+        // TODO: Claude thinks 1UIP is a better approach; investigate maybe.
+        let mut exp_state = self.clone();
+        exp_state.backjump(0, linear_ctx); // Back to the root, to try a different order
+
         let mut res = Nogood {
             not_all_true: HashSet::new(),
             current_false_count: 0,
             active: false,
         };
 
-        let Some((&(bad_trail_idx, bad_color), guesses_pfx)) = self.guesses_in_trail.split_last()
-        else {
+        let Some((last_guess, pfx_guesses)) = self.guesses_in_trail.split_last() else {
             return (res, 0); // No guesses, so the puzzle is contradictory.
         };
-        let bad_cell = self.trail[bad_trail_idx].0;
 
-        res.not_all_true.insert((bad_cell, bad_color));
-        res.current_false_count = 1;
+        for (after_guess_idx, &(guess_idx_in_trail, color)) in std::iter::once(last_guess)
+            .chain(pfx_guesses.iter())
+            .enumerate()
+        {
+            let cell_idx = self.trail[guess_idx_in_trail].0;
+            if exp_state.ll_state.grid[cell_idx].is_known_to_be(color) {
+                continue; // no need to guess what we already know
+            }
+            // if it's known to be another color, we will get a useful contradiction in `.make_guess`
 
-        if guesses_pfx.is_empty() {
-            return (res, 0); // This was the only guess; nothing to minimize!
-        }
+            res.not_all_true.insert((cell_idx, color));
+            res.current_false_count += 1;
 
-        // Start with the guess that went wrong
-        linear_state.learn_new(linear_ctx, bad_cell, /*is*/ true, bad_color);
-        // TODO: use the nogoods here, otherwise we might not find a contradiction at all!
-        if linear_state.run_and_check(linear_ctx).is_err() {
-            return (res, 0); // This guess is wrong on its own!
-        }
+            let mut guess_res = exp_state.make_guess((cell_idx, color), linear_ctx);
+            if guess_res.is_ok() {
+                guess_res = exp_state.propagate(linear_ctx);
+            }
 
-        // TODO: try binary search, like the big kids
-        let mut penultimate_critical_guess = None;
-        // Reapply other guesses:
-        for (guess_idx, &(trail_idx, color)) in guesses_pfx.iter().enumerate() {
-            let cell = self.trail[trail_idx].0;
-
-            // Reapply guess and see if it's okay:
-            if linear_state
-                .learn(linear_ctx, cell, /*is*/ true, color)
-                .is_err()
-                || linear_state.run_and_check(linear_ctx).is_err()
-            {
-                penultimate_critical_guess = Some(guess_idx);
-                break;
+            if guess_res.is_err() {
+                return (res, after_guess_idx);
             }
         }
-        // TODO: also try peeling things off the front.
-
-        // Fallback if we didn't find a contradiction: use everything.
-        // TODO: log how many times we have to be conservative.
-        // Claude, please check for an off-by-one error here:
-        let penultimate_critical_guess =
-            penultimate_critical_guess.unwrap_or(guesses_pfx.len() - 1);
-
-        for &(trail_idx, color) in &self.guesses_in_trail[0..=penultimate_critical_guess] {
-            let cell = self.trail[trail_idx].0;
-            res.not_all_true.insert((cell, color));
-        }
-        res.current_false_count = res.not_all_true.len(); // currently *at* a contradiction!
-
-        // We want to *keep* the penultimate critical guess:
-        (res, penultimate_critical_guess + 1)
+        panic!("Should've re-found that contradiction");
     }
 
     /// We have tried everything.
@@ -422,7 +422,7 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
         nogoods: vec![],
         nogoods_by_cell: vec![vec![]; linear_state.grid.len()],
         trail: vec![],
-        nogoods_upated_to: 0,
+        nogoods_updated_to: 0,
         guesses_in_trail: vec![],
         ll_state: linear_state,
         guesses_made: 0,
@@ -441,14 +441,12 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
             return Ok(state.no_guesses_left(puzzle));
         };
 
-        state.guesses_made += 1;
-
-        state.guesses_in_trail.push((state.trail.len(), color));
-        // TODO: fold the `trail` update in `.learn` ... if this wins out over `bt_solve`
-        state.trail.push((cell_idx, state.ll_state.grid[cell_idx]));
+        if linear_ctx.options.trace_backtrack {
+            println!("Making guess ({cell_idx}, {color:?})");
+        }
         state
-            .ll_state
-            .learn_new(&mut linear_ctx, cell_idx, /*is*/ true, color);
+            .make_guess((cell_idx, color), &mut linear_ctx)
+            .expect("picked guesses should always be possible");
 
         if let Some(report) = state.propagate_and_learn(puzzle, &mut linear_ctx) {
             return Ok(report);
@@ -495,7 +493,7 @@ mod tests {
             }],
             nogoods_by_cell,
             trail: vec![],
-            nogoods_upated_to: 0,
+            nogoods_updated_to: 0,
             guesses_in_trail: vec![],
             ll_state: SolveState::new(ctx, vec![Cell::new(&puzzle.palette); cell_count]),
             guesses_made: 0,
@@ -547,7 +545,7 @@ mod tests {
         // An empty range changes nothing.
         state.update_nogood_counters(0);
         assert_eq!(state.nogoods[0].current_false_count, 0);
-        assert_eq!(state.nogoods_upated_to, 0);
+        assert_eq!(state.nogoods_updated_to, 0);
 
         // `1` takes in entry 0 — cell 0, which the nogood names — and stops before entry 1.
         state.update_nogood_counters(1);
@@ -555,7 +553,7 @@ mod tests {
             state.nogoods[0].current_false_count, 1,
             "one entry in, only cell 0 should have counted"
         );
-        assert_eq!(state.nogoods_upated_to, 1);
+        assert_eq!(state.nogoods_updated_to, 1);
 
         // Entry 1 is cell 2, which the nogood doesn't name.
         state.update_nogood_counters(2);
@@ -564,7 +562,7 @@ mod tests {
         // Entries 2 and 3 are the other two literals, taken in one jump.
         state.update_nogood_counters(4);
         assert_eq!(state.nogoods[0].current_false_count, 3);
-        assert_eq!(state.nogoods_upated_to, 4);
+        assert_eq!(state.nogoods_updated_to, 4);
 
         // Rewinding walks the same half-open range the other way. It reads the grid as it stands,
         // so it has to run *before* `SolveState::unwind` puts the cells back.
@@ -573,11 +571,11 @@ mod tests {
             state.nogoods[0].current_false_count, 1,
             "rewinding to 2 should undo entries 2 and 3, and no more"
         );
-        assert_eq!(state.nogoods_upated_to, 2);
+        assert_eq!(state.nogoods_updated_to, 2);
 
         state.update_nogood_counters(0);
         assert_eq!(state.nogoods[0].current_false_count, 0);
-        assert_eq!(state.nogoods_upated_to, 0);
+        assert_eq!(state.nogoods_updated_to, 0);
     }
 
     /// The trail records every narrowing, so one cell can take several entries to become known.
@@ -683,7 +681,7 @@ mod tests {
             "backjump kept or dropped one trail entry too many"
         );
         assert_eq!(state.guesses_in_trail, vec![(0, Color(1))]);
-        assert_eq!(state.nogoods_upated_to, 2);
+        assert_eq!(state.nogoods_updated_to, 2);
         assert_eq!(
             state.nogoods[0].current_false_count, 1,
             "cell 3 was rewound past and shouldn't still count; cell 0 wasn't and should"
@@ -693,7 +691,7 @@ mod tests {
         state.backjump(0, &mut ctx);
         assert!(state.trail.is_empty());
         assert!(state.guesses_in_trail.is_empty());
-        assert_eq!(state.nogoods_upated_to, 0);
+        assert_eq!(state.nogoods_updated_to, 0);
         assert_eq!(state.nogoods[0].current_false_count, 0);
     }
 
