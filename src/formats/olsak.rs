@@ -6,8 +6,9 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use typed_index_collections::TiVec;
 
-use crate::geometry::{ClueSet, GridKind, Shape, Square, Tri};
+use crate::geometry::{ClueSet, FamilyIdx, GridKind, LaneIdx, Shape, Square, Tri};
 use crate::puzzle::{
     self, BACKGROUND, ClueStyle, Color, ColorInfo, Corner, DynPuzzle, Nono, Puzzle, Triano,
 };
@@ -90,7 +91,7 @@ pub fn as_olsak_nono<K: GridKind>(puzzle: &Puzzle<Nono, K>) -> String {
         }
     } else {
         // Family 0 is rows and family 1 is columns, which is what this format calls them.
-        for (name, family) in [("rows", 0), ("columns", 1)] {
+        for (name, family) in [("rows", FamilyIdx(0)), ("columns", FamilyIdx(1))] {
             res.push_str(&format!(": {name}\n"));
             for lane in puzzle.lane_map().family(family) {
                 write_line(&mut res, &puzzle.lines[lane], false);
@@ -237,7 +238,8 @@ fn olsak_triddler(
     let outline = Outline::from_clue_set_counts(counts)?;
     let geometry = Geometry::<Tri>::new(outline);
 
-    let mut lines = vec![vec![]; geometry.lane_map().lane_count()];
+    let mut lines: TiVec<LaneIdx, Vec<Nono>> =
+        vec![vec![]; geometry.lane_map().lane_count()].into();
     // Group index, its clue set, whether Olsak lists that side's lines backwards, and whether the
     // blocks within each line are written in the opposite order to ours.
     let assignment = [
@@ -583,7 +585,7 @@ mod triddler_tests {
             ClueStyle::Nono,
             crate::import::bw_palette(),
             geometry,
-            cells,
+            cells.into(),
         );
 
         let original = solution.to_puzzle();
@@ -694,7 +696,7 @@ mod tests {
             (lhs.col_clues(), rhs.col_clues(), "col"),
             (lhs.row_clues(), rhs.row_clues(), "row"),
         ] {
-            for (l_row, r_row) in match_march(l_lines, r_lines)? {
+            for (l_row, r_row) in match_march(&l_lines.raw, &r_lines.raw)? {
                 for (l_clue, r_clue) in match_march(l_row, r_row)? {
                     if let (Some(l), Some(r)) = (l_clue.front_cap, r_clue.front_cap) {
                         colors_eq(l, r, &lhs.palette, &rhs.palette)?;

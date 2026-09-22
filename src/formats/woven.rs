@@ -1,9 +1,10 @@
-use crate::geometry::{GridKind, Shape, Square, Tri};
+use crate::geometry::{CellIdx, GridKind, Shape, Square, Tri};
 use crate::puzzle::{ClueStyle, Color, ColorInfo, Document, DynSolution, Solution};
 use base64::{Engine as _, engine::general_purpose};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::io::prelude::*;
+use typed_index_collections::TiVec;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct WovenVersion0 {
@@ -211,7 +212,7 @@ mod cell_spelling_tests {
                 width: cells.len(),
                 height: 1,
             }),
-            cells,
+            cells.into(),
         )
     }
 
@@ -231,7 +232,7 @@ mod cell_spelling_tests {
             s_solution.cells.is_empty(),
             "the numeric form is redundant once the cells are spelled"
         );
-        assert_eq!(s_solution.cell_colors(), solution.cells);
+        assert_eq!(s_solution.cell_colors(), solution.cells.raw);
     }
 
     #[test]
@@ -262,7 +263,7 @@ mod cell_spelling_tests {
             "a repaired palette can spell its cells, so the numeric form is not needed"
         );
         // The repair is invisible from the outside: the cells still mean what they meant.
-        assert_eq!(s_solution.cell_colors(), solution.cells);
+        assert_eq!(s_solution.cell_colors(), solution.cells.raw);
     }
 
     /// Only the entry that clashed gets a new `ch`; the rest keep what they had. A replacement
@@ -301,7 +302,7 @@ mod cell_spelling_tests {
             '#',
             "the duplicate takes the first free character, skipping ones already spoken for"
         );
-        assert_eq!(s_solution.cell_colors(), solution.cells);
+        assert_eq!(s_solution.cell_colors(), solution.cells.raw);
     }
 
     /// Saving twice must not keep changing the file: the second save sees an unambiguous palette
@@ -333,7 +334,7 @@ mod cell_spelling_tests {
             "saving a repaired palette again reordered it"
         );
         assert_eq!(once, twice);
-        assert_eq!(twice.cell_colors(), solution.cells);
+        assert_eq!(twice.cell_colors(), solution.cells.raw);
     }
 
     #[test]
@@ -345,7 +346,7 @@ mod cell_spelling_tests {
         let s_solution: SerializableSolution = (&solution).into();
 
         assert!(s_solution.cell_chars.is_empty());
-        assert_eq!(s_solution.cell_colors(), solution.cells);
+        assert_eq!(s_solution.cell_colors(), solution.cells.raw);
     }
 
     /// The point of keeping `cells`: a file written before `c` existed still has to load.
@@ -574,14 +575,14 @@ impl<K: GridKind> From<&Solution<K>> for SerializableSolution {
         let spelled = SerializableSolution::make_chs_unique(&mut repaired)
             .then(|| {
                 repaired.sort(); // see `make_chs_unique`: a new `ch` can change where an entry sorts
-                SerializableSolution::spell_cells(&solution.cells, &repaired)
+                SerializableSolution::spell_cells(&solution.cells.raw, &repaired)
             })
             .flatten();
 
         // Only one of the two cell forms is ever written; the other stays empty and is skipped.
         let (palette, cell_chars, cells) = match spelled {
             Some(cell_chars) => (repaired, cell_chars, Vec::new()),
-            None => (as_stored, String::new(), solution.cells.clone()),
+            None => (as_stored, String::new(), solution.cells.raw.clone()),
         };
 
         SerializableSolution {
@@ -610,7 +611,7 @@ impl From<&SerializableSolution> for DynSolution {
             .iter()
             .map(|ci| (ci.color, ci.clone()))
             .collect();
-        let cells = s_solution.cell_colors();
+        let cells: TiVec<CellIdx, Color> = s_solution.cell_colors().into();
         // The shape is the one place a stored puzzle is narrowed back to a static kind.
         match &s_solution.shape {
             Shape::Square { width, height } => DynSolution::Square(Solution::new(
@@ -729,7 +730,7 @@ mod golden_tests {
                         width: 4,
                         height: 3,
                     }),
-                    cells,
+                    cells.into(),
                 )),
                 "square_bw.woven".to_string(),
             ),
@@ -755,7 +756,7 @@ mod golden_tests {
                         width: 5,
                         height: 4,
                     }),
-                    cells,
+                    cells.into(),
                 ))),
                 "square_color_metadata.woven".to_string(),
                 Some("Test Pattern".to_string()),
@@ -823,7 +824,7 @@ mod golden_tests {
                         width: 4,
                         height: 3,
                     }),
-                    cells,
+                    cells.into(),
                 )),
                 "square_triano.woven".to_string(),
             ),
@@ -852,7 +853,12 @@ mod golden_tests {
         fixtures.push((
             "triddler_partial",
             Document::from_solution(
-                DynSolution::Tri(Solution::new(ClueStyle::Nono, tri_palette, geometry, cells)),
+                DynSolution::Tri(Solution::new(
+                    ClueStyle::Nono,
+                    tri_palette,
+                    geometry,
+                    cells.into(),
+                )),
                 "triddler_partial.woven".to_string(),
             ),
         ));
@@ -1207,7 +1213,7 @@ mod triangular_tests {
             ClueStyle::Nono,
             palette_with_unsolved(),
             geometry.clone(),
-            cells.clone(),
+            cells.clone().into(),
         );
         let mut doc = Document::from_solution(DynSolution::Tri(solution), "wip.woven".to_string());
 
@@ -1216,7 +1222,7 @@ mod triangular_tests {
         let reloaded_solution = reloaded.solution().unwrap();
 
         assert_eq!(reloaded_solution.shape(), geometry.shape());
-        assert_eq!(reloaded_solution.cells(), cells);
+        assert_eq!(reloaded_solution.cells().raw, cells[..]);
         assert!(
             reloaded_solution.cells().contains(&UNSOLVED),
             "the undecided cells must still be undecided"
@@ -1253,7 +1259,7 @@ mod triangular_tests {
             ClueStyle::Nono,
             crate::import::bw_palette(),
             geometry,
-            cells.clone(),
+            cells.clone().into(),
         );
 
         let report = solution.to_puzzle().plain_solve().unwrap();

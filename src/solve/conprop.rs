@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 
+use typed_index_collections::TiVec;
+
 use anyhow::bail;
 
 use crate::{
-    geometry::GridKind,
+    geometry::{CellIdx, GridKind},
     puzzle::{Clue, Color, PartialSolution, Puzzle},
     solve::{
         conprop_picking::pick_guess,
@@ -14,7 +16,7 @@ use crate::{
 
 #[derive(Clone)]
 struct Nogood {
-    not_all_true: HashSet<(usize, Color)>,
+    not_all_true: HashSet<(CellIdx, Color)>,
     current_false_count: usize,
     active: bool,
 }
@@ -24,7 +26,7 @@ impl Nogood {
     fn deduction<C: Clue>(
         &self,
         ll_state: &SolveState<C>,
-    ) -> anyhow::Result<Option<(usize, Color)>> {
+    ) -> anyhow::Result<Option<(CellIdx, Color)>> {
         if self.active {
             // assumptions are already applied
             return Ok(None);
@@ -55,7 +57,7 @@ impl Nogood {
         bail!("Nogood contradicted, and `current_false_count` was stale");
     }
 
-    fn inform(&mut self, cell_idx: usize, color: Color, forwards: bool) {
+    fn inform(&mut self, cell_idx: CellIdx, color: Color, forwards: bool) {
         debug_assert_eq!(
             // `nogoods_by_cell` should mean that `cell_idx` is always relevant
             self.not_all_true
@@ -85,8 +87,8 @@ impl Nogood {
 struct ConpropState<'p, C: Clue> {
     nogoods: Vec<Nogood>,
     // Outer is indexable by `cell_idx`, inner contains indices to `nogoods`
-    nogoods_by_cell: Vec<Vec<usize>>,
-    trail: Vec<(usize, Cell)>, // (cell_idx, old_value)
+    nogoods_by_cell: TiVec<CellIdx, Vec<usize>>,
+    trail: Vec<(CellIdx, Cell)>, // (cell_idx, old_value)
 
     nogoods_updated_to: usize, // index into trail: where are the nogoods current up to?
     guesses_in_trail: Vec<(usize, Color)>, // (index into trail, guessed color)
@@ -105,7 +107,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
     // `Err(_)` if the guess is inherently wrong, `Ok(false)` if the guess was already true.
     fn make_guess<'x, K: GridKind>(
         &mut self,
-        (cell_idx, color): (usize, Color),
+        (cell_idx, color): (CellIdx, Color),
         linear_ctx: &mut SolveContext<'p, 'x, C, K>,
     ) -> anyhow::Result<bool> {
         self.guesses_made += 1;
@@ -149,7 +151,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
     /// Make a simple nogood from the trail. This is used to *rule out* a valid solution
     /// (whatever complete solution these implied) in hopes of finding a different one.
     fn solution_nogood(&self) -> Nogood {
-        let not_all_true: HashSet<(usize, Color)> = self
+        let not_all_true: HashSet<(CellIdx, Color)> = self
             .guesses_in_trail
             .iter()
             .map(|&(trail_idx, color)| (self.trail[trail_idx].0, color))
@@ -175,7 +177,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             new_idx..self.nogoods_updated_to
         };
 
-        let mut cells_seen = HashSet::<usize>::new();
+        let mut cells_seen = HashSet::<CellIdx>::new();
         for &(cell_idx, old_value) in &self.trail[range] {
             if !cells_seen.insert(cell_idx) {
                 continue; // don't double-count! All we're doing here is seeing whether the cell became known
@@ -409,7 +411,7 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
     let mut linear_ctx = SolveContext::new(puzzle, &mut line_cache, &options);
     let mut linear_state = SolveState::new(
         &mut linear_ctx,
-        vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()],
+        vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into(),
     );
     linear_state.run_and_check(&mut linear_ctx)?; // `?` because contradictions here are "real"
 
@@ -420,7 +422,7 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
 
     let mut state = ConpropState {
         nogoods: vec![],
-        nogoods_by_cell: vec![vec![]; linear_state.grid.len()],
+        nogoods_by_cell: vec![vec![]; linear_state.grid.len()].into(),
         trail: vec![],
         nogoods_updated_to: 0,
         guesses_in_trail: vec![],
@@ -442,7 +444,7 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
         };
 
         if linear_ctx.options.trace_backtrack {
-            println!("Making guess ({cell_idx}, {color:?})");
+            println!("Making guess ({cell_idx:?}, {color:?})");
         }
         state
             .make_guess((cell_idx, color), &mut linear_ctx)
@@ -477,10 +479,10 @@ mod tests {
     fn scratch_state<'p>(
         puzzle: &'p Puzzle<Nono, Square>,
         ctx: &mut SolveContext<'p, '_, Nono, Square>,
-        literals: &[(usize, Color)],
+        literals: &[(CellIdx, Color)],
     ) -> ConpropState<'p, Nono> {
         let cell_count = puzzle.geometry.cell_count();
-        let mut nogoods_by_cell = vec![vec![]; cell_count];
+        let mut nogoods_by_cell: TiVec<CellIdx, Vec<usize>> = vec![vec![]; cell_count].into();
         for &(cell, _) in literals {
             nogoods_by_cell[cell].push(0);
         }
@@ -495,7 +497,7 @@ mod tests {
             trail: vec![],
             nogoods_updated_to: 0,
             guesses_in_trail: vec![],
-            ll_state: SolveState::new(ctx, vec![Cell::new(&puzzle.palette); cell_count]),
+            ll_state: SolveState::new(ctx, vec![Cell::new(&puzzle.palette); cell_count].into()),
             guesses_made: 0,
             solution_found: None,
             root_knowledge: None,
@@ -506,14 +508,14 @@ mod tests {
     fn learn_onto_trail<'p>(
         state: &mut ConpropState<'p, Nono>,
         ctx: &mut SolveContext<'p, '_, Nono, Square>,
-        cell: usize,
+        cell: CellIdx,
         is: bool,
         color: Color,
     ) {
         state.trail.push((cell, state.ll_state.grid[cell]));
         assert!(
             state.ll_state.learn(ctx, cell, is, color).unwrap(),
-            "the test meant to learn something new about cell {cell}"
+            "the test meant to learn something new about cell {cell:?}"
         );
     }
 
@@ -530,12 +532,21 @@ mod tests {
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
 
         // "cell 0 isn't 1, or cell 1 isn't 1, or cell 3 isn't the background."
-        let literals = [(0, Color(1)), (1, Color(1)), (3, BACKGROUND)];
+        let literals = [
+            (CellIdx(0), Color(1)),
+            (CellIdx(1), Color(1)),
+            (CellIdx(3), BACKGROUND),
+        ];
         let mut state = scratch_state(&puzzle, &mut ctx, &literals);
 
         // One trail entry each, in an order that puts a cell the nogood says nothing about
         // (cell 2) in the middle, so a range that runs one too far can't hide behind a hit.
-        for (cell, color) in [(0, Color(1)), (2, Color(2)), (1, Color(1)), (3, BACKGROUND)] {
+        for (cell, color) in [
+            (CellIdx(0), Color(1)),
+            (CellIdx(2), Color(2)),
+            (CellIdx(1), Color(1)),
+            (CellIdx(3), BACKGROUND),
+        ] {
             learn_onto_trail(&mut state, &mut ctx, cell, /*is=*/ true, color);
         }
 
@@ -593,12 +604,18 @@ mod tests {
         let mut line_cache = None;
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
 
-        let literals = [(0, Color(1))];
+        let literals = [(CellIdx(0), Color(1))];
         let mut state = scratch_state(&puzzle, &mut ctx, &literals);
 
         // {bg,1,2} minus 2 is still unknown, so this entry settles nothing and counts for nothing.
-        learn_onto_trail(&mut state, &mut ctx, 0, /*is=*/ false, Color(2));
-        assert!(!state.ll_state.grid[0].is_known());
+        learn_onto_trail(
+            &mut state,
+            &mut ctx,
+            CellIdx(0),
+            /*is=*/ false,
+            Color(2),
+        );
+        assert!(!state.ll_state.grid[CellIdx(0)].is_known());
         state.update_nogood_counters(1);
         assert_eq!(
             state.nogoods[0].current_false_count, 0,
@@ -606,8 +623,14 @@ mod tests {
         );
 
         // The second entry is where the cell lands on a color.
-        learn_onto_trail(&mut state, &mut ctx, 0, /*is=*/ true, Color(1));
-        assert!(state.ll_state.grid[0].is_known_to_be(Color(1)));
+        learn_onto_trail(
+            &mut state,
+            &mut ctx,
+            CellIdx(0),
+            /*is=*/ true,
+            Color(1),
+        );
+        assert!(state.ll_state.grid[CellIdx(0)].is_known_to_be(Color(1)));
         state.update_nogood_counters(2);
         assert_eq!(state.nogoods[0].current_false_count, 1);
 
@@ -630,7 +653,7 @@ mod tests {
     fn guess_onto_trail<'p>(
         state: &mut ConpropState<'p, Nono>,
         ctx: &mut SolveContext<'p, '_, Nono, Square>,
-        cell: usize,
+        cell: CellIdx,
         color: Color,
     ) {
         state.guesses_in_trail.push((state.trail.len(), color));
@@ -643,10 +666,10 @@ mod tests {
         state: &mut ConpropState<'p, Nono>,
         ctx: &mut SolveContext<'p, '_, Nono, Square>,
     ) {
-        guess_onto_trail(state, ctx, 0, Color(1));
-        learn_onto_trail(state, ctx, 1, /*is=*/ true, Color(2));
-        guess_onto_trail(state, ctx, 2, Color(1));
-        learn_onto_trail(state, ctx, 3, /*is=*/ true, BACKGROUND);
+        guess_onto_trail(state, ctx, CellIdx(0), Color(1));
+        learn_onto_trail(state, ctx, CellIdx(1), /*is=*/ true, Color(2));
+        guess_onto_trail(state, ctx, CellIdx(2), Color(1));
+        learn_onto_trail(state, ctx, CellIdx(3), /*is=*/ true, BACKGROUND);
         state.update_nogood_counters(state.trail.len());
     }
 
@@ -664,7 +687,7 @@ mod tests {
 
         // One literal on each side of the cut, so a range that runs an entry too far or an entry
         // too short shows up in the count rather than cancelling out.
-        let literals = [(0, Color(1)), (3, BACKGROUND)];
+        let literals = [(CellIdx(0), Color(1)), (CellIdx(3), BACKGROUND)];
         let mut state = scratch_state(&puzzle, &mut ctx, &literals);
         two_guesses_deep(&mut state, &mut ctx);
 
@@ -714,34 +737,45 @@ mod tests {
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
 
         // "cell 0 is not Color(1)" — what `make_nogood` hands back for a guess that's wrong alone.
-        let literals = [(0, Color(1))];
+        let literals = [(CellIdx(0), Color(1))];
         let mut state = scratch_state(&puzzle, &mut ctx, &literals);
 
         // A guess about something else, so there's a block for the deduction to live in.
-        guess_onto_trail(&mut state, &mut ctx, 2, Color(2));
+        guess_onto_trail(&mut state, &mut ctx, CellIdx(2), Color(2));
 
         // Fire the nogood the way `propagate` does.
         assert_eq!(
             state.nogoods[0].deduction(&state.ll_state).unwrap(),
-            Some((0, Color(1))),
+            Some((CellIdx(0), Color(1))),
             "a one-cell nogood with nothing counted against it is unit"
         );
         state.nogoods[0].active = true;
-        state.trail.push((0, state.ll_state.grid[0]));
+        state
+            .trail
+            .push((CellIdx(0), state.ll_state.grid[CellIdx(0)]));
         state
             .ll_state
-            .learn(&mut ctx, 0, /*is=*/ false, Color(1))
+            .learn(&mut ctx, CellIdx(0), /*is=*/ false, Color(1))
             .unwrap();
-        assert!(!state.ll_state.grid[0].is_known(), "still {{bg, 2}}");
+        assert!(
+            !state.ll_state.grid[CellIdx(0)].is_known(),
+            "still {{bg, 2}}"
+        );
 
         // One more entry after it, so the deduction isn't the last thing on the trail.
-        learn_onto_trail(&mut state, &mut ctx, 3, /*is=*/ true, BACKGROUND);
+        learn_onto_trail(
+            &mut state,
+            &mut ctx,
+            CellIdx(3),
+            /*is=*/ true,
+            BACKGROUND,
+        );
         state.update_nogood_counters(state.trail.len());
 
         state.backjump(0, &mut ctx);
 
         assert!(
-            state.ll_state.grid[0].can_be(Color(1)),
+            state.ll_state.grid[CellIdx(0)].can_be(Color(1)),
             "the deduction was rewound, so cell 0 can be Color(1) again"
         );
         assert!(
@@ -750,7 +784,7 @@ mod tests {
         );
         assert_eq!(
             state.nogoods[0].deduction(&state.ll_state).unwrap(),
-            Some((0, Color(1)))
+            Some((CellIdx(0), Color(1)))
         );
     }
 
@@ -764,18 +798,30 @@ mod tests {
         let mut line_cache = None;
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
 
-        let literals = [(0, Color(1)), (3, BACKGROUND)];
+        let literals = [(CellIdx(0), Color(1)), (CellIdx(3), BACKGROUND)];
         let mut state = scratch_state(&puzzle, &mut ctx, &literals);
 
-        guess_onto_trail(&mut state, &mut ctx, 0, Color(1));
-        learn_onto_trail(&mut state, &mut ctx, 1, /*is=*/ true, Color(2));
+        guess_onto_trail(&mut state, &mut ctx, CellIdx(0), Color(1));
+        learn_onto_trail(
+            &mut state,
+            &mut ctx,
+            CellIdx(1),
+            /*is=*/ true,
+            Color(2),
+        );
 
         // What the second guess is about to be made from.
         let grid_before = state.ll_state.grid.clone();
         let cells_left_before = state.ll_state.cells_left;
 
-        guess_onto_trail(&mut state, &mut ctx, 2, Color(1));
-        learn_onto_trail(&mut state, &mut ctx, 3, /*is=*/ true, BACKGROUND);
+        guess_onto_trail(&mut state, &mut ctx, CellIdx(2), Color(1));
+        learn_onto_trail(
+            &mut state,
+            &mut ctx,
+            CellIdx(3),
+            /*is=*/ true,
+            BACKGROUND,
+        );
         state.update_nogood_counters(state.trail.len());
 
         state.backjump(1, &mut ctx);

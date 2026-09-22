@@ -12,6 +12,7 @@ mod tools;
 mod triano;
 mod triddler;
 
+pub use crate::geometry::{CellIdx, FamilyIdx, LaneIdx, LanePos};
 pub use annotate::{AnnotateDrag, Annotation};
 pub use auto_button::{AutoButton, auto_button};
 pub use canvas::{ClueId, ClueOverlay, HoverBlocks};
@@ -20,6 +21,7 @@ pub use selection::{Selection, cells_in_lasso};
 pub use toolbar::LibraryStatus;
 use toolbar::NewPuzzleDialog;
 pub use tools::Tool;
+pub use typed_index_collections::{TiSlice, TiVec};
 
 use std::{
     cell::RefCell,
@@ -279,7 +281,7 @@ pub struct CanvasGui {
     /// Whatever was current before `current_tool`, so that a tool's own key, pressed again, goes
     /// back to it. Starts out equal to `current_tool`, which makes that first press a no-op.
     pub previous_tool: Tool,
-    pub line_tool_state: Option<u32>,
+    pub line_tool_state: Option<CellIdx>,
     /// The lasso tool's selection, if any. Outlives switching tools only long enough to be
     /// flattened; see `flatten_selection`.
     pub selection: Option<Selection>,
@@ -301,7 +303,7 @@ pub struct CanvasGui {
     /// not also reach a tool. `main_ui` sets this from the scroll area's own measurements.
     pub middle_pans: bool,
     /// Indexed by dense cell index, like `Solution::cells`.
-    pub solved_mask: Staleable<(String, Vec<bool>)>,
+    pub solved_mask: Staleable<(String, TiVec<CellIdx, bool>)>,
     pub disambiguator: Staleable<Disambiguator>,
     pub backtrack_solver: Staleable<BacktrackSolver>,
     pub id: Staleable<String>,
@@ -352,7 +354,7 @@ pub enum Action {
     /// indices make undo, the tools, and merging work for any shape with no dispatch at all.
     /// Coordinates appear only at the hit-test boundary, as `DynCoord`.
     ChangeColor {
-        changes: HashMap<u32, Color>,
+        changes: HashMap<CellIdx, Color>,
     },
     ReplaceDocument {
         document: Box<Document>,
@@ -395,10 +397,7 @@ impl CanvasGui {
             Action::ChangeColor { changes } => {
                 let cells = self.document.try_solution().unwrap().cells();
                 Action::ChangeColor {
-                    changes: changes
-                        .keys()
-                        .map(|cell| (*cell, cells[*cell as usize]))
-                        .collect(),
+                    changes: changes.keys().map(|cell| (*cell, cells[*cell])).collect(),
                 }
             }
             Action::ReplaceDocument { document: _ } => Action::ReplaceDocument {
@@ -424,11 +423,11 @@ impl CanvasGui {
                     let cells = self.document.solution_mut().cells_mut();
                     if mood == ReplaceAction {
                         for cell in new_changes.keys() {
-                            changes.entry(*cell).or_insert(cells[*cell as usize]);
+                            changes.entry(*cell).or_insert(cells[*cell]);
                         }
                         changes.retain(|cell, old_col| {
                             if !new_changes.contains_key(cell) {
-                                cells[*cell as usize] = *old_col;
+                                cells[*cell] = *old_col;
                                 self.version += 1;
                                 false
                             } else {
@@ -436,8 +435,8 @@ impl CanvasGui {
                             }
                         });
                         for (cell, col) in new_changes {
-                            if cells[*cell as usize] != *col {
-                                cells[*cell as usize] = *col;
+                            if cells[*cell] != *col {
+                                cells[*cell] = *col;
                                 self.version += 1;
                             }
                         }
@@ -445,11 +444,11 @@ impl CanvasGui {
                     } else {
                         for (cell, col) in new_changes {
                             if !changes.contains_key(cell) {
-                                changes.insert(*cell, cells[*cell as usize]);
+                                changes.insert(*cell, cells[*cell]);
                                 // Crucially, this only fires on a new cell!
                                 // Otherwise, we'd be flipping cells back and forth as long as we
                                 // were in them!
-                                cells[*cell as usize] = *col;
+                                cells[*cell] = *col;
                                 self.version += 1;
                             }
                         }
@@ -469,8 +468,8 @@ impl CanvasGui {
             Action::ChangeColor { changes } => {
                 let cells = self.document.solution_mut().cells_mut();
                 for (cell, new_color) in changes {
-                    if cells[cell as usize] != new_color {
-                        cells[cell as usize] = new_color;
+                    if cells[cell] != new_color {
+                        cells[cell] = new_color;
                         self.version += 1;
                     }
                 }
@@ -612,7 +611,7 @@ impl NonogramGui {
         }
 
         let picture = document.try_solution().expect("just ensured there is one");
-        let solved_mask = vec![true; picture.cells().len()];
+        let solved_mask: TiVec<CellIdx, bool> = vec![true; picture.cells().len()].into();
 
         let current_color = default_color(picture.palette());
 
@@ -1169,7 +1168,7 @@ impl NonogramGui {
 
 pub struct Disambiguator {
     /// Indexed by dense cell index, like `Solution::cells`.
-    report: Option<Vec<(Color, f32)>>,
+    report: Option<TiVec<CellIdx, (Color, f32)>>,
     pub terminate_s: mpsc::Sender<()>,
     progress_r: mpsc::Receiver<f32>,
     progress: f32,
@@ -1285,7 +1284,7 @@ pub struct BacktrackSolver {
     /// The formatted report, alongside the mask `canvas.rs` shades unsolved cells with — the same
     /// shape `editor_gui.solved_mask` already holds for the line-logic `Solve` button, so the two
     /// buttons can share it.
-    report_r: mpsc::Receiver<(String, Option<Vec<bool>>)>,
+    report_r: mpsc::Receiver<(String, Option<TiVec<CellIdx, bool>>)>,
 }
 
 impl Default for BacktrackSolver {
@@ -1309,7 +1308,7 @@ impl BacktrackSolver {
         &mut self,
         picture: &DynSolution,
         version: Version,
-        solved_mask: &mut Staleable<(String, Vec<bool>)>,
+        solved_mask: &mut Staleable<(String, TiVec<CellIdx, bool>)>,
         progress: &SharedProgress,
         ui: &mut egui::Ui,
     ) {

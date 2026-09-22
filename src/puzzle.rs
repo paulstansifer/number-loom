@@ -4,11 +4,15 @@ use std::hash::Hash;
 use std::{collections::HashMap, hash::Hasher};
 
 use crate::{
-    geometry::{Geometry, GridKind, Outline, Rect, Shape, Square, Tri, TriCoord},
+    geometry::{
+        CellIdx, FamilyIdx, Geometry, GridKind, LaneIdx, Outline, Rect, Shape, Square, Tri,
+        TriCoord,
+    },
     import::{solution_to_puzzle, solution_to_tri_puzzle, solution_to_triano_puzzle},
     solve::grid_solve::{self, LineStatus, SolveOptions},
 };
 use serde::{Deserialize, Serialize};
+use typed_index_collections::{TiSlice, TiVec};
 /// All colors, including `BACKGROUND`.
 pub type Palette = HashMap<Color, ColorInfo>;
 
@@ -247,7 +251,7 @@ pub struct Solution<K: GridKind> {
     pub geometry: Geometry<K>,
     /// One entry per cell, in the dense order `geometry` defines. For square puzzles that is
     /// `y * width + x`.
-    pub cells: Vec<Color>,
+    pub cells: TiVec<CellIdx, Color>,
 }
 
 // Instead of using the special `UNSOLVED` color, uses masks to represent partial cell information.
@@ -255,14 +259,14 @@ pub struct Solution<K: GridKind> {
 // Indexed by the dense cell numbering that `Geometry` defines, so it works for any shape. For
 // square puzzles that numbering is `y * width + x`, i.e. the same row-major layout the old
 // `Array2` had.
-pub type PartialSolution = Vec<crate::solve::line_solve::Cell>;
+pub type PartialSolution = TiVec<CellIdx, crate::solve::line_solve::Cell>;
 
 impl<K: GridKind> Solution<K> {
     pub fn new(
         clue_style: ClueStyle,
         palette: HashMap<Color, ColorInfo>,
         geometry: Geometry<K>,
-        cells: Vec<Color>,
+        cells: TiVec<CellIdx, Color>,
     ) -> Solution<K> {
         assert_eq!(cells.len(), geometry.cell_count());
         Solution {
@@ -275,7 +279,7 @@ impl<K: GridKind> Solution<K> {
 
     /// The color at a coordinate, or `None` if it is outside the puzzle.
     pub fn get(&self, coord: K::Coord) -> Option<Color> {
-        self.geometry.cell(coord).map(|c| self.cells[c as usize])
+        self.geometry.cell(coord).map(|c| self.cells[c])
     }
 
     pub fn to_partial(&self) -> PartialSolution {
@@ -295,10 +299,10 @@ impl<K: GridKind> Solution<K> {
     /// added cells start out as background. `None` if the resize would leave the puzzle empty.
     pub fn resized(&self, side: K::Side, delta: i32) -> Option<Solution<K>> {
         let new_geometry = self.geometry.resized(side, delta)?;
-        let mut cells = vec![BACKGROUND; new_geometry.cell_count()];
-        for old_cell in 0..self.geometry.cell_count() as u32 {
+        let mut cells: TiVec<CellIdx, Color> = vec![BACKGROUND; new_geometry.cell_count()].into();
+        for (old_cell, color) in self.cells.iter_enumerated() {
             if let Some(new_cell) = new_geometry.cell(self.geometry.coord(old_cell)) {
-                cells[new_cell as usize] = self.cells[old_cell as usize];
+                cells[new_cell] = *color;
             }
         }
         Some(Solution {
@@ -316,7 +320,7 @@ pub struct Puzzle<C: Clue, K: GridKind> {
     pub geometry: Geometry<K>,
     /// One clue list per lane, indexed exactly like `geometry.lane_map().lanes()`. For square
     /// puzzles that means all the rows first, then all the columns; use `row_clues`/`col_clues`.
-    pub lines: Vec<Vec<C>>,
+    pub lines: TiVec<LaneIdx, Vec<C>>,
 }
 
 impl<C: Clue, K: GridKind> Hash for Puzzle<C, K> {
@@ -340,7 +344,7 @@ impl<C: Clue> Puzzle<C, Square> {
         Puzzle {
             palette,
             geometry,
-            lines,
+            lines: lines.into(),
         }
     }
 
@@ -355,16 +359,16 @@ impl<C: Clue> Puzzle<C, Square> {
         Puzzle {
             palette,
             geometry: Geometry::<Square>::single_lane(len),
-            lines: vec![clues],
+            lines: vec![clues].into(),
         }
     }
 
-    pub fn row_clues(&self) -> &[Vec<C>] {
-        &self.lines[self.geometry.lane_map().family(0)]
+    pub fn row_clues(&self) -> &TiSlice<LaneIdx, Vec<C>> {
+        &self.lines[self.geometry.lane_map().family_range(FamilyIdx(0))]
     }
 
-    pub fn col_clues(&self) -> &[Vec<C>] {
-        &self.lines[self.geometry.lane_map().family(1)]
+    pub fn col_clues(&self) -> &TiSlice<LaneIdx, Vec<C>> {
+        &self.lines[self.geometry.lane_map().family_range(FamilyIdx(1))]
     }
 }
 
@@ -372,7 +376,7 @@ impl<C: Clue> Puzzle<C, Tri> {
     pub fn triangular(
         palette: HashMap<Color, ColorInfo>,
         outline: Outline,
-        lines: Vec<Vec<C>>,
+        lines: TiVec<LaneIdx, Vec<C>>,
     ) -> Puzzle<C, Tri> {
         let geometry = Geometry::new(outline);
         assert_eq!(
@@ -394,7 +398,7 @@ impl<C: Clue, K: GridKind> Puzzle<C, K> {
     }
 
     /// How far out from the grid lane `lane`'s clues reach, in abstract units.
-    pub fn clue_run_length(&self, lane: usize) -> f32 {
+    pub fn clue_run_length(&self, lane: LaneIdx) -> f32 {
         let parts = self.lines[lane]
             .iter()
             .map(|c| c.express(&self.palette).len())
@@ -524,9 +528,9 @@ pub trait PuzzleDynOps {
         self.solve(/*backtrack=*/ false, &SolveOptions::default())
     }
     /// One `LineStatus` per lane, parallel to `LaneMap::lanes()`.
-    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<LineStatus>;
+    fn analyze_lines(&self, partial: &PartialSolution) -> TiVec<LaneIdx, LineStatus>;
     /// The clues each lane has fully resolved, indexed like `analyze_lines`.
-    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<usize>>;
+    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, Vec<usize>>;
     fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()>;
 }
 
@@ -537,9 +541,7 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
 
     fn family_lane_counts(&self) -> Vec<usize> {
         let lanes = self.geometry.lane_map();
-        (0..lanes.family_count())
-            .map(|f| lanes.family(f).len())
-            .collect()
+        lanes.families().map(|f| lanes.family_len(f)).collect()
     }
 
     fn extent(&self) -> crate::layout::Vec2 {
@@ -561,10 +563,12 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
     ) -> anyhow::Result<crate::solve::grid_solve::Report> {
         // TODO: there's no reason for `bt_solve` and `grid_solve` to have different interfaces like this
         if !backtrack {
-            let mut partial = vec![
-                crate::solve::line_solve::Cell::new(&self.palette);
-                self.geometry.cell_count()
-            ];
+            let mut partial: PartialSolution =
+                vec![
+                    crate::solve::line_solve::Cell::new(&self.palette);
+                    self.geometry.cell_count()
+                ]
+                .into();
 
             grid_solve::line_logic_solve(self, &mut None, options, &mut partial)
         } else {
@@ -572,11 +576,11 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
         }
     }
 
-    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<LineStatus> {
+    fn analyze_lines(&self, partial: &PartialSolution) -> TiVec<LaneIdx, LineStatus> {
         grid_solve::analyze_lines(self, partial)
     }
 
-    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<usize>> {
+    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, Vec<usize>> {
         grid_solve::fixed_clues(self, partial)
     }
 
@@ -614,11 +618,11 @@ impl PuzzleDynOps for DynPuzzle {
         with_puzzle!(self, |p| p.solve(backtrack, options))
     }
 
-    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<LineStatus> {
+    fn analyze_lines(&self, partial: &PartialSolution) -> TiVec<LaneIdx, LineStatus> {
         with_puzzle!(self, |p| p.analyze_lines(partial))
     }
 
-    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<usize>> {
+    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, Vec<usize>> {
         with_puzzle!(self, |p| p.fixed_clues(partial))
     }
 
@@ -680,11 +684,11 @@ impl DynSolution {
         with_solution!(self, |s| &mut s.palette)
     }
 
-    pub fn cells(&self) -> &[Color] {
+    pub fn cells(&self) -> &TiSlice<CellIdx, Color> {
         with_solution!(self, |s| &s.cells)
     }
 
-    pub fn cells_mut(&mut self) -> &mut Vec<Color> {
+    pub fn cells_mut(&mut self) -> &mut TiVec<CellIdx, Color> {
         with_solution!(self, |s| &mut s.cells)
     }
 
@@ -725,7 +729,7 @@ impl DynSolution {
 
     /// The dense cell index for a coordinate, or `None` if the coordinate is the wrong kind or
     /// outside the puzzle.
-    pub fn cell_of(&self, coord: DynCoord) -> Option<u32> {
+    pub fn cell_of(&self, coord: DynCoord) -> Option<CellIdx> {
         match (self, coord) {
             (DynSolution::Square(s), DynCoord::Square(c)) => s.geometry.cell(c),
             (DynSolution::Tri(s), DynCoord::Tri(c)) => s.geometry.cell(c),
@@ -742,18 +746,18 @@ impl DynSolution {
     }
 
     /// Cells sharing an edge with this one: 4 for a square, 3 for a triangle.
-    pub fn neighbor_cells(&self, cell: u32) -> Vec<u32> {
+    pub fn neighbor_cells(&self, cell: CellIdx) -> Vec<CellIdx> {
         with_solution!(self, |s| s.geometry.neighbor_cells(cell).collect())
     }
 
     /// This cell's shape: always `Square` for a square puzzle, `UpTriangle`/`DownTriangle` for a
     /// triddler.
-    pub fn cell_shape(&self, cell: u32) -> crate::layout::CellShape {
+    pub fn cell_shape(&self, cell: CellIdx) -> crate::layout::CellShape {
         with_solution!(self, |s| s.geometry.cell_shape(cell))
     }
 
     /// The top-left of this cell's bounding box, in abstract units.
-    pub fn cell_origin(&self, cell: u32) -> crate::layout::Point {
+    pub fn cell_origin(&self, cell: CellIdx) -> crate::layout::Point {
         with_solution!(self, |s| s.geometry.cell_origin(cell))
     }
 
@@ -763,7 +767,7 @@ impl DynSolution {
     }
 
     /// Where `cell` lands under a translation, or `None` if that's off the grid.
-    pub fn translate_cell(&self, cell: u32, steps: (i32, i32)) -> Option<u32> {
+    pub fn translate_cell(&self, cell: CellIdx, steps: (i32, i32)) -> Option<CellIdx> {
         with_solution!(self, |s| s.geometry.translate_cell(cell, steps))
     }
 
@@ -789,24 +793,24 @@ impl DynSolution {
     }
 
     /// How far a run of the same color extends from a cell along each clue family.
-    pub fn runs_at_cell(&self, cell: u32) -> Vec<(usize, usize)> {
+    pub fn runs_at_cell(&self, cell: CellIdx) -> Vec<(usize, usize)> {
         with_solution!(self, |s| {
-            let target = s.cells[cell as usize];
-            s.geometry.runs(cell, |c| s.cells[c as usize] == target)
+            let target = s.cells[cell];
+            s.geometry.runs(cell, |c| s.cells[c] == target)
         })
     }
 
     /// The whole contiguous same-color block through a cell, as `(lane, length)` per clue family:
     /// the two arms `runs_at_cell` reports, plus the cell itself. `memberships` and `runs` are
     /// both in family order, so the two line up.
-    pub fn blocks_at_cell(&self, cell: u32) -> Vec<(usize, usize)> {
+    pub fn blocks_at_cell(&self, cell: CellIdx) -> Vec<(LaneIdx, usize)> {
         with_solution!(self, |s| {
-            let target = s.cells[cell as usize];
+            let target = s.cells[cell];
             s.geometry
                 .memberships(cell)
                 .iter()
-                .zip(s.geometry.runs(cell, |c| s.cells[c as usize] == target))
-                .map(|(m, (back, fwd))| (m.lane as usize, back + fwd + 1))
+                .zip(s.geometry.runs(cell, |c| s.cells[c] == target))
+                .map(|(m, (back, fwd))| (m.lane, back + fwd + 1))
                 .collect()
         })
     }
@@ -881,7 +885,7 @@ impl<K: GridKind> std::ops::Index<K::Coord> for Solution<K> {
             .geometry
             .cell(coord)
             .unwrap_or_else(|| panic!("{coord:?} is outside the puzzle"));
-        &self.cells[cell as usize]
+        &self.cells[cell]
     }
 }
 
@@ -891,7 +895,7 @@ impl<K: GridKind> std::ops::IndexMut<K::Coord> for Solution<K> {
             .geometry
             .cell(coord)
             .unwrap_or_else(|| panic!("{coord:?} is outside the puzzle"));
-        &mut self.cells[cell as usize]
+        &mut self.cells[cell]
     }
 }
 
@@ -915,7 +919,7 @@ impl Solution<Square> {
             clue_style,
             palette,
             Geometry::new(Rect { width, height }),
-            cells,
+            cells.into(),
         )
     }
 
@@ -1000,9 +1004,8 @@ impl<K: GridKind> Solution<K> {
         let Some(cell) = self.geometry.cell(coord) else {
             return vec![];
         };
-        let target = self.cells[cell as usize];
-        self.geometry
-            .runs(cell, |c| self.cells[c as usize] == target)
+        let target = self.cells[cell];
+        self.geometry.runs(cell, |c| self.cells[c] == target)
     }
 }
 
@@ -1018,7 +1021,7 @@ impl Solution<Square> {
                 width: x_size,
                 height: y_size,
             }),
-            vec![BACKGROUND; x_size * y_size],
+            vec![BACKGROUND; x_size * y_size].into(),
         )
     }
 
@@ -1282,6 +1285,8 @@ impl Document {
 
 #[cfg(test)]
 mod block_tests {
+    use crate::geometry::FamilyIdx;
+
     /// The gutters' hover readout must agree with the sidebar rosette: the block through a cell
     /// is that family's two arms plus the cell itself. It also has to name the lane it measured,
     /// in family order, since that's how the gutters find which line to write the number beside.
@@ -1291,21 +1296,30 @@ mod block_tests {
             let mut doc = crate::import::load_path(&path.into(), None).unwrap();
             let picture = doc.solution_mut();
 
-            for cell in 0..picture.cells().len() as u32 {
+            for cell in picture.lane_map().cells() {
                 let runs = picture.runs_at_cell(cell);
                 let blocks = picture.blocks_at_cell(cell);
                 assert_eq!(runs.len(), blocks.len(), "{path}: one entry per family");
 
-                for (family, ((back, fwd), (lane, len))) in runs.iter().zip(&blocks).enumerate() {
-                    assert_eq!(*len, back + fwd + 1, "{path}: cell {cell}, family {family}");
+                for (family, ((back, fwd), (lane, len))) in runs
+                    .iter()
+                    .zip(&blocks)
+                    .enumerate()
+                    .map(|(f, x)| (FamilyIdx(f as u32), x))
+                {
+                    assert_eq!(
+                        *len,
+                        back + fwd + 1,
+                        "{path}: cell {cell:?}, family {family:?}"
+                    );
                     let lane = picture.lane_map().lane(*lane);
                     assert_eq!(
                         lane.family, family,
-                        "{path}: cell {cell} lanes out of order"
+                        "{path}: cell {cell:?} lanes out of order"
                     );
                     assert!(
-                        lane.cells.contains(&cell),
-                        "{path}: cell {cell} isn't on the lane its block was measured along"
+                        lane.cells.raw.contains(&cell),
+                        "{path}: cell {cell:?} isn't on the lane its block was measured along"
                     );
                     assert!(
                         *len <= lane.cells.len(),
@@ -1332,7 +1346,7 @@ mod resize_tests {
                 (Color(1), ColorInfo::default_fg(Color(1))),
             ]),
             geometry,
-            vec![BACKGROUND; cell_count],
+            vec![BACKGROUND; cell_count].into(),
         )
     }
 
@@ -1340,8 +1354,8 @@ mod resize_tests {
     fn resizing_carries_colors_over_by_coordinate() {
         let mut sol = blank_tri(2);
         // Paint one interior cell a distinguishing color and remember its coordinate.
-        let coord = sol.geometry.coord(0);
-        sol.cells[0] = Color(1);
+        let coord = sol.geometry.coord(CellIdx(0));
+        sol.cells[CellIdx(0)] = Color(1);
 
         for side in Side::all() {
             let bigger = sol
@@ -1356,16 +1370,18 @@ mod resize_tests {
             );
 
             // ...and every newly added cell starts out background.
-            let old_coords: std::collections::HashSet<TriCoord> = (0..sol.geometry.cell_count()
-                as u32)
+            let old_coords: std::collections::HashSet<TriCoord> = sol
+                .geometry
+                .lane_map()
+                .cells()
                 .map(|c| sol.geometry.coord(c))
                 .collect();
             let mut saw_new_cell = false;
-            for cell in 0..bigger.geometry.cell_count() as u32 {
+            for cell in bigger.geometry.lane_map().cells() {
                 if !old_coords.contains(&bigger.geometry.coord(cell)) {
                     saw_new_cell = true;
                     assert_eq!(
-                        bigger.cells[cell as usize], BACKGROUND,
+                        bigger.cells[cell], BACKGROUND,
                         "growing {side:?} should start new cells as background"
                     );
                 }

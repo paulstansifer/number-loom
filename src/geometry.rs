@@ -38,6 +38,72 @@
 //! [`Outline::from_griddlers`] ignores it.
 
 use serde::{Deserialize, Serialize};
+use typed_index_collections::{TiSlice, TiVec};
+
+/// Define a typed index: a `u32` newtype usable as a [`TiVec`] key.
+///
+/// `TiVec` asks its key for `From<usize>`/`Into<usize>`, which is all these provide — the point
+/// is that the compiler won't let one stand in for another. `Debug` prints as `L7` rather than
+/// `LaneIdx(7)`, since these show up inside bigger structures.
+/// What `range` hands back. Spelled out rather than `impl Iterator` so it can be stored in a
+/// struct field (`RowIter`) and named in a `where` clause.
+pub type IdxRange<K> = std::iter::Map<std::ops::Range<u32>, fn(u32) -> K>;
+
+macro_rules! typed_index {
+    ($(#[$doc:meta])* $name:ident, $tag:literal) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(pub u32);
+
+        impl $name {
+            /// `start..end` as an iterator. `Range<Self>` can slice a `TiSlice`, but iterating one
+            /// would need `std::iter::Step`, which is still nightly-only.
+            pub fn range(r: std::ops::Range<Self>) -> IdxRange<Self> {
+                (r.start.0..r.end.0).map($name as fn(u32) -> Self)
+            }
+        }
+
+        impl From<usize> for $name {
+            fn from(i: usize) -> $name {
+                $name(i as u32)
+            }
+        }
+
+        impl From<$name> for usize {
+            fn from(i: $name) -> usize {
+                i.0 as usize
+            }
+        }
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}{}", $tag, self.0)
+            }
+        }
+    };
+}
+
+typed_index!(
+    /// A cell of the puzzle, by its index in `Solution::cells` / a `PartialSolution`.
+    CellIdx,
+    "c"
+);
+typed_index!(
+    /// A lane, by its index in [`LaneMap::lanes`]. `Puzzle::lines` and the solver's per-lane
+    /// analyses are all keyed by this too.
+    LaneIdx,
+    "L"
+);
+typed_index!(
+    /// A clue family: rows and columns for a square puzzle, three lane directions for a triddler.
+    FamilyIdx,
+    "f"
+);
+typed_index!(
+    /// How far along a lane a cell sits — an index into [`Lane::cells`], not a cell itself.
+    LanePos,
+    "p"
+);
 
 /// A triangular cell. `a` indexes its row, `b` its `/` line, `c` its `\` line.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -460,9 +526,9 @@ pub enum Shape {
 /// One line of cells that a single clue-list applies to.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Lane {
-    pub family: usize,
-    /// Cell indices, in the order the clues are read.
-    pub cells: Vec<u32>,
+    pub family: FamilyIdx,
+    /// The cells, in the order the clues are read.
+    pub cells: TiVec<LanePos, CellIdx>,
     /// Only meaningful for triangular puzzles.
     pub clue_set: Option<ClueSet>,
 }
@@ -470,8 +536,8 @@ pub struct Lane {
 /// Where a cell sits within one of the lanes containing it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Membership {
-    pub lane: u32,
-    pub position: u32,
+    pub lane: LaneIdx,
+    pub position: LanePos,
 }
 
 /// The part of a puzzle's shape that the solver needs: how many cells there are, which lanes
@@ -482,21 +548,22 @@ pub struct Membership {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LaneMap {
     cell_count: usize,
-    lanes: Vec<Lane>,
-    /// `family_starts[f]..family_starts[f + 1]` indexes `lanes` for family `f`.
-    family_starts: Vec<usize>,
-    /// Indexed by cell; one entry per family.
-    memberships: Vec<Vec<Membership>>,
+    lanes: TiVec<LaneIdx, Lane>,
+    /// `family_starts[f]..family_starts[f + 1]` indexes `lanes` for family `f`. One longer than
+    /// the family count, so it isn't a `TiVec<FamilyIdx, _>`.
+    family_starts: Vec<LaneIdx>,
+    /// One entry per family.
+    memberships: TiVec<CellIdx, Vec<Membership>>,
 }
 
 impl LaneMap {
-    fn new(cell_count: usize, lanes: Vec<Lane>, family_starts: Vec<usize>) -> LaneMap {
-        let mut memberships = vec![vec![]; cell_count];
-        for (lane_idx, lane) in lanes.iter().enumerate() {
-            for (position, cell) in lane.cells.iter().enumerate() {
-                memberships[*cell as usize].push(Membership {
-                    lane: lane_idx as u32,
-                    position: position as u32,
+    fn new(cell_count: usize, lanes: TiVec<LaneIdx, Lane>, family_starts: Vec<LaneIdx>) -> LaneMap {
+        let mut memberships: TiVec<CellIdx, Vec<Membership>> = vec![vec![]; cell_count].into();
+        for (lane_idx, lane) in lanes.iter_enumerated() {
+            for (position, cell) in lane.cells.iter_enumerated() {
+                memberships[*cell].push(Membership {
+                    lane: lane_idx,
+                    position,
                 });
             }
         }
@@ -513,10 +580,8 @@ impl LaneMap {
 
     fn each_cell_is_in_one_lane_per_family(&self) -> bool {
         self.memberships.iter().all(|m| {
-            let mut families: Vec<usize> = m
-                .iter()
-                .map(|m| self.lanes[m.lane as usize].family)
-                .collect();
+            let mut families: Vec<FamilyIdx> =
+                m.iter().map(|m| self.lanes[m.lane].family).collect();
             families.sort();
             families.dedup();
             families.len() == self.family_count() && m.len() == self.family_count()
@@ -531,11 +596,20 @@ impl LaneMap {
         self.family_starts.len() - 1
     }
 
-    pub fn lanes(&self) -> &[Lane] {
+    pub fn families(&self) -> IdxRange<FamilyIdx> {
+        FamilyIdx::range(FamilyIdx(0)..FamilyIdx(self.family_count() as u32))
+    }
+
+    /// Every cell of the puzzle, in the dense order the geometry defines.
+    pub fn cells(&self) -> IdxRange<CellIdx> {
+        CellIdx::range(CellIdx(0)..CellIdx(self.cell_count as u32))
+    }
+
+    pub fn lanes(&self) -> &TiSlice<LaneIdx, Lane> {
         &self.lanes
     }
 
-    pub fn lane(&self, idx: usize) -> &Lane {
+    pub fn lane(&self, idx: LaneIdx) -> &Lane {
         &self.lanes[idx]
     }
 
@@ -543,33 +617,47 @@ impl LaneMap {
         self.lanes.len()
     }
 
-    /// The range of lane indices belonging to `family`.
-    pub fn family(&self, family: usize) -> std::ops::Range<usize> {
-        self.family_starts[family]..self.family_starts[family + 1]
+    /// Every lane of `family`, in order.
+    pub fn family(&self, family: FamilyIdx) -> IdxRange<LaneIdx> {
+        LaneIdx::range(self.family_range(family))
+    }
+
+    /// The lanes of `family` as a range, for slicing anything else keyed by [`LaneIdx`].
+    pub fn family_range(&self, family: FamilyIdx) -> std::ops::Range<LaneIdx> {
+        let f = usize::from(family);
+        self.family_starts[f]..self.family_starts[f + 1]
+    }
+
+    /// How many lanes `family` has.
+    pub fn family_len(&self, family: FamilyIdx) -> usize {
+        let r = self.family_range(family);
+        (r.end.0 - r.start.0) as usize
     }
 
     /// The lane index of the `index_in_family`th lane of `family`.
     ///
     /// Nearly everything (`Puzzle::lines`, `Membership`, `GutterLane`, the solver's analyses) is
-    /// indexed by a single index into `lanes()`. A square puzzle's clue gutters are the
-    /// exception: each draws one family, and numbers its lines within it. This converts, and
+    /// keyed by [`LaneIdx`]. A square puzzle's clue gutters are the exception: each draws one
+    /// family, and numbers its lines within it. This converts, and
     /// [`split_family`](Self::split_family) converts back.
-    pub fn lane_in_family(&self, family: usize, index_in_family: usize) -> usize {
-        let range = self.family(family);
-        debug_assert!(index_in_family < range.len());
-        range.start + index_in_family
+    pub fn lane_in_family(&self, family: FamilyIdx, index_in_family: usize) -> LaneIdx {
+        debug_assert!(index_in_family < self.family_len(family));
+        LaneIdx(self.family_range(family).start.0 + index_in_family as u32)
     }
 
-    /// A lane index as `(family, index_in_family)` — the inverse of
+    /// A lane as `(family, index_in_family)` — the inverse of
     /// [`lane_in_family`](Self::lane_in_family).
-    pub fn split_family(&self, lane: usize) -> (usize, usize) {
+    pub fn split_family(&self, lane: LaneIdx) -> (FamilyIdx, usize) {
         let family = self.lanes[lane].family;
-        (family, lane - self.family(family).start)
+        (
+            family,
+            (lane.0 - self.family_range(family).start.0) as usize,
+        )
     }
 
-    /// Every lane containing this cell, one per family.
-    pub fn memberships(&self, cell: u32) -> &[Membership] {
-        &self.memberships[cell as usize]
+    /// Every lane containing this cell (will be one per family).
+    pub fn memberships(&self, cell: CellIdx) -> &[Membership] {
+        &self.memberships[cell]
     }
 
     /// How many lanes fall into each webpbn clue set. Meaningless for square puzzles.
@@ -590,9 +678,11 @@ impl LaneMap {
     }
 
     /// Lane indices in the given clue set, in the order webpbn lists them.
-    pub fn lanes_in_clue_set(&self, clue_set: ClueSet) -> Vec<usize> {
-        (0..self.lanes.len())
-            .filter(|i| self.lanes[*i].clue_set == Some(clue_set))
+    pub fn lanes_in_clue_set(&self, clue_set: ClueSet) -> Vec<LaneIdx> {
+        self.lanes
+            .iter_enumerated()
+            .filter(|(_, lane)| lane.clue_set == Some(clue_set))
+            .map(|(idx, _)| idx)
             .collect()
     }
 }
@@ -614,7 +704,7 @@ mod tests {
     fn spell(lane: &Lane) -> String {
         lane.cells
             .iter()
-            .map(|c| (b'A' + *c as u8) as char)
+            .map(|c| (b'A' + c.0 as u8) as char)
             .collect()
     }
 
@@ -624,13 +714,22 @@ mod tests {
         assert_eq!(geo.cell_count(), 16);
 
         // The doc writes the solution as `/ABCDE\`, `/FGHIJK/`, `\LMNOP/`.
-        let rows: Vec<String> = geo.family(0).map(|i| spell(geo.lane(i))).collect();
+        let rows: Vec<String> = geo
+            .family(FamilyIdx(0))
+            .map(|i| spell(geo.lane(i)))
+            .collect();
         assert_eq!(rows, vec!["ABCDE", "FGHIJK", "LMNOP"]);
 
-        let slashes: Vec<String> = geo.family(1).map(|i| spell(geo.lane(i))).collect();
+        let slashes: Vec<String> = geo
+            .family(FamilyIdx(1))
+            .map(|i| spell(geo.lane(i)))
+            .collect();
         assert_eq!(slashes, vec!["BAGFL", "DCIHNM", "EKJPO"]);
 
-        let backslashes: Vec<String> = geo.family(2).map(|i| spell(geo.lane(i))).collect();
+        let backslashes: Vec<String> = geo
+            .family(FamilyIdx(2))
+            .map(|i| spell(geo.lane(i)))
+            .collect();
         // `\` lines read top-left to bottom-right, the opposite of the end their clues are
         // labelled from. See the note in `Geometry::<Tri>::new`.
         assert_eq!(backslashes, vec!["FLM", "AGHNO", "BCIJP", "DEK"]);
@@ -698,9 +797,9 @@ mod tests {
 
         let ten = Geometry::<Tri>::new(Outline::from_griddlers("(5+3)x(6+2)x2").unwrap());
         assert_eq!(ten.cell_count(), 115);
-        assert_eq!(ten.family(0).len(), 8); // rows: 5 + 3.
-        assert_eq!(ten.family(1).len(), 8); // `/` lines: 6 + 2.
-        assert_eq!(ten.family(2).len(), 11); // `\` lines: the implied 5 + 6.
+        assert_eq!(ten.family_len(FamilyIdx(0)), 8); // rows: 5 + 3.
+        assert_eq!(ten.family_len(FamilyIdx(1)), 8); // `/` lines: 6 + 2.
+        assert_eq!(ten.family_len(FamilyIdx(2)), 11); // `\` lines: the implied 5 + 6.
     }
 
     #[test]
@@ -735,10 +834,10 @@ mod tests {
         for outline in [doc_example(), Outline::hexagon(3)] {
             let geo = Geometry::<Tri>::new(outline);
             let dirs = geo.arm_directions();
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 for m in geo.memberships(cell) {
-                    let lane = geo.lane(m.lane as usize);
-                    let pos = m.position as usize;
+                    let lane = geo.lane(m.lane);
+                    let pos = usize::from(m.position);
                     // Two steps along a lane land on a cell of the same shape, so the
                     // bounding-box origins differ by exactly twice the step.
                     let neighbors = [
@@ -748,14 +847,14 @@ mod tests {
                     for (i, other) in neighbors.into_iter().enumerate() {
                         let Some(other) = other else { continue };
                         let from = geo.cell_origin(cell);
-                        let to = geo.cell_origin(lane.cells[other]);
+                        let to = geo.cell_origin(lane.cells[LanePos::from(other)]);
                         let (dx, dy) = (to.x - from.x, to.y - from.y);
                         let len = (dx * dx + dy * dy).sqrt();
                         let (dx, dy) = (dx / len, dy / len);
-                        let want = dirs[lane.family * 2 + i];
+                        let want = dirs[usize::from(lane.family) * 2 + i];
                         assert!(
                             (dx - want.x).abs() < 1e-3 && (dy - want.y).abs() < 1e-3,
-                            "family {} {} arm: lane runs ({dx}, {dy}), but arm_directions says ({}, {})",
+                            "family {:?} {} arm: lane runs ({dx}, {dy}), but arm_directions says ({}, {})",
                             lane.family,
                             if i == 0 { "back" } else { "forward" },
                             want.x,
@@ -799,14 +898,18 @@ mod tests {
             },
         ] {
             let geo = Geometry::<Tri>::new(outline);
-            for family in 0..geo.family_count() {
+            for family in geo.families() {
                 let mut seen = std::collections::HashSet::new();
                 for lane in geo.family(family) {
                     for cell in &geo.lane(lane).cells {
-                        assert!(seen.insert(*cell), "family {family} covers a cell twice");
+                        assert!(seen.insert(*cell), "family {family:?} covers a cell twice");
                     }
                 }
-                assert_eq!(seen.len(), geo.cell_count(), "family {family} misses cells");
+                assert_eq!(
+                    seen.len(),
+                    geo.cell_count(),
+                    "family {family:?} misses cells"
+                );
             }
         }
     }
@@ -817,9 +920,9 @@ mod tests {
             let geo = Geometry::<Tri>::new(Outline::hexagon(side));
             assert_eq!(geo.cell_count() as i32, 6 * side * side);
             // A regular hexagon splits every family evenly between its two clue sets.
-            assert_eq!(geo.family(0).len() as i32, 2 * side);
-            assert_eq!(geo.family(1).len() as i32, 2 * side);
-            assert_eq!(geo.family(2).len() as i32, 2 * side);
+            assert_eq!(geo.family_len(FamilyIdx(0)) as i32, 2 * side);
+            assert_eq!(geo.family_len(FamilyIdx(1)) as i32, 2 * side);
+            assert_eq!(geo.family_len(FamilyIdx(2)) as i32, 2 * side);
         }
     }
 
@@ -925,7 +1028,10 @@ mod tests {
         assert_eq!(geo.cell_count(), 16);
         assert_eq!(geo.clue_set_counts(), counts);
 
-        let rows: Vec<usize> = geo.family(0).map(|i| geo.lane(i).cells.len()).collect();
+        let rows: Vec<usize> = geo
+            .family(FamilyIdx(0))
+            .map(|i| geo.lane(i).cells.len())
+            .collect();
         assert_eq!(rows, vec![5, 6, 5]);
     }
 
@@ -961,7 +1067,7 @@ mod tests {
             let recovered_geo = Geometry::<Tri>::new(recovered);
             assert_eq!(recovered_geo.cell_count(), geo.cell_count());
             assert_eq!(recovered_geo.clue_set_counts(), counts);
-            for family in 0..3 {
+            for family in geo.families() {
                 let original: Vec<usize> = geo
                     .family(family)
                     .map(|i| geo.lane(i).cells.len())
@@ -970,7 +1076,7 @@ mod tests {
                     .family(family)
                     .map(|i| recovered_geo.lane(i).cells.len())
                     .collect();
-                assert_eq!(original, round_tripped, "{outline:?} family {family}");
+                assert_eq!(original, round_tripped, "{outline:?} family {family:?}");
             }
             checked += 1;
         }
@@ -1044,10 +1150,16 @@ mod tests {
         assert_eq!(geo.cell_count(), 6);
         assert_eq!(geo.family_count(), 2);
 
-        let rows: Vec<Vec<u32>> = geo.family(0).map(|i| geo.lane(i).cells.clone()).collect();
+        let rows: Vec<Vec<u32>> = geo
+            .family(FamilyIdx(0))
+            .map(|i| geo.lane(i).cells.iter().map(|c| c.0).collect())
+            .collect();
         assert_eq!(rows, vec![vec![0, 1, 2], vec![3, 4, 5]]);
 
-        let cols: Vec<Vec<u32>> = geo.family(1).map(|i| geo.lane(i).cells.clone()).collect();
+        let cols: Vec<Vec<u32>> = geo
+            .family(FamilyIdx(1))
+            .map(|i| geo.lane(i).cells.iter().map(|c| c.0).collect())
+            .collect();
         assert_eq!(cols, vec![vec![0, 3], vec![1, 4], vec![2, 5]]);
     }
 
@@ -1057,21 +1169,18 @@ mod tests {
             width: 4,
             height: 3,
         });
-        for cell in 0..square.cell_count() as u32 {
+        for cell in square.lane_map().cells() {
             assert_eq!(square.memberships(cell).len(), square.family_count());
             for m in square.memberships(cell) {
-                assert_eq!(
-                    square.lane(m.lane as usize).cells[m.position as usize],
-                    cell
-                );
+                assert_eq!(square.lane(m.lane).cells[m.position], cell);
             }
         }
         for outline in [doc_example(), Outline::hexagon(2)] {
             let geo = Geometry::<Tri>::new(outline);
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 assert_eq!(geo.memberships(cell).len(), geo.family_count());
                 for m in geo.memberships(cell) {
-                    assert_eq!(geo.lane(m.lane as usize).cells[m.position as usize], cell);
+                    assert_eq!(geo.lane(m.lane).cells[m.position], cell);
                 }
             }
         }
@@ -1082,14 +1191,14 @@ mod tests {
     #[test]
     fn two_lanes_can_share_two_cells() {
         let geo = Geometry::<Tri>::new(doc_example());
-        let row_a: std::collections::HashSet<u32> = geo
-            .lane(geo.family(0).start)
+        let row_a: std::collections::HashSet<CellIdx> = geo
+            .lane(geo.family_range(FamilyIdx(0)).start)
             .cells
             .iter()
             .copied()
             .collect();
-        let slash: std::collections::HashSet<u32> = geo
-            .lane(geo.family(1).start)
+        let slash: std::collections::HashSet<CellIdx> = geo
+            .lane(geo.family_range(FamilyIdx(1)).start)
             .cells
             .iter()
             .copied()
@@ -1154,7 +1263,7 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     /// Shapes are equal up to position, so equality and serialization compare normalized dims.
     fn normalize(dims: &Self::Dims) -> Self::Dims;
 
-    fn build(dims: &Self::Dims) -> (LaneMap, Vec<Self::Coord>, Self::Lookup);
+    fn build(dims: &Self::Dims) -> (LaneMap, TiVec<CellIdx, Self::Coord>, Self::Lookup);
 
     /// The kind-erased form, for serialization and for runtime dispatch.
     fn to_shape(dims: &Self::Dims) -> Shape;
@@ -1171,14 +1280,14 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     fn resized(dims: &Self::Dims, side: Self::Side, delta: i32) -> Option<Self::Dims>;
 
     /// `None` when the coordinate is outside the puzzle.
-    fn cell_of(dims: &Self::Dims, lookup: &Self::Lookup, coord: Self::Coord) -> Option<u32>;
+    fn cell_of(dims: &Self::Dims, lookup: &Self::Lookup, coord: Self::Coord) -> Option<CellIdx>;
 
     /// Cells sharing an edge: 4 for a square, 3 for a triangle. Unused slots are `None`. These
     /// may be outside the puzzle; callers filter with `cell_of`.
     fn edge_neighbors(coord: Self::Coord) -> [Option<Self::Coord>; 4];
 
     /// One step along `family`, in the direction that family's lanes are stored.
-    fn step(coord: Self::Coord, family: usize, forward: bool) -> Self::Coord;
+    fn step(coord: Self::Coord, family: FamilyIdx, forward: bool) -> Self::Coord;
 
     fn cell_shape(coord: Self::Coord) -> CellShape;
     /// The top-left of the cell's bounding box, in abstract units.
@@ -1207,7 +1316,7 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     /// Whether a family's clues are labelled at the *last* cell of its lanes rather than the
     /// first. True only for `\` lines, which are stored reading top-left to bottom-right but are
     /// labelled at the bottom — the same asymmetry both file formats have.
-    fn clue_end_is_last(family: usize) -> bool;
+    fn clue_end_is_last(family: FamilyIdx) -> bool;
 
     /// Erase the kind, for results that cross back to the GUI and the CLI.
     fn wrap_solution(s: crate::puzzle::Solution<Self>) -> crate::puzzle::DynSolution;
@@ -1237,23 +1346,31 @@ impl GridKind for Square {
         *dims
     }
 
-    fn build(dims: &Rect) -> (LaneMap, Vec<(usize, usize)>, ()) {
+    fn build(dims: &Rect) -> (LaneMap, TiVec<CellIdx, (usize, usize)>, ()) {
         let (width, height) = (dims.width, dims.height);
-        let mut lanes = vec![];
+        let mut lanes: TiVec<LaneIdx, Lane> = TiVec::new();
 
         // Cell `(x, y)` is index `y * width + x`, matching the old row-major `Array2` layout.
         for y in 0..height {
             lanes.push(Lane {
-                family: 0,
-                cells: (0..width).map(|x| (y * width + x) as u32).collect(),
+                family: FamilyIdx(0),
+                cells: (0..width)
+                    .map(|x| CellIdx((y * width + x) as u32))
+                    .collect(),
                 clue_set: None,
             });
         }
-        let family_starts = vec![0, height, height + width];
+        let family_starts = vec![
+            LaneIdx(0),
+            LaneIdx(height as u32),
+            LaneIdx((height + width) as u32),
+        ];
         for x in 0..width {
             lanes.push(Lane {
-                family: 1,
-                cells: (0..height).map(|y| (y * width + x) as u32).collect(),
+                family: FamilyIdx(1),
+                cells: (0..height)
+                    .map(|y| CellIdx((y * width + x) as u32))
+                    .collect(),
                 clue_set: None,
             });
         }
@@ -1306,8 +1423,8 @@ impl GridKind for Square {
         })
     }
 
-    fn cell_of(dims: &Rect, _: &(), (x, y): (usize, usize)) -> Option<u32> {
-        (x < dims.width && y < dims.height).then(|| (y * dims.width + x) as u32)
+    fn cell_of(dims: &Rect, _: &(), (x, y): (usize, usize)) -> Option<CellIdx> {
+        (x < dims.width && y < dims.height).then(|| CellIdx((y * dims.width + x) as u32))
     }
 
     fn edge_neighbors((x, y): (usize, usize)) -> [Option<(usize, usize)>; 4] {
@@ -1319,9 +1436,9 @@ impl GridKind for Square {
         ]
     }
 
-    fn step((x, y): (usize, usize), family: usize, forward: bool) -> (usize, usize) {
+    fn step((x, y): (usize, usize), family: FamilyIdx, forward: bool) -> (usize, usize) {
         let bump = |n: usize| if forward { n + 1 } else { n.wrapping_sub(1) };
-        match family {
+        match family.0 {
             0 => (bump(x), y),
             _ => (x, bump(y)),
         }
@@ -1368,7 +1485,7 @@ impl GridKind for Square {
         &DIRS
     }
 
-    fn clue_end_is_last(_family: usize) -> bool {
+    fn clue_end_is_last(_family: FamilyIdx) -> bool {
         false
     }
 
@@ -1397,13 +1514,13 @@ impl GridKind for Tri {
         dims.normalized()
     }
 
-    fn build(outline: &Outline) -> (LaneMap, Vec<TriCoord>, TriLookup) {
+    fn build(outline: &Outline) -> (LaneMap, TiVec<CellIdx, TriCoord>, TriLookup) {
         let outline = *outline;
         let coords = outline.cells();
-        let index_of: std::collections::HashMap<TriCoord, u32> = coords
+        let index_of: std::collections::HashMap<TriCoord, CellIdx> = coords
             .iter()
             .enumerate()
-            .map(|(i, t)| (*t, i as u32))
+            .map(|(i, t)| (*t, CellIdx(i as u32)))
             .collect();
 
         // For each family: the coordinate to group by, the direction to walk from the *labelled*
@@ -1453,8 +1570,8 @@ impl GridKind for Tri {
             ),
         ];
 
-        let mut lanes = vec![];
-        let mut family_starts = vec![0];
+        let mut lanes: TiVec<LaneIdx, Lane> = TiVec::new();
+        let mut family_starts = vec![LaneIdx(0)];
 
         for (family, (key, forward, backward, near_set, far_set, read_from_far_end)) in
             families.into_iter().enumerate()
@@ -1476,7 +1593,7 @@ impl GridKind for Tri {
                 }
 
                 // ...then forward, collecting the whole lane.
-                let mut cells = vec![index_of[&start]];
+                let mut cells: TiVec<LanePos, CellIdx> = vec![index_of[&start]].into();
                 let mut at = start;
                 while outline.contains(at.step(forward)) {
                     at = at.step(forward);
@@ -1495,12 +1612,12 @@ impl GridKind for Tri {
                 };
 
                 lanes.push(Lane {
-                    family,
+                    family: FamilyIdx(family as u32),
                     cells,
                     clue_set: Some(if near { near_set } else { far_set }),
                 });
             }
-            family_starts.push(lanes.len());
+            family_starts.push(lanes.next_key());
         }
 
         // Rows are contiguous runs of the dense numbering, so a start offset and the leftmost
@@ -1531,7 +1648,7 @@ impl GridKind for Tri {
 
         (
             LaneMap::new(coords.len(), lanes, family_starts),
-            coords,
+            coords.into(),
             lookup,
         )
     }
@@ -1562,7 +1679,7 @@ impl GridKind for Tri {
         dims.resized(side, delta)
     }
 
-    fn cell_of(outline: &Outline, lookup: &TriLookup, t: TriCoord) -> Option<u32> {
+    fn cell_of(outline: &Outline, lookup: &TriLookup, t: TriCoord) -> Option<CellIdx> {
         if !t.is_valid() {
             return None;
         }
@@ -1573,7 +1690,7 @@ impl GridKind for Tri {
         // A row of a convex outline is contiguous, so this range check *is* the containment
         // check — no scan needed.
         let offset = u32::try_from(p - lookup.row_p_min[row]).ok()?;
-        (offset < len).then_some(start + offset)
+        (offset < len).then_some(CellIdx(start + offset))
     }
 
     fn edge_neighbors(t: TriCoord) -> [Option<TriCoord>; 4] {
@@ -1595,9 +1712,9 @@ impl GridKind for Tri {
         }
     }
 
-    fn step(t: TriCoord, family: usize, forward: bool) -> TriCoord {
+    fn step(t: TriCoord, family: FamilyIdx, forward: bool) -> TriCoord {
         // The direction each family's lanes are stored in; see `Tri::build`.
-        let dir = match (family, forward) {
+        let dir = match (family.0, forward) {
             (0, true) => Direction::Right,
             (0, false) => Direction::Left,
             (1, true) => Direction::DownLeft,
@@ -1698,8 +1815,8 @@ impl GridKind for Tri {
         &DIRS
     }
 
-    fn clue_end_is_last(family: usize) -> bool {
-        family == 2
+    fn clue_end_is_last(family: FamilyIdx) -> bool {
+        family.0 == 2
     }
 
     fn wrap_solution(s: crate::puzzle::Solution<Tri>) -> crate::puzzle::DynSolution {
@@ -1719,7 +1836,7 @@ pub struct Geometry<K: GridKind> {
     dims: K::Dims,
     lookup: K::Lookup,
     /// Parallel to cell indices.
-    coords: Vec<K::Coord>,
+    coords: TiVec<CellIdx, K::Coord>,
     guides: Vec<Guide>,
     gutters: Vec<(Option<ClueSet>, Vec<GutterLane>)>,
     lanes: LaneMap,
@@ -1780,11 +1897,23 @@ impl<K: GridKind> Geometry<K> {
         self.lanes.family_count()
     }
 
-    pub fn family(&self, family: usize) -> std::ops::Range<usize> {
+    pub fn family(&self, family: FamilyIdx) -> IdxRange<LaneIdx> {
         self.lanes.family(family)
     }
 
-    pub fn lane(&self, idx: usize) -> &Lane {
+    pub fn family_range(&self, family: FamilyIdx) -> std::ops::Range<LaneIdx> {
+        self.lanes.family_range(family)
+    }
+
+    pub fn family_len(&self, family: FamilyIdx) -> usize {
+        self.lanes.family_len(family)
+    }
+
+    pub fn families(&self) -> IdxRange<FamilyIdx> {
+        self.lanes.families()
+    }
+
+    pub fn lane(&self, idx: LaneIdx) -> &Lane {
         self.lanes.lane(idx)
     }
 
@@ -1792,24 +1921,24 @@ impl<K: GridKind> Geometry<K> {
         self.lanes.lane_count()
     }
 
-    pub fn memberships(&self, cell: u32) -> &[Membership] {
+    pub fn memberships(&self, cell: CellIdx) -> &[Membership] {
         self.lanes.memberships(cell)
     }
 
-    pub fn coord(&self, cell: u32) -> K::Coord {
-        self.coords[cell as usize]
+    pub fn coord(&self, cell: CellIdx) -> K::Coord {
+        self.coords[cell]
     }
 
-    pub fn coords(&self) -> &[K::Coord] {
+    pub fn coords(&self) -> &TiSlice<CellIdx, K::Coord> {
         &self.coords
     }
 
-    pub fn cell(&self, coord: K::Coord) -> Option<u32> {
+    pub fn cell(&self, coord: K::Coord) -> Option<CellIdx> {
         K::cell_of(&self.dims, &self.lookup, coord)
     }
 
     /// Cells sharing an edge with this one, already filtered to those inside the puzzle.
-    pub fn neighbor_cells(&self, cell: u32) -> impl Iterator<Item = u32> + '_ {
+    pub fn neighbor_cells(&self, cell: CellIdx) -> impl Iterator<Item = CellIdx> + '_ {
         K::edge_neighbors(self.coord(cell))
             .into_iter()
             .flatten()
@@ -1818,16 +1947,22 @@ impl<K: GridKind> Geometry<K> {
 
     /// How far a run of matching cells extends from `cell` along each family, as
     /// `(backward, forward)` counts not including `cell` itself.
-    pub fn runs(&self, cell: u32, matches: impl Fn(u32) -> bool) -> Vec<(usize, usize)> {
+    pub fn runs(&self, cell: CellIdx, matches: impl Fn(CellIdx) -> bool) -> Vec<(usize, usize)> {
         self.lanes
             .memberships(cell)
             .iter()
             .map(|m| {
-                let lane = &self.lanes.lane(m.lane as usize).cells;
-                let pos = m.position as usize;
-                let back = (0..pos).rev().take_while(|i| matches(lane[*i])).count();
-                let fwd = (pos + 1..lane.len())
-                    .take_while(|i| matches(lane[*i]))
+                let lane = &self.lanes.lane(m.lane).cells;
+                let back = lane[..m.position]
+                    .iter()
+                    .rev()
+                    .take_while(|c| matches(**c))
+                    .count();
+                // `skip(1)` steps over `cell` itself, which the counts don't include.
+                let fwd = lane[m.position..]
+                    .iter()
+                    .skip(1)
+                    .take_while(|c| matches(**c))
                     .count();
                 (back, fwd)
             })
@@ -1838,11 +1973,11 @@ impl<K: GridKind> Geometry<K> {
         K::extent(&self.dims, &self.lookup)
     }
 
-    pub fn cell_shape(&self, cell: u32) -> CellShape {
+    pub fn cell_shape(&self, cell: CellIdx) -> CellShape {
         K::cell_shape(self.coord(cell))
     }
 
-    pub fn cell_origin(&self, cell: u32) -> Point {
+    pub fn cell_origin(&self, cell: CellIdx) -> Point {
         K::cell_origin(&self.dims, &self.lookup, self.coord(cell))
     }
 
@@ -1857,12 +1992,12 @@ impl<K: GridKind> Geometry<K> {
     }
 
     /// Where `cell` lands under a translation, or `None` if that's off the grid.
-    pub fn translate_cell(&self, cell: u32, steps: (i32, i32)) -> Option<u32> {
+    pub fn translate_cell(&self, cell: CellIdx, steps: (i32, i32)) -> Option<CellIdx> {
         K::translate(self.coord(cell), steps).and_then(|c| self.cell(c))
     }
 
     /// Lane indices in the given clue set, in the order webpbn lists them.
-    pub fn lanes_in_clue_set(&self, clue_set: ClueSet) -> Vec<usize> {
+    pub fn lanes_in_clue_set(&self, clue_set: ClueSet) -> Vec<LaneIdx> {
         self.lanes.lanes_in_clue_set(clue_set)
     }
 
@@ -1891,11 +2026,12 @@ impl<K: GridKind> Geometry<K> {
     /// normally would; only the solver ever looks at it.
     #[cfg(test)]
     pub fn single_lane(len: usize) -> Geometry<Square> {
-        let lanes = vec![Lane {
-            family: 0,
-            cells: (0..len as u32).collect(),
+        let lanes: TiVec<LaneIdx, Lane> = vec![Lane {
+            family: FamilyIdx(0),
+            cells: (0..len as u32).map(CellIdx).collect(),
             clue_set: None,
-        }];
+        }]
+        .into();
         Geometry {
             dims: Rect {
                 width: len,
@@ -1905,7 +2041,7 @@ impl<K: GridKind> Geometry<K> {
             coords: (0..len).map(|x| (x, 0)).collect(),
             guides: vec![],
             gutters: vec![],
-            lanes: LaneMap::new(len, lanes, vec![0, 1]),
+            lanes: LaneMap::new(len, lanes, vec![LaneIdx(0), LaneIdx(1)]),
         }
     }
 
@@ -1920,14 +2056,14 @@ impl<K: GridKind> Geometry<K> {
     pub fn rows(&self) -> RowIter<'_, K> {
         RowIter {
             geometry: self,
-            family: self.lanes.family(0),
+            family: self.lanes.family(FamilyIdx(0)),
         }
     }
 }
 
 pub struct RowIter<'a, K: GridKind> {
     geometry: &'a Geometry<K>,
-    family: std::ops::Range<usize>,
+    family: IdxRange<LaneIdx>,
 }
 
 impl<'a, K: GridKind> Iterator for RowIter<'a, K> {
@@ -1938,7 +2074,7 @@ impl<'a, K: GridKind> Iterator for RowIter<'a, K> {
         let cells = &self.geometry.lanes.lane(lane).cells;
         Some(RowDraw {
             lane,
-            row: lane - self.geometry.lanes.family(0).start,
+            row: self.geometry.lanes.split_family(lane).1,
             origin: cells
                 .first()
                 .map(|c| self.geometry.cell_origin(*c))
@@ -1957,13 +2093,13 @@ impl<'a, K: GridKind> ExactSizeIterator for RowIter<'a, K> {}
 
 pub struct RowDraw<'a, K: GridKind> {
     /// Index into `LaneMap::lanes()`, so also into `Puzzle::lines`.
-    pub lane: usize,
+    pub lane: LaneIdx,
     /// The row's position within its family, for the every-fifth-line emphasis.
     pub row: usize,
     /// The top-left of the row's bounding box.
     pub origin: Point,
     geometry: &'a Geometry<K>,
-    cells: &'a [u32],
+    cells: &'a TiSlice<LanePos, CellIdx>,
 }
 
 impl<'a, K: GridKind> RowDraw<'a, K> {
@@ -1979,7 +2115,7 @@ impl<'a, K: GridKind> RowDraw<'a, K> {
         let first = self.cells.first().copied();
         CellIter {
             cells: self.cells,
-            at: 0,
+            at: LanePos(0),
             origin: self.origin,
             step: match first.map(|c| self.geometry.cell_shape(c)) {
                 // Triangles overlap by half their width; squares simply abut.
@@ -1995,8 +2131,8 @@ impl<'a, K: GridKind> RowDraw<'a, K> {
 }
 
 pub struct CellIter<'a, K: GridKind> {
-    cells: &'a [u32],
-    at: usize,
+    cells: &'a TiSlice<LanePos, CellIdx>,
+    at: LanePos,
     origin: Point,
     step: f32,
     shape: CellShape,
@@ -2006,7 +2142,7 @@ pub struct CellIter<'a, K: GridKind> {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct CellDraw<K: GridKind> {
     /// Dense index — use it directly on `Solution::cells`.
-    pub cell: u32,
+    pub cell: CellIdx,
     pub coord: K::Coord,
     pub shape: CellShape,
     /// The top-left of the cell's bounding box.
@@ -2021,7 +2157,7 @@ impl<'a, K: GridKind> Iterator for CellIter<'a, K> {
         let origin = self.origin;
         let shape = self.shape;
 
-        self.at += 1;
+        self.at.0 += 1;
         self.origin.x += self.step;
         self.shape = match shape {
             CellShape::Square => CellShape::Square,
@@ -2031,14 +2167,14 @@ impl<'a, K: GridKind> Iterator for CellIter<'a, K> {
 
         Some(CellDraw {
             cell,
-            coord: self.geometry.coords[cell as usize],
+            coord: self.geometry.coords[cell],
             shape,
             origin,
         })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let n = self.cells.len() - self.at;
+        let n = self.cells.len() - usize::from(self.at);
         (n, Some(n))
     }
 }
@@ -2050,22 +2186,22 @@ impl<'a, K: GridKind> ExactSizeIterator for CellIter<'a, K> {}
 fn build_guides<K: GridKind>(
     dims: &K::Dims,
     lookup: &K::Lookup,
-    coords: &[K::Coord],
+    coords: &TiSlice<CellIdx, K::Coord>,
     lanes: &LaneMap,
 ) -> Vec<Guide> {
-    let origin = |c: u32| K::cell_origin(dims, lookup, coords[c as usize]);
-    let shape = |c: u32| K::cell_shape(coords[c as usize]);
+    let origin = |c: CellIdx| K::cell_origin(dims, lookup, coords[c]);
+    let shape = |c: CellIdx| K::cell_shape(coords[c]);
 
     let mut res = vec![];
-    for family in 0..lanes.family_count() {
-        let family_lanes: Vec<usize> = lanes.family(family).collect();
+    for family in lanes.families() {
+        let family_lanes: Vec<LaneIdx> = lanes.family(family).collect();
         let Some(&first_lane) = family_lanes.first() else {
             continue;
         };
         let Some(&ref_cell) = lanes.lane(first_lane).cells.first() else {
             continue;
         };
-        let ref_coord = coords[ref_cell as usize];
+        let ref_coord = coords[ref_cell];
 
         // Every lane in a family is a parallel line in the same lattice direction, so compute it
         // once here rather than per lane. Two steps, not one, from a single reference coordinate:
@@ -2096,7 +2232,7 @@ fn build_guides<K: GridKind>(
         // wanted side at all, so its *other* two edges (belonging to the other two families) can
         // easily be more extreme along `d` than the correct ones, producing a guide that cuts
         // through the grid along entirely the wrong diagonal.
-        let lane_boundary = |cells: &[u32], near: bool| -> (Point, Point) {
+        let lane_boundary = |cells: &TiSlice<LanePos, CellIdx>, near: bool| -> (Point, Point) {
             let mut candidates: Vec<Point> = vec![];
             for &cell in cells {
                 let s = shape(cell);
@@ -2174,11 +2310,11 @@ fn build_guides<K: GridKind>(
 fn build_gutters<K: GridKind>(
     dims: &K::Dims,
     lookup: &K::Lookup,
-    coords: &[K::Coord],
+    coords: &TiSlice<CellIdx, K::Coord>,
     lanes: &LaneMap,
 ) -> Vec<(Option<ClueSet>, Vec<GutterLane>)> {
     let mut res: Vec<(Option<ClueSet>, Vec<GutterLane>)> = vec![];
-    for family in 0..lanes.family_count() {
+    for family in lanes.families() {
         let at_last = K::clue_end_is_last(family);
         for lane in lanes.family(family) {
             let cells = &lanes.lane(lane).cells;
@@ -2187,7 +2323,7 @@ fn build_gutters<K: GridKind>(
             };
             let clue_set = lanes.lane(lane).clue_set;
 
-            let coord = coords[*end as usize];
+            let coord = coords[*end];
             let origin = K::cell_origin(dims, lookup, coord);
             let center = K::cell_shape(coord).center(origin);
             // Leaving the lane by its clued end leads away from the grid, and that is exactly
@@ -2202,7 +2338,7 @@ fn build_gutters<K: GridKind>(
             // leaving every square gutter with an `outward` of `(0, 0)` and, downstream of that,
             // a meaningless `anchor`. Nothing noticed, because until now only triddlers drew
             // their gutters from this table.
-            let outward = K::arm_directions()[family * 2 + usize::from(at_last)];
+            let outward = K::arm_directions()[usize::from(family) * 2 + usize::from(at_last)];
             // The midpoint of the edge the lane exits through — *not* the centroid pushed
             // outward. A ▲ and a ▼ have centroids at different heights, so using those would
             // bunch adjacent rows' clues together; their exit edges are properly spaced.
@@ -2315,7 +2451,7 @@ mod typed_tests {
                 let unit = (g.outward.x * g.outward.x + g.outward.y * g.outward.y).sqrt();
                 assert!((unit - 1.0).abs() < 1e-5, "outward must be a unit vector");
                 // Rows are clued on the left, columns above.
-                let expected = if family == 0 {
+                let expected = if family == FamilyIdx(0) {
                     (-1.0, 0.0)
                 } else {
                     (0.0, -1.0)
@@ -2328,13 +2464,13 @@ mod typed_tests {
         assert_eq!(
             seen,
             vec![
-                (0, 0.0, 0.5),
-                (0, 0.0, 1.5),
-                (0, 0.0, 2.5),
-                (1, 0.5, 0.0),
-                (1, 1.5, 0.0),
-                (1, 2.5, 0.0),
-                (1, 3.5, 0.0),
+                (FamilyIdx(0), 0.0, 0.5),
+                (FamilyIdx(0), 0.0, 1.5),
+                (FamilyIdx(0), 0.0, 2.5),
+                (FamilyIdx(1), 0.5, 0.0),
+                (FamilyIdx(1), 1.5, 0.0),
+                (FamilyIdx(1), 2.5, 0.0),
+                (FamilyIdx(1), 3.5, 0.0),
             ]
         );
     }
@@ -2368,7 +2504,7 @@ mod typed_tests {
     fn coord_and_cell_round_trip() {
         for dims in square_shapes() {
             let geo = Geometry::<Square>::new(dims);
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 assert_eq!(geo.cell(geo.coord(cell)), Some(cell));
             }
             assert_eq!(geo.cell((dims.width, 0)), None);
@@ -2376,7 +2512,7 @@ mod typed_tests {
         }
         for dims in tri_shapes() {
             let geo = Geometry::<Tri>::new(dims);
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 assert_eq!(geo.cell(geo.coord(cell)), Some(cell));
             }
         }
@@ -2423,14 +2559,14 @@ mod typed_tests {
     fn hit_test_finds_each_cell_from_its_center() {
         for dims in square_shapes() {
             let geo = Geometry::<Square>::new(dims);
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 let c = geo.cell_shape(cell).center(geo.cell_origin(cell));
                 assert_eq!(geo.cell_at(c), Some(geo.coord(cell)), "{c:?} in {dims:?}");
             }
         }
         for dims in tri_shapes() {
             let geo = Geometry::<Tri>::new(dims);
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 let c = geo.cell_shape(cell).center(geo.cell_origin(cell));
                 assert_eq!(geo.cell_at(c), Some(geo.coord(cell)), "{c:?} in {dims:?}");
             }
@@ -2476,21 +2612,21 @@ mod typed_tests {
     fn rows_visit_every_cell_once_in_dense_order() {
         for dims in square_shapes() {
             let geo = Geometry::<Square>::new(dims);
-            let seen: Vec<u32> = geo
+            let seen: Vec<CellIdx> = geo
                 .rows()
                 .flat_map(|r| r.cells().collect::<Vec<_>>())
                 .map(|c| c.cell)
                 .collect();
-            assert_eq!(seen, (0..geo.cell_count() as u32).collect::<Vec<_>>());
+            assert_eq!(seen, geo.lane_map().cells().collect::<Vec<_>>());
         }
         for dims in tri_shapes() {
             let geo = Geometry::<Tri>::new(dims);
-            let seen: Vec<u32> = geo
+            let seen: Vec<CellIdx> = geo
                 .rows()
                 .flat_map(|r| r.cells().collect::<Vec<_>>())
                 .map(|c| c.cell)
                 .collect();
-            assert_eq!(seen, (0..geo.cell_count() as u32).collect::<Vec<_>>());
+            assert_eq!(seen, geo.lane_map().cells().collect::<Vec<_>>());
         }
     }
 
@@ -2515,7 +2651,7 @@ mod typed_tests {
             ((p.x - px).powi(2) + (p.y - py).powi(2)).sqrt() < 1e-3
         };
 
-        for cell in 0..geo.cell_count() as u32 {
+        for cell in geo.lane_map().cells() {
             let (points, n) = geo.cell_shape(cell).vertices(geo.cell_origin(cell));
             for i in 0..n {
                 let (a, b) = (points[i], points[(i + 1) % n]);
@@ -2525,7 +2661,7 @@ mod typed_tests {
                     .any(|g| on_segment(g.from, g.to, a) && on_segment(g.from, g.to, b));
                 assert!(
                     covered,
-                    "cell {cell} edge {i} ({a:?} - {b:?}) has no covering guide"
+                    "cell {cell:?} edge {i} ({a:?} - {b:?}) has no covering guide"
                 );
             }
         }
@@ -2574,13 +2710,13 @@ mod typed_tests {
         for dims in tri_shapes() {
             let geo = Geometry::<Tri>::new(dims);
             let extent = geo.extent();
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 let o = geo.cell_origin(cell);
                 let size = geo.cell_shape(cell).size();
                 assert!(o.x >= -1e-4 && o.y >= -1e-4, "{o:?}");
                 assert!(
                     o.x + size.x <= extent.x + 1e-4 && o.y + size.y <= extent.y + 1e-4,
-                    "cell {cell} at {o:?} escapes {extent:?} of {dims:?}"
+                    "cell {cell:?} at {o:?} escapes {extent:?} of {dims:?}"
                 );
             }
         }
@@ -2590,11 +2726,11 @@ mod typed_tests {
     fn edge_neighbors_are_symmetric() {
         for dims in tri_shapes() {
             let geo = Geometry::<Tri>::new(dims);
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 for neighbor in geo.neighbor_cells(cell) {
                     assert!(
                         geo.neighbor_cells(neighbor).any(|back| back == cell),
-                        "{cell} -> {neighbor} is not mutual in {dims:?}"
+                        "{cell:?} -> {neighbor:?} is not mutual in {dims:?}"
                     );
                 }
                 // A triangle has three edges; cells on the boundary have fewer neighbors.
@@ -2603,7 +2739,7 @@ mod typed_tests {
         }
         for dims in square_shapes() {
             let geo = Geometry::<Square>::new(dims);
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 for neighbor in geo.neighbor_cells(cell) {
                     assert!(geo.neighbor_cells(neighbor).any(|back| back == cell));
                 }
@@ -2628,8 +2764,8 @@ mod typed_tests {
         let (g1, g2) = (Geometry::<Tri>::new(base), Geometry::<Tri>::new(moved));
         assert_eq!(g1, g2, "same shape, different position");
         assert_eq!(g1.cell_count(), g2.cell_count());
-        assert_eq!(g1.coord(0).a, 0);
-        assert_eq!(g2.coord(0).a, 5, "coordinates are stored as given");
+        assert_eq!(g1.coord(CellIdx(0)).a, 0);
+        assert_eq!(g2.coord(CellIdx(0)).a, 5, "coordinates are stored as given");
     }
 
     /// The whole point of storing dims raw: growing a side must not renumber existing cells.
@@ -2641,7 +2777,7 @@ mod typed_tests {
                 let Some(bigger) = geo.resized(*side, 1) else {
                     continue;
                 };
-                for cell in 0..geo.cell_count() as u32 {
+                for cell in geo.lane_map().cells() {
                     let coord = geo.coord(cell);
                     assert!(
                         bigger.cell(coord).is_some(),
@@ -2684,7 +2820,7 @@ mod typed_tests {
         for dims in tri_shapes() {
             let geo = Geometry::<Tri>::new(dims);
             let old_coords: HashSet<TriCoord> =
-                (0..geo.cell_count() as u32).map(|c| geo.coord(c)).collect();
+                geo.lane_map().cells().map(|c| geo.coord(c)).collect();
             for side in Side::all() {
                 let Some(bigger) = geo.resized(side, 1) else {
                     continue;
@@ -2696,7 +2832,7 @@ mod typed_tests {
                 // mixing positions from `geo` and `bigger` directly would be meaningless).
                 let (mut old_sum, mut old_n) = (Vec2::new(0.0, 0.0), 0u32);
                 let (mut new_sum, mut new_n) = (Vec2::new(0.0, 0.0), 0u32);
-                for cell in 0..bigger.cell_count() as u32 {
+                for cell in bigger.lane_map().cells() {
                     let center = bigger.cell_shape(cell).center(bigger.cell_origin(cell));
                     let sum = if old_coords.contains(&bigger.coord(cell)) {
                         old_n += 1;
@@ -2731,13 +2867,13 @@ mod typed_tests {
     fn guide_zero_is_on_the_outward_side() {
         fn check<K: GridKind>(geo: &Geometry<K>) {
             let lanes = geo.lane_map();
-            for family in 0..lanes.family_count() {
-                let family_lanes: Vec<usize> = lanes.family(family).collect();
+            for family in lanes.families() {
+                let family_lanes: Vec<LaneIdx> = lanes.family(family).collect();
                 if family_lanes.len() < 2 {
                     continue; // No "next" lane to be inward of.
                 }
-                let center = |lane: usize| -> Point {
-                    let cell = lanes.lane(lane).cells[0];
+                let center = |lane: LaneIdx| -> Point {
+                    let cell = lanes.lane(lane).cells[LanePos(0)];
                     geo.cell_shape(cell).center(geo.cell_origin(cell))
                 };
                 let c0 = center(family_lanes[0]);
@@ -2752,7 +2888,7 @@ mod typed_tests {
                 let dot = (guide0.from.x - c0.x) * t.x + (guide0.from.y - c0.y) * t.y;
                 assert!(
                     dot < 0.0,
-                    "family {family} guide 0 is on the inward side: {guide0:?}"
+                    "family {family:?} guide 0 is on the inward side: {guide0:?}"
                 );
             }
         }
@@ -2771,7 +2907,7 @@ mod typed_tests {
             height: 4,
         });
         for guide in geo.guides() {
-            match guide.family {
+            match guide.family.0 {
                 0 => {
                     assert!(
                         (guide.from.y - guide.to.y).abs() < 1e-4,
@@ -2879,7 +3015,7 @@ mod typed_tests {
             (ClueSet::Top, ClueSet::TopRight),
             (ClueSet::Bottom, ClueSet::BottomRight),
         ] {
-            let lanes_of = |set| -> std::collections::HashSet<usize> {
+            let lanes_of = |set| -> std::collections::HashSet<LaneIdx> {
                 geo.gutters()
                     .iter()
                     .filter(|(cs, _)| *cs == Some(set))
@@ -2960,15 +3096,18 @@ mod typed_tests {
         use crate::layout::{CLUE_BOX, CLUE_BOX_SHORT, GutterLane, clue_box};
 
         // A pattern with a decent spread of clue counts.
-        let filled: Vec<bool> = (0..geo.cell_count())
+        let filled: TiVec<CellIdx, bool> = (0..geo.cell_count())
             .map(|i| i % 3 != 0 && i % 7 != 1)
             .collect();
-        let clue_counts: Vec<usize> = (0..geo.lane_count())
+        let clue_counts: TiVec<LaneIdx, usize> = geo
+            .lane_map()
+            .lanes()
+            .keys()
             .map(|lane| {
                 let mut runs = 0;
                 let mut prev = false;
-                for c in &geo.lane(lane).cells {
-                    let f = filled[*c as usize];
+                for c in geo.lane(lane).cells.iter() {
+                    let f = filled[*c];
                     if f && !prev {
                         runs += 1;
                     }
@@ -2979,7 +3118,7 @@ mod typed_tests {
             .collect();
 
         // (lane, index along the gutter, centre, the box's actual four corners)
-        let mut boxes: Vec<(usize, usize, Point, [Point; 4])> = vec![];
+        let mut boxes: Vec<(LaneIdx, usize, Point, [Point; 4])> = vec![];
         for (_, gutter) in geo.gutters() {
             for g in gutter {
                 for i in 0..clue_counts[g.lane] {
@@ -2998,10 +3137,10 @@ mod typed_tests {
 
         // No clue box centre may land on a cell.
         for (lane, i, c, _) in &boxes {
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 assert!(
                     !geo.cell_shape(cell).contains(geo.cell_origin(cell), *c),
-                    "clue {i} of lane {lane} at {c:?} sits on top of cell {cell}"
+                    "clue {i} of lane {lane:?} at {c:?} sits on top of cell {cell:?}"
                 );
             }
         }
@@ -3011,7 +3150,7 @@ mod typed_tests {
             for (lb, ib, _, poly_b) in &boxes[i + 1..] {
                 assert!(
                     !polygons_overlap(poly_a, poly_b, 1e-3),
-                    "clue {ia} of lane {la} overlaps clue {ib} of lane {lb}"
+                    "clue {ia} of lane {la:?} overlaps clue {ib} of lane {lb:?}"
                 );
             }
         }
@@ -3042,7 +3181,7 @@ mod typed_tests {
                         && corner.y >= lo.y - 1e-3
                         && corner.x <= hi.x + 1e-3
                         && corner.y <= hi.y + 1e-3,
-                    "clue {i} of lane {lane} at {corner:?} escapes the reserved area {lo:?}..{hi:?}"
+                    "clue {i} of lane {lane:?} at {corner:?} escapes the reserved area {lo:?}..{hi:?}"
                 );
             }
         }
@@ -3094,19 +3233,19 @@ mod typed_tests {
     #[test]
     fn translation_is_rigid() {
         fn check<K: GridKind>(geo: &Geometry<K>, steps: (i32, i32), by: Vec2) {
-            for cell in 0..geo.cell_count() as u32 {
+            for cell in geo.lane_map().cells() {
                 let Some(moved) = geo.translate_cell(cell, steps) else {
                     continue; // Off the grid; the caller drops these.
                 };
                 assert_eq!(
                     geo.cell_shape(cell),
                     geo.cell_shape(moved),
-                    "{cell} {steps:?}"
+                    "{cell:?} {steps:?}"
                 );
                 let (from, to) = (geo.cell_origin(cell), geo.cell_origin(moved));
                 assert!(
                     (to.x - from.x - by.x).abs() < 1e-4 && (to.y - from.y - by.y).abs() < 1e-4,
-                    "{cell} moved by ({}, {}), wanted ({}, {})",
+                    "{cell:?} moved by ({}, {}), wanted ({}, {})",
                     to.x - from.x,
                     to.y - from.y,
                     by.x,

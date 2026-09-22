@@ -21,7 +21,9 @@ use super::*;
 /// Only ever reached through an `Annotation`'s two ends; the tool itself snaps to cells.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Border {
-    lane: usize,
+    lane: LaneIdx,
+    /// A border between cells, so `0..=lane.cells.len()` — one more than there are positions,
+    /// which is why this isn't a `LanePos`.
     index: usize,
 }
 
@@ -35,7 +37,8 @@ struct Border {
 /// deliberately not sorted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Annotation {
-    lane: usize,
+    lane: LaneIdx,
+    /// Borders, not positions; see [`Border::index`].
     from: usize,
     to: usize,
 }
@@ -54,11 +57,11 @@ impl Annotation {
     ///
     /// One cell has no direction, so the lane this ends up filed under is only a way of naming
     /// the cell — any lane through it would do, and the drawing ignores the choice entirely.
-    fn lone(picture: &DynSolution, cell: u32) -> Option<Annotation> {
+    fn lone(picture: &DynSolution, cell: CellIdx) -> Option<Annotation> {
         let membership = picture.lane_map().memberships(cell).first()?;
-        let position = membership.position as usize;
+        let position = usize::from(membership.position);
         Some(Annotation {
-            lane: membership.lane as usize,
+            lane: membership.lane,
             from: position,
             to: position + 1,
         })
@@ -69,12 +72,14 @@ impl Annotation {
     /// Such a mark is drawn as a box around that cell rather than as a run between two ticks:
     /// with nothing to count along, the direction it was made in isn't worth showing, and a
     /// click — which is how most of them are made — has no direction to show in the first place.
-    fn lone_cell(&self, picture: &DynSolution) -> Option<u32> {
+    fn lone_cell(&self, picture: &DynSolution) -> Option<CellIdx> {
         if self.cells_covered() != 1 {
             return None;
         }
         let lane = picture.lane_map().lanes().get(self.lane)?;
-        lane.cells.get(self.from.min(self.to)).copied()
+        lane.cells
+            .get(LanePos::from(self.from.min(self.to)))
+            .copied()
     }
 
     /// How many cells this mark covers; always at least one.
@@ -86,14 +91,14 @@ impl Annotation {
     ///
     /// Cell `i` of a lane sits between borders `i` and `i + 1`, so the covered cells are the
     /// half-open range between the two ends.
-    fn covers(&self, picture: &DynSolution, cell: u32) -> bool {
+    fn covers(&self, picture: &DynSolution, cell: CellIdx) -> bool {
         picture
             .lane_map()
             .memberships(cell)
             .iter()
-            .find(|m| m.lane as usize == self.lane)
+            .find(|m| m.lane == self.lane)
             .is_some_and(|m| {
-                let position = m.position as usize;
+                let position = usize::from(m.position);
                 self.from.min(self.to) <= position && position < self.from.max(self.to)
             })
     }
@@ -102,7 +107,7 @@ impl Annotation {
 /// An annotation being dragged out right now.
 pub struct AnnotateDrag {
     /// The cell the drag started on. The mark swings around this one.
-    origin: u32,
+    origin: CellIdx,
     /// Where the press landed, in abstract units. The drag is measured from here rather than
     /// from the origin cell's centre, so the mark answers to the pointer directly.
     press: Point,
@@ -144,13 +149,15 @@ impl AnnotatePointer {
 pub(super) fn lane_step_edge(
     shape: crate::layout::CellShape,
     origin: Point,
-    family: usize,
+    family: FamilyIdx,
     near: bool,
 ) -> (Point, Point) {
     match shape {
-        crate::layout::CellShape::Square => shape.family_edge(origin, 1 - family, near),
+        crate::layout::CellShape::Square => {
+            shape.family_edge(origin, FamilyIdx(1 - family.0), near)
+        }
         _ => {
-            let others: Vec<usize> = (0..3).filter(|f| *f != family).collect();
+            let others: Vec<FamilyIdx> = (0..3).map(FamilyIdx).filter(|f| *f != family).collect();
             let edge_family = if shape.triangle_edge_is_near(others[0]) == near {
                 others[0]
             } else {
@@ -169,7 +176,7 @@ fn border_edge(picture: &DynSolution, border: Border) -> Option<(Point, Point)> 
     // Every border but the last is the near side of the cell it precedes; the last one is the far
     // side of the cell it follows.
     let (cell, near) = if border.index < lane.cells.len() {
-        (lane.cells[border.index], true)
+        (lane.cells[LanePos::from(border.index)], true)
     } else if border.index == lane.cells.len() {
         (*lane.cells.last()?, false)
     } else {
@@ -224,7 +231,7 @@ const DRAG_MINIMUM: f32 = 0.2;
 /// of — picks among them afresh on every frame of the drag.
 fn span_from_drag(
     picture: &DynSolution,
-    origin: u32,
+    origin: CellIdx,
     drag: crate::layout::Vec2,
 ) -> Option<Annotation> {
     let along = super::tools::lane_along_drag(picture, origin, drag)?;
@@ -676,7 +683,7 @@ mod annotate_tests {
         assert_eq!(
             gui.annotations,
             vec![Annotation {
-                lane: 3,
+                lane: LaneIdx(3),
                 from: 1,
                 to: 5
             }]
@@ -692,10 +699,10 @@ mod annotate_tests {
         let origin = cell(3.0, 3.0);
         // (where the drag went, which lane it should land on, the two borders it should enclose)
         let cases = [
-            (cell(5.0, 3.0), 3, (3, 6)),     // right, along row 3
-            (cell(1.0, 3.0), 3, (4, 1)),     // left, same row, origin's tick flipped
-            (cell(3.0, 5.0), 6 + 3, (3, 6)), // down, along column 3
-            (cell(3.0, 1.0), 6 + 3, (4, 1)), // up, same column
+            (cell(5.0, 3.0), LaneIdx(3), (3, 6)),     // right, along row 3
+            (cell(1.0, 3.0), LaneIdx(3), (4, 1)),     // left, same row, origin's tick flipped
+            (cell(3.0, 5.0), LaneIdx(6 + 3), (3, 6)), // down, along column 3
+            (cell(3.0, 1.0), LaneIdx(6 + 3), (4, 1)), // up, same column
         ];
 
         for (target, lane, (from, to)) in cases {
@@ -708,7 +715,9 @@ mod annotate_tests {
             );
             // Whichever way it ran, it covers the origin cell and the two beyond it.
             assert_eq!(gui.annotations[0].cells_covered(), 3);
-            assert!(gui.annotations[0].covers(gui.document.try_solution().unwrap(), 3 * 6 + 3));
+            assert!(
+                gui.annotations[0].covers(gui.document.try_solution().unwrap(), CellIdx(3 * 6 + 3))
+            );
         }
     }
 
@@ -724,7 +733,7 @@ mod annotate_tests {
         assert_eq!(
             rightward.annotations,
             vec![Annotation {
-                lane: 3,
+                lane: LaneIdx(3),
                 from: 3,
                 to: 4
             }]
@@ -738,7 +747,7 @@ mod annotate_tests {
         assert_eq!(
             leftward.annotations,
             vec![Annotation {
-                lane: 3,
+                lane: LaneIdx(3),
                 from: 4,
                 to: 3
             }]
@@ -755,7 +764,9 @@ mod annotate_tests {
         click(&mut gui, cell(3.0, 3.0));
         assert_eq!(gui.annotations.len(), 1);
         assert_eq!(gui.annotations[0].cells_covered(), 1);
-        assert!(gui.annotations[0].covers(gui.document.try_solution().unwrap(), 3 * 6 + 3));
+        assert!(
+            gui.annotations[0].covers(gui.document.try_solution().unwrap(), CellIdx(3 * 6 + 3))
+        );
 
         click(&mut gui, cell(3.0, 3.0));
         assert!(gui.annotations.is_empty());
@@ -790,7 +801,10 @@ mod annotate_tests {
         let picture = gui.document.try_solution().unwrap().clone();
 
         click(&mut gui, cell(2.0, 4.0));
-        assert_eq!(gui.annotations[0].lone_cell(&picture), Some(4 * 6 + 2));
+        assert_eq!(
+            gui.annotations[0].lone_cell(&picture),
+            Some(CellIdx(4 * 6 + 2))
+        );
 
         gui.annotations.clear();
         drag(&mut gui, cell(2.0, 4.0), cell(3.0, 4.0));
@@ -813,7 +827,7 @@ mod annotate_tests {
         // priority over marking, so this destroys two and creates nothing.
         click(&mut gui, cell(3.0, 3.0));
         assert_eq!(gui.annotations.len(), 1);
-        assert_eq!(gui.annotations[0].lane, 5);
+        assert_eq!(gui.annotations[0].lane, LaneIdx(5));
 
         click(&mut gui, cell(2.0, 5.0));
         assert!(gui.annotations.is_empty());
@@ -855,7 +869,7 @@ mod annotate_tests {
         assert_eq!(
             gui.annotations,
             vec![Annotation {
-                lane: 3,
+                lane: LaneIdx(3),
                 from: 2,
                 to: 6
             }]
@@ -877,7 +891,7 @@ mod annotate_tests {
             ClueStyle::Nono,
             HashMap::from([(BACKGROUND, ColorInfo::default_bg())]),
             geometry,
-            vec![BACKGROUND; cell_count],
+            vec![BACKGROUND; cell_count].into(),
         );
         let lane_map = sol.geometry.lane_map().clone();
         let mut gui = NonogramGui::new(Document::from_solution(
@@ -888,15 +902,18 @@ mod annotate_tests {
         gui.current_tool = Tool::Annotate;
         gui.solving = true;
 
-        for family in 0..3 {
+        for family in lane_map.families() {
             for lane_idx in lane_map.family(family) {
                 let lane = lane_map.lane(lane_idx);
                 if lane.cells.len() < 2 {
                     continue;
                 }
                 let picture = gui.document.try_solution().unwrap();
-                let center = |c: u32| picture.cell_shape(c).center(picture.cell_origin(c));
-                let (first, last) = (center(lane.cells[0]), center(*lane.cells.last().unwrap()));
+                let center = |c: CellIdx| picture.cell_shape(c).center(picture.cell_origin(c));
+                let (first, last) = (
+                    center(lane.cells[LanePos(0)]),
+                    center(*lane.cells.last().unwrap()),
+                );
 
                 gui.annotations.clear();
                 drag(&mut gui, (first.x, first.y), (last.x, last.y));
@@ -904,13 +921,13 @@ mod annotate_tests {
                 let got = gui.annotations[0];
                 assert_eq!(
                     got.lane, lane_idx,
-                    "a drag along family {family} lane {lane_idx} landed on lane {} instead",
+                    "a drag along family {family:?} lane {lane_idx:?} landed on lane {:?} instead",
                     got.lane
                 );
                 assert_eq!(
                     got.cells_covered(),
                     lane.cells.len(),
-                    "family {family} lane {lane_idx} came out measuring {} cells",
+                    "family {family:?} lane {lane_idx:?} came out measuring {} cells",
                     got.cells_covered()
                 );
             }
@@ -935,12 +952,12 @@ mod annotate_tests {
             ClueStyle::Nono,
             HashMap::from([(BACKGROUND, ColorInfo::default_bg())]),
             geometry,
-            vec![BACKGROUND; cell_count],
+            vec![BACKGROUND; cell_count].into(),
         ));
 
         for (shape, picture) in [("square", &square), ("triddler", &tri)] {
             let lanes = picture.lane_map();
-            for (lane_idx, lane) in lanes.lanes().iter().enumerate() {
+            for (lane_idx, lane) in lanes.lanes().iter_enumerated() {
                 if lane.cells.len() < 2 {
                     continue;
                 }
@@ -973,11 +990,11 @@ mod annotate_tests {
                             / (edge_vec.0 * edge_vec.0 + edge_vec.1 * edge_vec.1);
                         assert!(
                             cross.abs() < 1e-4,
-                            "{shape} lane {lane_idx} ({from} -> {to}): the wave meets the tick {cross} off it"
+                            "{shape} lane {lane_idx:?} ({from} -> {to}): the wave meets the tick {cross} off it"
                         );
                         assert!(
                             (0.0..=1.0).contains(&t),
-                            "{shape} lane {lane_idx} ({from} -> {to}): the wave meets the tick past its end (t = {t})"
+                            "{shape} lane {lane_idx:?} ({from} -> {to}): the wave meets the tick past its end (t = {t})"
                         );
 
                         // ...and at the inset the wave is actually drawn at, measured across the
@@ -986,7 +1003,7 @@ mod annotate_tests {
                         let across = (point.x - mid.x) * right.x + (point.y - mid.y) * right.y;
                         assert!(
                             (across - WAVE_INSET).abs() < 1e-4,
-                            "{shape} lane {lane_idx} ({from} -> {to}): inset came out {across}, wanted {WAVE_INSET}"
+                            "{shape} lane {lane_idx:?} ({from} -> {to}): inset came out {across}, wanted {WAVE_INSET}"
                         );
                     }
                 }
@@ -1011,13 +1028,13 @@ mod annotate_tests {
             ClueStyle::Nono,
             HashMap::from([(BACKGROUND, ColorInfo::default_bg())]),
             geometry,
-            vec![BACKGROUND; cell_count],
+            vec![BACKGROUND; cell_count].into(),
         ));
 
         for picture in [&square, &tri] {
             let lanes = picture.lane_map();
-            for (lane_idx, lane) in lanes.lanes().iter().enumerate() {
-                for (position, pair) in lane.cells.windows(2).enumerate() {
+            for (lane_idx, lane) in lanes.lanes().iter_enumerated() {
+                for (position, pair) in lane.cells.raw.windows(2).enumerate() {
                     let far_side_of_earlier = lane_step_edge(
                         picture.cell_shape(pair[0]),
                         picture.cell_origin(pair[0]),
@@ -1040,7 +1057,7 @@ mod annotate_tests {
                     for (w, g) in want.iter().zip(got.iter()) {
                         assert!(
                             (w.0 - g.0).abs() < 1e-4 && (w.1 - g.1).abs() < 1e-4,
-                            "lane {lane_idx} border {}: cells {} and {} disagree, {want:?} vs {got:?}",
+                            "lane {lane_idx:?} border {}: cells {:?} and {:?} disagree, {want:?} vs {got:?}",
                             position + 1,
                             pair[0],
                             pair[1],
@@ -1052,7 +1069,7 @@ mod annotate_tests {
                     let length = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
                     assert!(
                         (length - 1.0).abs() < 1e-4,
-                        "lane {lane_idx} border {} came out {length} long",
+                        "lane {lane_idx:?} border {} came out {length} long",
                         position + 1,
                     );
                 }
@@ -1068,7 +1085,7 @@ mod annotate_tests {
 
         gui.perform(
             Action::ChangeColor {
-                changes: [(7, Color(1))].into(),
+                changes: [(CellIdx(7), Color(1))].into(),
             },
             ActionMood::Normal,
         );

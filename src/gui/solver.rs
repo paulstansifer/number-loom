@@ -3,12 +3,14 @@ use super::{
     auto_button, default_color, outline_text,
 };
 use crate::{
+    geometry::{CellIdx, FamilyIdx, LaneIdx},
     puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
     solve::grid_solve::LineStatus,
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
 use std::collections::HashSet;
+use typed_index_collections::TiVec;
 use web_time::Instant;
 
 use crate::puzzle::{Document, DynSolution};
@@ -20,13 +22,13 @@ pub struct SolveGui {
     pub detect_errors: bool,
     pub infer_background: bool,
     /// Per lane, parallel to `LaneMap::lanes()`: can line-logic fully solve any cells?
-    pub line_analysis: Staleable<Option<Vec<LineStatus>>>,
+    pub line_analysis: Staleable<Option<TiVec<LaneIdx, LineStatus>>>,
     pub mark_fixed_clues: bool,
     /// Per lane, indexed like `line_analysis`: which of that lane's clues are "done"
-    pub fixed_clues: Staleable<Option<Vec<Vec<usize>>>>,
+    pub fixed_clues: Staleable<Option<TiVec<LaneIdx, Vec<usize>>>>,
     pub render_style: RenderStyle,
     last_inferred_version: u32,
-    pub hovered_cell: Option<u32>,
+    pub hovered_cell: Option<CellIdx>,
     /// The solve, played back in the sidebar. Captured the first time the picture comes out
     /// right, and frozen there: whatever the user does to the grid afterwards isn't part of the
     /// solve they just finished.
@@ -84,7 +86,8 @@ impl SolveGui {
         let current_color = default_color(working_doc.solution_mut().palette());
 
         let clues = document.puzzle().clone();
-        let solved_mask = vec![true; document.solution_mut().cells().len()];
+        let solved_mask: TiVec<CellIdx, bool> =
+            vec![true; document.solution_mut().cells().len()].into();
 
         SolveGui {
             canvas: CanvasGui {
@@ -174,10 +177,10 @@ impl SolveGui {
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
             let picture = self.canvas.document.try_solution().unwrap();
-            for (index, cell) in grid.iter().enumerate() {
+            for (index, cell) in grid.iter_enumerated() {
                 let current_color = picture.cells()[index];
                 if cell.is_known() && cell.known_or() != Some(current_color) {
-                    changes.insert(index as u32, cell.known_or().unwrap());
+                    changes.insert(index, cell.known_or().unwrap());
                 }
             }
 
@@ -246,7 +249,7 @@ impl SolveGui {
                         scale,
                     );
                 } else {
-                    let color = picture.cells()[cell as usize];
+                    let color = picture.cells()[cell];
                     let rgb = picture.palette()[&color].rgb;
                     let text = if color == UNSOLVED { "?" } else { " " };
 
@@ -392,7 +395,7 @@ impl SolveGui {
         let picture = self.canvas.document.try_solution()?;
         Some(super::HoverBlocks {
             by_family: picture.blocks_at_cell(cell),
-            rgb: picture.palette()[&picture.cells()[cell as usize]].rgb,
+            rgb: picture.palette()[&picture.cells()[cell]].rgb,
         })
     }
 
@@ -422,9 +425,9 @@ impl SolveGui {
 
         // The square gutters number their lines within a clue family, while `hover` names whole
         // lanes.
-        let hint = |family: usize| -> Option<BlockHint> {
+        let hint = |family: FamilyIdx| -> Option<BlockHint> {
             let hover = hover.as_ref()?;
-            let &(lane, len) = hover.by_family.get(family)?;
+            let &(lane, len) = hover.by_family.get(usize::from(family))?;
             let (_, line) = self
                 .canvas
                 .document
@@ -438,7 +441,7 @@ impl SolveGui {
             })
         };
         // Family 0 is the rows, drawn by the horizontal gutter; family 1 is the columns.
-        let (row_hint, col_hint) = (hint(0), hint(1));
+        let (row_hint, col_hint) = (hint(FamilyIdx(0)), hint(FamilyIdx(1)));
 
         let mut clicked_clue = None;
         ui.vertical(|ui| {
@@ -456,9 +459,11 @@ impl SolveGui {
                     // the rows, family 1 the columns.
                     let lane_map = self.clues.lane_map();
                     let checked = &self.canvas.checked_clues;
-                    let marks = |family: usize, hint: Option<BlockHint>| GutterMarks {
-                        analysis: line_analysis.map(|la| &la[lane_map.family(family)]),
-                        fixed: fixed_clues.map(|fc| &fc[lane_map.family(family)]),
+                    // The gutter numbers its lines within the family, so it gets plain slices:
+                    // an index into one of these is a line number, not a `LaneIdx`.
+                    let marks = |family: FamilyIdx, hint: Option<BlockHint>| GutterMarks {
+                        analysis: line_analysis.map(|la| &la[lane_map.family_range(family)].raw),
+                        fixed: fixed_clues.map(|fc| &fc[lane_map.family_range(family)].raw),
                         checked,
                         is_stale,
                         hover: hint,
@@ -468,7 +473,7 @@ impl SolveGui {
                         &self.clues,
                         scale,
                         Orientation::Vertical,
-                        &marks(1, col_hint),
+                        &marks(FamilyIdx(1), col_hint),
                     );
                     ui.end_row();
 
@@ -477,7 +482,7 @@ impl SolveGui {
                         &self.clues,
                         scale,
                         Orientation::Horizontal,
-                        &marks(0, row_hint),
+                        &marks(FamilyIdx(0), row_hint),
                     );
                     // A click lands in one gutter or the other, never both.
                     clicked_clue = col_clicked.or(row_clicked);
@@ -560,16 +565,23 @@ impl Replay {
     /// Each undo entry holds the colors its step painted over, so starting from the picture as it
     /// stands *now* and applying them newest-first walks backwards through the solve. Anything
     /// the user painted after finishing gets unwound on the way past.
-    fn frame(&self, canvas: &CanvasGui, step: usize) -> Vec<Color> {
+    fn frame(&self, canvas: &CanvasGui, step: usize) -> TiVec<CellIdx, Color> {
         let frames = self.frames(canvas);
         let position = frames[step.min(frames.len() - 1)];
-        let mut cells = canvas.document.try_solution().unwrap().cells().to_vec();
+        let mut cells: TiVec<CellIdx, Color> = canvas
+            .document
+            .try_solution()
+            .unwrap()
+            .cells()
+            .raw
+            .to_vec()
+            .into();
         for undone in canvas.undo_stack[position..].iter().rev() {
             // Painting is the only thing that reaches the solver's undo stack: its palette editor
             // is read-only, and every `ReplaceDocument` in the app goes to the editor's canvas.
             if let Action::ChangeColor { changes } = undone {
                 for (cell, was) in changes {
-                    cells[*cell as usize] = *was;
+                    cells[*cell] = *was;
                 }
             }
         }
@@ -609,7 +621,7 @@ impl Replay {
         let palette = picture.palette();
         let cells = self.frame(canvas, step);
         let mut shapes = Vec::with_capacity(cells.len());
-        for (index, color) in cells.iter().enumerate() {
+        for (cell, color) in cells.iter_enumerated() {
             // Unknown is gray whatever the render style is: the traditional styles leave it the
             // same white as the background, which would make most of a replay invisible.
             let fill = if *color == UNSOLVED {
@@ -618,7 +630,6 @@ impl Replay {
                 let (r, g, b) = palette[color].rgb;
                 Color32::from_rgb(r, g, b)
             };
-            let cell = index as u32;
             let origin = picture.cell_origin(cell);
             // A `Corner` color is a half-square — a trianogram's diagonal — and the canvas draws
             // it as one, so the replay has to as well. (A triddler's triangular *cells* are a
@@ -947,10 +958,13 @@ fn draw_clues<C: crate::puzzle::Clue>(
     let box_side = scale * 0.9;
     let box_margin = (scale - box_side) / 2.0;
 
-    let clues_vec = match orientation {
+    // Numbered within the family, like everything else this function draws; `lane_in_family`
+    // turns a line number back into the whole-puzzle `LaneIdx` a `ClueId` needs.
+    let clues_vec = &match orientation {
         Orientation::Horizontal => puzzle.row_clues(),
         Orientation::Vertical => puzzle.col_clues(),
-    };
+    }
+    .raw;
 
     let mut max_size: f32 = 0.0;
     for line_clues in clues_vec {
@@ -981,8 +995,8 @@ fn draw_clues<C: crate::puzzle::Clue>(
     // Rows are family 0 and columns family 1; `clues_vec` is numbered within the family, so every
     // clue this draws has to name its whole lane to be a `ClueId`.
     let family = match orientation {
-        Orientation::Horizontal => 0,
-        Orientation::Vertical => 1,
+        Orientation::Horizontal => FamilyIdx(0),
+        Orientation::Vertical => FamilyIdx(1),
     };
     let lane_map = puzzle.geometry.lane_map();
 
@@ -1141,7 +1155,7 @@ mod replay_tests {
         .editor_gui
     }
 
-    fn paint(canvas: &mut CanvasGui, cells: &[u32], color: Color) {
+    fn paint(canvas: &mut CanvasGui, cells: &[CellIdx], color: Color) {
         canvas.perform(
             Action::ChangeColor {
                 changes: cells.iter().map(|c| (*c, color)).collect(),
@@ -1150,8 +1164,15 @@ mod replay_tests {
         );
     }
 
-    fn cells(canvas: &CanvasGui) -> Vec<Color> {
-        canvas.document.try_solution().unwrap().cells().to_vec()
+    fn cells(canvas: &CanvasGui) -> TiVec<CellIdx, Color> {
+        canvas
+            .document
+            .try_solution()
+            .unwrap()
+            .cells()
+            .raw
+            .to_vec()
+            .into()
     }
 
     /// The replay's `n`th frame is the picture as it stood after `n` actions — including the
@@ -1160,11 +1181,11 @@ mod replay_tests {
     fn frames_retrace_the_solve() {
         let mut canvas = canvas();
         let mut expected = vec![cells(&canvas)];
-        paint(&mut canvas, &[0, 1, 2], Color(1));
+        paint(&mut canvas, &[CellIdx(0), CellIdx(1), CellIdx(2)], Color(1));
         expected.push(cells(&canvas));
-        paint(&mut canvas, &[1, 4], BACKGROUND);
+        paint(&mut canvas, &[CellIdx(1), CellIdx(4)], BACKGROUND);
         expected.push(cells(&canvas));
-        paint(&mut canvas, &[4, 8], Color(1));
+        paint(&mut canvas, &[CellIdx(4), CellIdx(8)], Color(1));
         expected.push(cells(&canvas));
 
         let replay = Replay::new(&canvas);
@@ -1180,8 +1201,8 @@ mod replay_tests {
     fn undone_steps_do_not_appear() {
         let mut canvas = canvas();
         let start = cells(&canvas);
-        paint(&mut canvas, &[0], Color(1));
-        paint(&mut canvas, &[8], Color(1));
+        paint(&mut canvas, &[CellIdx(0)], Color(1));
+        paint(&mut canvas, &[CellIdx(8)], Color(1));
         canvas.un_or_re_do(true);
 
         let replay = Replay::new(&canvas);
@@ -1196,13 +1217,13 @@ mod replay_tests {
     #[test]
     fn painting_after_the_solve_is_not_replayed() {
         let mut canvas = canvas();
-        paint(&mut canvas, &[0], Color(1));
-        paint(&mut canvas, &[8], Color(1));
+        paint(&mut canvas, &[CellIdx(0)], Color(1));
+        paint(&mut canvas, &[CellIdx(8)], Color(1));
         let solved = cells(&canvas);
 
         let replay = Replay::new(&canvas);
-        paint(&mut canvas, &[4], Color(1));
-        paint(&mut canvas, &[5], Color(1));
+        paint(&mut canvas, &[CellIdx(4)], Color(1));
+        paint(&mut canvas, &[CellIdx(5)], Color(1));
 
         assert_eq!(replay.len(&canvas), 2);
         // The last frame is still the solve's own, not the doodled-on picture.
@@ -1216,8 +1237,8 @@ mod replay_tests {
     fn undoing_past_the_end_shortens_the_replay() {
         let mut canvas = canvas();
         let start = cells(&canvas);
-        paint(&mut canvas, &[0], Color(1));
-        paint(&mut canvas, &[8], Color(1));
+        paint(&mut canvas, &[CellIdx(0)], Color(1));
+        paint(&mut canvas, &[CellIdx(8)], Color(1));
 
         let replay = Replay::new(&canvas);
         canvas.un_or_re_do(true);
@@ -1233,10 +1254,15 @@ mod replay_tests {
     fn check_offs_are_not_replayed() {
         let mut canvas = canvas();
         let start = cells(&canvas);
-        paint(&mut canvas, &[0], Color(1));
+        paint(&mut canvas, &[CellIdx(0)], Color(1));
         let after_painting = cells(&canvas);
-        canvas.perform(Action::ToggleClue { clue: (0, 0) }, ActionMood::Normal);
-        paint(&mut canvas, &[8], Color(1));
+        canvas.perform(
+            Action::ToggleClue {
+                clue: (LaneIdx(0), 0),
+            },
+            ActionMood::Normal,
+        );
+        paint(&mut canvas, &[CellIdx(8)], Color(1));
 
         let replay = Replay::new(&canvas);
         assert_eq!(canvas.undo_stack.len(), 3, "the check-off is on the stack");

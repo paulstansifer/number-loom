@@ -2,7 +2,7 @@
 mod tests {
     use std::collections::HashSet;
 
-    use number_loom::geometry::{Geometry, Outline, Square, Tri};
+    use number_loom::geometry::{Geometry, LaneIdx, Outline, Square, Tri};
     use number_loom::import::{bw_palette, solution_to_puzzle, solution_to_triano_puzzle};
     use number_loom::puzzle::{
         BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Puzzle, Solution,
@@ -99,7 +99,7 @@ mod tests {
         );
 
         let puzzle = f(&dummy_solution);
-        let clues = &puzzle.row_clues()[0]; // Get clues for the generated line
+        let clues = &puzzle.row_clues()[LaneIdx(0)]; // Get clues for the generated line
 
         let mut sc_partial_solution = partial.clone();
         let mut sk_partial_solution = partial.clone();
@@ -232,8 +232,12 @@ mod tests {
                     palette.insert(Color(c), ColorInfo::default_fg(Color(c)));
                 }
 
-                let solution =
-                    Solution::new(ClueStyle::Nono, palette, geometry.clone(), cells.clone());
+                let solution = Solution::new(
+                    ClueStyle::Nono,
+                    palette,
+                    geometry.clone(),
+                    cells.clone().into(),
+                );
                 let puzzle: Puzzle<_, Tri> = number_loom::import::solution_to_tri_puzzle(&solution);
 
                 let report = solve(&puzzle, &mut None, &SolveOptions::default())

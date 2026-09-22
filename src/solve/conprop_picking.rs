@@ -11,8 +11,10 @@
 //! here reads a plain `SolveState`, and `pick` considers every color every unknown cell can
 //! still be.
 
+use typed_index_collections::TiVec;
+
 use crate::{
-    geometry::GridKind,
+    geometry::{CellIdx, GridKind, LanePos},
     puzzle::{BACKGROUND, Clue, Color},
     solve::grid_solve::{SolveContext, SolveState},
 };
@@ -36,7 +38,7 @@ trait GuessPicker: Sized {
         &self,
         state: &SolveState<'_, C>,
         linear_ctx: &SolveContext<'_, '_, C, K>,
-        guess: (usize, Color),
+        guess: (CellIdx, Color),
     ) -> Score;
 
     /// Pick the lowest-scoring choice that's a valid guess
@@ -44,8 +46,8 @@ trait GuessPicker: Sized {
         &self,
         state: &SolveState<'_, C>,
         linear_ctx: &SolveContext<'_, '_, C, K>,
-    ) -> Option<(usize, Color)> {
-        let idxed_cells = state.grid.iter().enumerate();
+    ) -> Option<(CellIdx, Color)> {
+        let idxed_cells = state.grid.iter_enumerated();
         let uncertain_cells = idxed_cells.filter(|(_, cell)| !cell.is_known());
         let options = uncertain_cells
             .flat_map(|(idx, cell)| cell.can_be_iter().map(move |color| (idx, color)));
@@ -84,7 +86,7 @@ impl GuessPicker for First {
         &self,
         _: &SolveState<'_, C>,
         _: &SolveContext<'_, '_, C, K>,
-        _: (usize, Color),
+        _: (CellIdx, Color),
     ) -> Score {
         Score(0.0)
     }
@@ -93,7 +95,7 @@ impl GuessPicker for First {
 /// Well, this one seems better, but performs worse.
 struct Edge {
     /// Overall score for closeness to edge, by cell index.
-    edginess: Vec<f32>,
+    edginess: TiVec<CellIdx, f32>,
 }
 
 impl GuessPicker for Edge {
@@ -104,12 +106,13 @@ impl GuessPicker for Edge {
         let lane_map = linear_ctx.lane_map();
 
         let mut dists: Vec<usize> = vec![];
-        let edginess = (0..lane_map.cell_count() as u32)
+        let edginess = lane_map
+            .cells()
             .map(|cell| {
                 dists.clear();
                 dists.extend(lane_map.memberships(cell).iter().map(|m| {
-                    let len = lane_map.lane(m.lane as usize).cells.len();
-                    let pos = m.position as usize;
+                    let len = lane_map.lane(m.lane).cells.len();
+                    let pos = usize::from(m.position);
                     pos.min(len - (pos + 1))
                 }));
                 dists.sort();
@@ -124,7 +127,7 @@ impl GuessPicker for Edge {
         &self,
         _: &SolveState<'_, C>,
         _: &SolveContext<'_, '_, C, K>,
-        (idx, _): (usize, Color),
+        (idx, _): (CellIdx, Color),
     ) -> Score {
         Score(self.edginess[idx])
     }
@@ -145,7 +148,7 @@ impl GuessPicker for Middle {
         &self,
         state: &SolveState<'_, C>,
         linear_ctx: &SolveContext<'_, '_, C, K>,
-        guess: (usize, Color),
+        guess: (CellIdx, Color),
     ) -> Score {
         Score(-self.0.rate(state, linear_ctx, guess).0)
     }
@@ -177,7 +180,7 @@ impl GuessPicker for Random {
         &self,
         _: &SolveState<'_, C>,
         _: &SolveContext<'_, '_, C, K>,
-        _: (usize, Color),
+        _: (CellIdx, Color),
     ) -> Score {
         let mut x = self.rng.get(); // xorshift64
         x ^= x << 13;
@@ -218,7 +221,7 @@ impl GuessPicker for Disagreement {
         // Per lane, the naïve probability of each color.
         let mut lane_p = vec![0.0_f32; lane_map.lane_count() * stride];
         let mut wanted = vec![0_i32; stride];
-        for (lane_idx, lane) in lane_map.lanes().iter().enumerate() {
+        for (lane_idx, lane) in lane_map.lanes().iter_enumerated() {
             wanted.fill(0);
 
             // What the clues call for...
@@ -233,15 +236,15 @@ impl GuessPicker for Disagreement {
 
             // ...minus what's already on the grid.
             let mut unknown = 0;
-            for cell_idx in &lane.cells {
-                match state.grid[*cell_idx as usize].known_or() {
+            for cell_idx in lane.cells.iter() {
+                match state.grid[*cell_idx].known_or() {
                     Some(color) => wanted[color.0 as usize] -= 1,
                     None => unknown += 1,
                 }
             }
 
             for color in 0..stride {
-                lane_p[lane_idx * stride + color] = if unknown == 0 {
+                lane_p[usize::from(lane_idx) * stride + color] = if unknown == 0 {
                     0.0
                 } else {
                     wanted[color].max(0) as f32 / unknown as f32
@@ -251,14 +254,14 @@ impl GuessPicker for Disagreement {
 
         // Now rate each cell by how much the lanes crossing it disagree.
         let mut ratings = vec![0.0_f32; lane_map.cell_count() * stride];
-        for cell in 0..lane_map.cell_count() as u32 {
+        for cell in lane_map.cells() {
             let memberships = lane_map.memberships(cell);
             for color in 0..stride {
                 let mut lowest = f32::MAX;
                 let mut highest = f32::MIN;
                 let mut total = 0.0;
                 for m in memberships {
-                    let p = lane_p[m.lane as usize * stride + color];
+                    let p = lane_p[usize::from(m.lane) * stride + color];
                     lowest = lowest.min(p);
                     highest = highest.max(p);
                     total += p;
@@ -268,7 +271,7 @@ impl GuessPicker for Disagreement {
 
                 // Disagreement decides *where* to guess; within a cell, the likelier color goes
                 // first, which only ever breaks a tie (both terms are in `0.0..=1.0`).
-                ratings[cell as usize * stride + color] = -spread - 0.1 * mean;
+                ratings[usize::from(cell) * stride + color] = -spread - 0.1 * mean;
             }
         }
 
@@ -279,9 +282,9 @@ impl GuessPicker for Disagreement {
         &self,
         _: &SolveState<'_, C>,
         _: &SolveContext<'_, '_, C, K>,
-        (idx, color): (usize, Color),
+        (idx, color): (CellIdx, Color),
     ) -> Score {
-        Score(self.ratings[idx * self.stride + color.0 as usize])
+        Score(self.ratings[usize::from(idx) * self.stride + color.0 as usize])
     }
 }
 
@@ -292,22 +295,23 @@ impl GuessPicker for Disagreement {
 fn neighborhood<C: Clue, K: GridKind>(
     linear_ctx: &SolveContext<'_, '_, C, K>,
     edge: f32,
-    counts: impl Fn(usize) -> bool,
-) -> Vec<f32> {
+    counts: impl Fn(CellIdx) -> bool,
+) -> TiVec<CellIdx, f32> {
     let lane_map = linear_ctx.lane_map();
 
-    (0..lane_map.cell_count() as u32)
+    lane_map
+        .cells()
         .map(|cell| {
             let mut total = 0.0;
             for m in lane_map.memberships(cell) {
-                let lane = &lane_map.lane(m.lane as usize).cells;
-                let pos = m.position as usize;
+                let lane = &lane_map.lane(m.lane).cells;
+                let pos = m.position;
 
-                let before = pos.checked_sub(1).map(|p| lane[p]);
-                let after = lane.get(pos + 1).copied();
+                let before = pos.0.checked_sub(1).map(|p| lane[LanePos(p)]);
+                let after = lane.get(LanePos(pos.0 + 1)).copied();
                 for side in [before, after] {
                     total += match side {
-                        Some(neighbor) if counts(neighbor as usize) => 1.0,
+                        Some(neighbor) if counts(neighbor) => 1.0,
                         Some(_) => 0.0,
                         None => edge,
                     };
@@ -326,7 +330,7 @@ fn neighborhood<C: Clue, K: GridKind>(
 /// equally hemmed in, the ones against a wall go first.
 struct Neighbors {
     /// How settled each cell's surroundings are, by cell index.
-    solidity: Vec<f32>,
+    solidity: TiVec<CellIdx, f32>,
 }
 
 impl GuessPicker for Neighbors {
@@ -347,7 +351,7 @@ impl GuessPicker for Neighbors {
         &self,
         _: &SolveState<'_, C>,
         _: &SolveContext<'_, '_, C, K>,
-        (idx, _): (usize, Color),
+        (idx, _): (CellIdx, Color),
     ) -> Score {
         Score(-self.solidity[idx]) // more settled is better, and lower is better
     }
@@ -511,7 +515,7 @@ pub(super) fn pick_guess<C: Clue, K: GridKind>(
     kind: PickerKind,
     state: &SolveState<'_, C>,
     linear_ctx: &SolveContext<'_, '_, C, K>,
-) -> Option<(usize, Color)> {
+) -> Option<(CellIdx, Color)> {
     match kind {
         PickerKind::First => First::new(state, linear_ctx).pick(state, linear_ctx),
         PickerKind::Edge => Edge::new(state, linear_ctx).pick(state, linear_ctx),
@@ -546,7 +550,7 @@ mod tests {
 
         // Two lanes cross every cell, so every cell has four sides, edges included.
         let sides = neighborhood(&ctx, /*edge=*/ 1.0, |_| true);
-        assert_eq!(sides, vec![4.0; 9]);
+        assert_eq!(sides.raw, vec![4.0; 9]);
 
         // Corners are against two of them, the middles of the sides one, and the center none.
         let edges = neighborhood(&ctx, /*edge=*/ 1.0, |_| false);
@@ -556,7 +560,7 @@ mod tests {
             1.0, 0.0, 1.0,
             2.0, 1.0, 2.0,
         ];
-        assert_eq!(edges, want);
+        assert_eq!(edges.raw, want);
     }
 
     /// Every spelling `--picker` accepts, and what it means. The `:count`s expand into a

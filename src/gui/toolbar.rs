@@ -97,14 +97,14 @@ impl NonogramGui {
                                         width: x_size,
                                         height: y_size,
                                     }),
-                                    vec![BACKGROUND; x_size * y_size],
+                                    vec![BACKGROUND; x_size * y_size].into(),
                                 ))
                             }
                             NewPuzzleShape::Triangular => {
                                 let geometry = crate::geometry::Geometry::new(
                                     crate::geometry::Outline::hexagon(NEW_TRI_SIDE),
                                 );
-                                let cells = vec![BACKGROUND; geometry.cell_count()];
+                                let cells = vec![BACKGROUND; geometry.cell_count()].into();
                                 DynSolution::Tri(Solution::new(
                                     ClueStyle::Nono,
                                     import::bw_palette(),

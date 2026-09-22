@@ -14,12 +14,12 @@ use super::*;
 pub struct Selection {
     /// Indexed by dense cell index, like `Solution::cells` — so it is only meaningful for a grid
     /// of the same size, which `canvas_with_clues` checks before using it.
-    pub(super) mask: Vec<bool>,
+    pub(super) mask: TiVec<CellIdx, bool>,
     /// Lattice steps (see `Geometry::snap_translation`) currently applied to `mask` and
     /// `floating`. Zero until the selection is dragged.
     pub(super) offset: (i32, i32),
     /// Content lifted off the grid, as `(anchor cell, color)`. `None` until the first move drag.
-    pub(super) floating: Option<Vec<(u32, Color)>>,
+    pub(super) floating: Option<Vec<(CellIdx, Color)>>,
     /// The lasso path in abstract units, while one is being drawn.
     pub(super) drawing: Option<Vec<crate::layout::Point>>,
     /// Where the move drag was grabbed, and the offset at that moment.
@@ -29,7 +29,7 @@ pub struct Selection {
 }
 
 impl Selection {
-    fn new(mask: Vec<bool>) -> Selection {
+    fn new(mask: TiVec<CellIdx, bool>) -> Selection {
         Selection {
             mask,
             offset: (0, 0),
@@ -40,17 +40,16 @@ impl Selection {
         }
     }
 
-    fn anchor_cells(&self) -> impl Iterator<Item = u32> + '_ {
+    fn anchor_cells(&self) -> impl Iterator<Item = CellIdx> + '_ {
         self.mask
-            .iter()
-            .enumerate()
+            .iter_enumerated()
             .filter(|(_, m)| **m)
-            .map(|(i, _)| i as u32)
+            .map(|(i, _)| i)
     }
 
     /// Where the selected cells sit right now: the anchor mask shifted by `offset`. Cells pushed
     /// off the grid simply don't appear — they're still in `mask`, so dragging back restores them.
-    pub(super) fn displayed_cells(&self, picture: &crate::puzzle::DynSolution) -> Vec<u32> {
+    pub(super) fn displayed_cells(&self, picture: &crate::puzzle::DynSolution) -> Vec<CellIdx> {
         if self.offset == (0, 0) {
             return self.anchor_cells().collect();
         }
@@ -101,18 +100,18 @@ impl CanvasGui {
         let displayed = selection.displayed_cells(picture);
         let cells = picture.cells();
 
-        let mut mask = vec![false; cells.len()];
+        let mut mask: TiVec<CellIdx, bool> = vec![false; cells.len()].into();
         let mut floating = Vec::with_capacity(displayed.len());
         for cell in displayed {
-            mask[cell as usize] = true;
-            floating.push((cell, cells[cell as usize]));
+            mask[cell] = true;
+            floating.push((cell, cells[cell]));
         }
 
         selection.mask = mask;
         selection.offset = (0, 0);
         selection.floating = Some(floating);
 
-        let changes: HashMap<u32, Color> = selection
+        let changes: HashMap<CellIdx, Color> = selection
             .floating
             .as_ref()
             .unwrap()
@@ -135,13 +134,13 @@ impl CanvasGui {
         };
 
         let picture = self.document.solution_mut();
-        let mut mask = vec![false; picture.cells().len()];
+        let mut mask: TiVec<CellIdx, bool> = vec![false; picture.cells().len()].into();
         let mut changes = HashMap::new();
         for (cell, color) in floating {
             let Some(dest) = picture.translate_cell(cell, selection.offset) else {
                 continue;
             };
-            mask[dest as usize] = true;
+            mask[dest] = true;
             if color != BACKGROUND {
                 changes.insert(dest, color);
             }
@@ -167,7 +166,7 @@ impl CanvasGui {
             return;
         };
         let picture = self.document.solution_mut();
-        let changes: HashMap<u32, Color> = selection
+        let changes: HashMap<CellIdx, Color> = selection
             .displayed_cells(picture)
             .into_iter()
             .map(|cell| (cell, BACKGROUND))
@@ -205,7 +204,7 @@ impl CanvasGui {
                 self.flatten_selection();
                 self.selection = None;
                 let mut selection =
-                    Selection::new(vec![false; self.document.solution_mut().cells().len()]);
+                    Selection::new(vec![false; self.document.solution_mut().cells().len()].into());
                 selection.drawing = Some(vec![p]);
                 self.selection = Some(selection);
             }
@@ -272,7 +271,7 @@ impl CanvasGui {
 
     /// The traditional four-arrow cursor over the selection says "this can be dragged"; the
     /// crosshair elsewhere says "this draws a loop".
-    pub(super) fn lasso_cursor(&mut self, ui: &egui::Ui, hovered_cell: Option<u32>) {
+    pub(super) fn lasso_cursor(&mut self, ui: &egui::Ui, hovered_cell: Option<CellIdx>) {
         // Not over the grid at all — leave the cursor to whatever else is under it.
         let Some(cell) = hovered_cell else {
             return;
@@ -291,7 +290,7 @@ impl CanvasGui {
 
     /// Whether a cell is part of the selection as displayed. Asks where the cell *came from*
     /// rather than materializing the whole displaced set.
-    fn cell_is_selected(&mut self, cell: u32) -> bool {
+    fn cell_is_selected(&mut self, cell: CellIdx) -> bool {
         let Some(selection) = &self.selection else {
             return false;
         };
@@ -301,7 +300,7 @@ impl CanvasGui {
         let (u, v) = selection.offset;
         let anchor = self.document.solution_mut().translate_cell(cell, (-u, -v));
         let selection = self.selection.as_ref().unwrap();
-        anchor.is_some_and(|anchor| selection.mask[anchor as usize])
+        anchor.is_some_and(|anchor| selection.mask[anchor])
     }
 }
 
@@ -316,8 +315,11 @@ const LASSO_STEP: f32 = 0.2;
 /// over: that covers the straight closing segment and fast drags that skip cells between frames,
 /// with one rule instead of three. "Enclosed" is an even-odd ray cast against each cell's
 /// centroid. Runs once, on release, so `cells × path points` is fine.
-pub fn cells_in_lasso(picture: &crate::puzzle::DynSolution, path: &[Point]) -> Vec<bool> {
-    let mut mask = vec![false; picture.cells().len()];
+pub fn cells_in_lasso(
+    picture: &crate::puzzle::DynSolution,
+    path: &[Point],
+) -> TiVec<CellIdx, bool> {
+    let mut mask: TiVec<CellIdx, bool> = vec![false; picture.cells().len()].into();
     if path.len() < 2 {
         // A click rather than a drag: just the cell under it, if any.
         if let Some(cell) = path
@@ -325,7 +327,7 @@ pub fn cells_in_lasso(picture: &crate::puzzle::DynSolution, path: &[Point]) -> V
             .and_then(|p| picture.cell_at(*p))
             .and_then(|c| picture.cell_of(c))
         {
-            mask[cell as usize] = true;
+            mask[cell] = true;
         }
         return mask;
     }
@@ -342,14 +344,14 @@ pub fn cells_in_lasso(picture: &crate::puzzle::DynSolution, path: &[Point]) -> V
             let t = i as f32 / steps as f32;
             let p = Point::new(a.x + dx * t, a.y + dy * t);
             if let Some(cell) = picture.cell_at(p).and_then(|c| picture.cell_of(c)) {
-                mask[cell as usize] = true;
+                mask[cell] = true;
             }
         }
     }
 
     // Enclosed: a horizontal ray from the centroid crosses the closed path an odd number of times.
-    for cell in 0..mask.len() as u32 {
-        if mask[cell as usize] {
+    for cell in mask.keys() {
+        if mask[cell] {
             continue;
         }
         let c = picture.cell_shape(cell).center(picture.cell_origin(cell));
@@ -363,7 +365,7 @@ pub fn cells_in_lasso(picture: &crate::puzzle::DynSolution, path: &[Point]) -> V
                 inside = !inside;
             }
         }
-        mask[cell as usize] = inside;
+        mask[cell] = inside;
     }
 
     mask
@@ -374,7 +376,7 @@ pub fn cells_in_lasso(picture: &crate::puzzle::DynSolution, path: &[Point]) -> V
 /// Found by cancellation: push every selected cell's edges into a table, and an edge shared by
 /// two selected cells lands there twice. What's left having landed once is exactly the boundary.
 /// Works for squares and triangles.
-pub(super) fn selection_outline(picture: &DynSolution, cells: &[u32]) -> Vec<(Point, Point)> {
+pub(super) fn selection_outline(picture: &DynSolution, cells: &[CellIdx]) -> Vec<(Point, Point)> {
     /// A cell corner quantized onto a fixed sub-cell grid. Corners land on exact lattice values,
     /// so this is stable, and two cells' shared edge always produces the identical key.
     type Vertex = (i32, i32);
@@ -490,11 +492,10 @@ mod lasso_tests {
         DynSolution::Square(Solution::blank_bw(w, h))
     }
 
-    fn selected(mask: &[bool]) -> Vec<u32> {
-        mask.iter()
-            .enumerate()
+    fn selected(mask: &TiSlice<CellIdx, bool>) -> Vec<u32> {
+        mask.iter_enumerated()
             .filter(|(_, m)| **m)
-            .map(|(i, _)| i as u32)
+            .map(|(i, _)| i.0)
             .collect()
     }
 
@@ -559,15 +560,21 @@ mod lasso_tests {
     #[test]
     fn the_outline_drops_shared_edges() {
         let picture = square(3, 3);
-        assert_eq!(selection_outline(&picture, &[0]).len(), 4);
-        assert_eq!(selection_outline(&picture, &[0, 1]).len(), 6);
+        assert_eq!(selection_outline(&picture, &[CellIdx(0)]).len(), 4);
+        assert_eq!(
+            selection_outline(&picture, &[CellIdx(0), CellIdx(1)]).len(),
+            6
+        );
         // A 2×2 block: eight boundary edges, with the four interior ones cancelled.
-        assert_eq!(selection_outline(&picture, &[0, 1, 3, 4]).len(), 8);
+        assert_eq!(
+            selection_outline(&picture, &[CellIdx(0), CellIdx(1), CellIdx(3), CellIdx(4)]).len(),
+            8
+        );
     }
 
     /// The dense cell index of `(x, y)` in the 6×6 grid the move tests use.
-    fn at(x: usize, y: usize) -> usize {
-        y * 6 + x
+    fn at(x: usize, y: usize) -> CellIdx {
+        CellIdx((y * 6 + x) as u32)
     }
 
     /// A canvas over a blank 6×6 with a 2×2 block of `Color(1)` at (1,1).
@@ -644,14 +651,13 @@ mod lasso_tests {
         gui.clear_selection();
 
         let cells = gui.document.try_solution().unwrap().cells();
-        let lit: Vec<usize> = cells
-            .iter()
-            .enumerate()
+        let lit: Vec<CellIdx> = cells
+            .iter_enumerated()
             .filter(|(_, c)| **c == Color(1))
             .map(|(i, _)| i)
             .collect();
         // The block moved by (+2, +1): (1,1)..(2,2) became (3,2)..(4,3).
-        let want: Vec<usize> = [(3, 2), (4, 2), (3, 3), (4, 3)]
+        let want: Vec<CellIdx> = [(3, 2), (4, 2), (3, 3), (4, 3)]
             .iter()
             .map(|(x, y)| at(*x, *y))
             .collect();
@@ -747,11 +753,14 @@ mod lasso_tests {
             ClueStyle::Nono,
             HashMap::from([(BACKGROUND, ColorInfo::default_bg())]),
             Geometry::new(Outline::hexagon(2)),
-            vec![BACKGROUND; Geometry::<Tri>::new(Outline::hexagon(2)).cell_count()],
+            vec![BACKGROUND; Geometry::<Tri>::new(Outline::hexagon(2)).cell_count()].into(),
         );
         let picture = DynSolution::Tri(sol);
-        assert_eq!(selection_outline(&picture, &[0]).len(), 3);
+        assert_eq!(selection_outline(&picture, &[CellIdx(0)]).len(), 3);
         // Cells 0 and 1 are adjacent within the top row of the hexagon.
-        assert_eq!(selection_outline(&picture, &[0, 1]).len(), 4);
+        assert_eq!(
+            selection_outline(&picture, &[CellIdx(0), CellIdx(1)]).len(),
+            4
+        );
     }
 }

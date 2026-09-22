@@ -1,10 +1,12 @@
 use std::{fmt::Debug, sync::mpsc, vec};
 
+use typed_index_collections::{TiSlice, TiVec};
+
 use anyhow::Context;
 use colored::Colorize;
 
 use crate::{
-    geometry::{GridKind, LaneMap},
+    geometry::{CellIdx, FamilyIdx, GridKind, LaneIdx, LaneMap, LanePos},
     gui,
     puzzle::{
         BACKGROUND, Clue, Color, ColorInfo, DynSolution, PartialSolution, Puzzle, Solution,
@@ -62,7 +64,7 @@ pub struct Report {
     pub solution: DynSolution,
     /// One entry per cell, in the dense order the geometry defines — the same indexing as
     /// `PartialSolution` and `Solution::cells`.
-    pub solved_mask: Vec<bool>,
+    pub solved_mask: TiVec<CellIdx, bool>,
 }
 
 impl Report {
@@ -86,8 +88,8 @@ impl Report {
 pub struct LaneState<'a, C: Clue> {
     clues: &'a [C], // just convenience, since `lane` suffices to find it again
     /// Index into `LaneMap::lanes()`.
-    lane: usize,
-    family: usize,
+    lane: LaneIdx,
+    family: FamilyIdx,
     /// Position within the family, for display only.
     index_in_family: usize,
     /// Per mode, whether this lane is in `SolveState::queues[mode]` right now, waiting for a
@@ -101,8 +103,8 @@ pub struct LaneState<'a, C: Clue> {
 }
 
 /// Family 0 is rows, 1 is columns; a triangular puzzle adds `/` and `\` lines.
-fn family_letter(family: usize) -> char {
-    ['R', 'C', 'D'][family]
+fn family_letter(family: FamilyIdx) -> char {
+    ['R', 'C', 'D'][usize::from(family)]
 }
 
 impl<C: Clue> Debug for LaneState<'_, C> {
@@ -122,7 +124,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
     fn new(
         clues: &'a [C],
         lanes: &LaneMap,
-        lane: usize,
+        lane: LaneIdx,
         index_in_family: usize,
         gathered: &[Cell],
     ) -> LaneState<'a, C> {
@@ -155,15 +157,15 @@ impl<'a, C: Clue> LaneState<'a, C> {
 /// the copy itself is cheap and the *allocation* is not: skim-only puzzles do no scrubbing and
 /// keep no line cache, so this gather is the only per-step work of its size, and allocating for
 /// each one costs ~9% on such puzzles.
-fn gather_into(lanes: &LaneMap, lane: usize, grid: &PartialSolution, buf: &mut Vec<Cell>) {
+fn gather_into(lanes: &LaneMap, lane: LaneIdx, grid: &PartialSolution, buf: &mut Vec<Cell>) {
     buf.clear();
-    buf.extend(lanes.lane(lane).cells.iter().map(|c| grid[*c as usize]));
+    buf.extend(lanes.lane(lane).cells.iter().map(|c| grid[*c]));
 }
 
 /// The inverse of `gather_into`.
-fn scatter(lanes: &LaneMap, lane: usize, buf: &[Cell], grid: &mut PartialSolution) {
+fn scatter(lanes: &LaneMap, lane: LaneIdx, buf: &[Cell], grid: &mut PartialSolution) {
     for (position, cell) in lanes.lane(lane).cells.iter().enumerate() {
-        grid[*cell as usize] = buf[position];
+        grid[*cell] = buf[position];
     }
 }
 
@@ -180,11 +182,11 @@ fn debug_assert_unknown_cells_agree<C: Clue>(
             .lane(lane_state.lane)
             .cells
             .iter()
-            .filter(|cell| !grid[**cell as usize].is_known())
+            .filter(|cell| !grid[**cell].is_known())
             .count() as i32;
         assert_eq!(
             lane_state.unknown_cells, walked,
-            "lane {} unknown_cells drifted from what the cells say",
+            "lane {:?} unknown_cells drifted from what the cells say",
             lane_state.lane
         );
     }
@@ -192,10 +194,10 @@ fn debug_assert_unknown_cells_agree<C: Clue>(
 
 /// Pop the next lane to try for `mode` off its queue, which is sorted once and then round-robined.
 fn find_best_lane<C: Clue>(
-    lanes: &mut [LaneState<'_, C>],
-    queue: &mut std::collections::VecDeque<usize>,
+    lanes: &mut TiSlice<LaneIdx, LaneState<'_, C>>,
+    queue: &mut std::collections::VecDeque<LaneIdx>,
     mode: SolveMode,
-) -> Option<usize> {
+) -> Option<LaneIdx> {
     while let Some(idx) = queue.pop_front() {
         lanes[idx].queued[mode] = false;
         if lanes[idx].unknown_cells == 0 {
@@ -206,7 +208,7 @@ fn find_best_lane<C: Clue>(
     None
 }
 
-fn grid_to_solved_mask(grid: &PartialSolution) -> Vec<bool> {
+fn grid_to_solved_mask(grid: &PartialSolution) -> TiVec<CellIdx, bool> {
     grid.iter().map(|cell| cell.is_known()).collect()
 }
 
@@ -227,7 +229,7 @@ fn grid_to_solution<C: Clue, K: GridKind>(
             },
         );
     }
-    let cells: Vec<Color> = grid
+    let cells: TiVec<CellIdx, Color> = grid
         .iter()
         .map(|cell| cell.known_or().unwrap_or(UNSOLVED))
         .collect();
@@ -334,7 +336,8 @@ pub fn solve<C: Clue, K: GridKind>(
     options: &SolveOptions,
 ) -> anyhow::Result<Report> {
     // TODO: merge this and `line_logic_solve`
-    let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+    let mut grid: PartialSolution =
+        vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
     line_logic_solve(puzzle, line_cache, options, &mut grid)
 }
 
@@ -343,7 +346,7 @@ pub fn settle_solution<C: Clue, K: GridKind>(
     grid: &mut PartialSolution,
 ) -> anyhow::Result<()> {
     let mut buf: Vec<Cell> = vec![];
-    for (lane, clues) in puzzle.lines.iter().enumerate() {
+    for (lane, clues) in puzzle.lines.iter_enumerated() {
         gather_into(puzzle.geometry.lane_map(), lane, grid, &mut buf);
         crate::solve::line_solve::settle_line(clues, &mut buf)?;
         scatter(puzzle.geometry.lane_map(), lane, &buf, grid);
@@ -365,7 +368,7 @@ pub struct Scratch {
     lane: Vec<Cell>,
     /// What the last line solve moved: each cell it changed, paired with what that cell was
     /// before. `invalidate` folds these into `unknown_cells`.
-    changes: Vec<(u32, Cell)>,
+    changes: Vec<(CellIdx, Cell)>,
     /// Lane positions already recorded in `changes`. A `ScrubReport` can name a position more
     /// than once — a cell narrowed twice reports twice — and a count must only move once per
     /// cell, so the walk that builds `changes` dedupes as it goes.
@@ -443,12 +446,12 @@ const INITIAL_ALLOWED_FAILURES: ModeMap<i32> = ModeMap {
 pub struct SolveState<'p, C: Clue> {
     pub grid: PartialSolution,
     /// Parallel to `LaneMap::lanes()`, so a lane index indexes both this and the geometry.
-    pub lanes: Vec<LaneState<'p, C>>,
+    pub lanes: TiVec<LaneIdx, LaneState<'p, C>>,
     /// Per mode, which lanes are waiting for a turn, in the order they'll get one. Seeded once
     /// (sorted best-score-first) in `new` — or left empty in `resume`, for a caller that already
     /// knows nothing here needs a turn yet — after that a lane goes to the back when invalidated
     /// rather than being re-ranked. See `find_best_lane`.
-    queues: ModeMap<std::collections::VecDeque<usize>>,
+    queues: ModeMap<std::collections::VecDeque<LaneIdx>>,
     pub cells_left: usize,
     pub solve_counts: ModeMap<usize>,
     /// How many more fruitless attempts each below-`max_effort` mode gets before we stop trying
@@ -465,12 +468,12 @@ impl<'p, C: Clue> SolveState<'p, C> {
         let lane_map = ctx.lane_map();
         let scratch = &mut ctx.scratch;
 
-        let mut lanes = vec![];
+        let mut lanes: TiVec<LaneIdx, LaneState<C>> = TiVec::new();
         // Each lane's initial (skim, scrub) score, parallel to `lanes`; only needed for the
         // one-time queue sort below, not kept around afterward.
-        let mut initial_scores = vec![];
+        let mut initial_scores: TiVec<LaneIdx, (i32, i32)> = TiVec::new();
         // `lanes` is parallel to `geometry.lanes()`, so a lane index indexes both.
-        for family in 0..lane_map.family_count() {
+        for family in lane_map.families() {
             for (index_in_family, lane) in lane_map.family(family).enumerate() {
                 gather_into(lane_map, lane, &grid, &mut scratch.seed);
                 let clues = &puzzle.lines[lane];
@@ -490,11 +493,12 @@ impl<'p, C: Clue> SolveState<'p, C> {
         // in at all — it would just be popped and dropped the moment it got its turn.
         let mut queues = ModeMap::new_uniform(std::collections::VecDeque::new());
         for mode in SolveMode::all() {
-            let score = |idx: usize| match mode {
+            let score = |idx: LaneIdx| match mode {
                 SolveMode::Skim => initial_scores[idx].0,
                 SolveMode::Scrub => initial_scores[idx].1,
             };
-            let mut order: Vec<usize> = (0..lanes.len())
+            let mut order: Vec<LaneIdx> = lanes
+                .keys()
                 .filter(|&idx| lanes[idx].unknown_cells != 0)
                 .collect();
             order.sort_by_key(|&idx| std::cmp::Reverse(score(idx)));
@@ -524,8 +528,8 @@ impl<'p, C: Clue> SolveState<'p, C> {
         let lane_map = ctx.lane_map();
         let scratch = &mut ctx.scratch;
 
-        let mut lanes = vec![];
-        for family in 0..lane_map.family_count() {
+        let mut lanes: TiVec<LaneIdx, LaneState<C>> = TiVec::new();
+        for family in lane_map.families() {
             for (index_in_family, lane) in lane_map.family(family).enumerate() {
                 gather_into(lane_map, lane, &grid, &mut scratch.seed);
                 let clues = &puzzle.lines[lane];
@@ -563,7 +567,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn run_recording<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &mut Vec<(usize, Cell)>,
+        trail: &mut Vec<(CellIdx, Cell)>,
     ) -> anyhow::Result<Step> {
         self.run_inner(ctx, Some(trail))
     }
@@ -571,7 +575,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     fn run_inner<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        mut trail: Option<&mut Vec<(usize, Cell)>>,
+        mut trail: Option<&mut Vec<(CellIdx, Cell)>>,
     ) -> anyhow::Result<Step> {
         loop {
             match self.step_inner(ctx, trail.as_deref_mut())? {
@@ -598,7 +602,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn run_and_check_recording<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &mut Vec<(usize, Cell)>,
+        trail: &mut Vec<(CellIdx, Cell)>,
     ) -> anyhow::Result<Step> {
         let res = self.run_recording(ctx, trail)?;
         // TODO: we can do this faster by only checking invalidated lines!
@@ -608,7 +612,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
 
     /// Pick the next lane to attempt, escalating to a more thorough mode once the cheap ones stop
     /// paying off. `None` means every mode up to `max_effort` is exhausted.
-    fn choose_lane(&mut self, max_effort: SolveMode) -> Option<(usize, SolveMode)> {
+    fn choose_lane(&mut self, max_effort: SolveMode) -> Option<(LaneIdx, SolveMode)> {
         loop {
             let mut mode = max_effort;
             for m in SolveMode::all() {
@@ -641,7 +645,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn step_recording<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &mut Vec<(usize, Cell)>,
+        trail: &mut Vec<(CellIdx, Cell)>,
     ) -> anyhow::Result<Step> {
         self.step_inner(ctx, Some(trail))
     }
@@ -649,7 +653,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     fn step_inner<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: Option<&mut Vec<(usize, Cell)>>,
+        trail: Option<&mut Vec<(CellIdx, Cell)>>,
     ) -> anyhow::Result<Step> {
         let puzzle = ctx.puzzle;
         let options = ctx.options;
@@ -730,7 +734,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
             if !was.is_known() && lane[position].is_known() {
                 newly_known += 1;
             }
-            changes.push((solved_lane_cells[position], was));
+            changes.push((solved_lane_cells[LanePos::from(position)], was));
         }
         self.cells_left -= newly_known;
 
@@ -738,7 +742,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
 
         // We need what it *used* to be:
         if let Some(trail) = trail {
-            trail.extend(changes.iter().map(|&(cell, was)| (cell as usize, was)));
+            trail.extend(changes.iter().map(|&(cell, was)| (cell, was)));
         }
 
         // Fold the changes into every lane that holds one, so that nothing below — the trace, a
@@ -780,7 +784,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn learn_new<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        cell: usize,
+        cell: CellIdx,
         is: bool,
         color: Color,
     ) {
@@ -797,7 +801,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn learn<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        cell: usize,
+        cell: CellIdx,
         is: bool,
         color: Color,
     ) -> anyhow::Result<bool> {
@@ -819,7 +823,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
 
         let Scratch { changes, .. } = &mut ctx.scratch;
         changes.clear();
-        changes.push((cell as u32, previous)); // TODO: why are use using u32 here at all?
+        changes.push((cell, previous));
         self.invalidate(changes, None, lane_map);
         // A guess is new information, so it's worth another cheap pass before escalating.
         self.allowed_failures = INITIAL_ALLOWED_FAILURES;
@@ -833,7 +837,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn unwind<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &[(usize, Cell)],
+        trail: &[(CellIdx, Cell)],
     ) {
         let lane_map = ctx.lane_map();
 
@@ -843,7 +847,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
             debug_assert_eq!(
                 narrowed.raw() & old_value.raw(),
                 narrowed.raw(),
-                "unwinding cell {cell} to a value that isn't a superset of what it holds"
+                "unwinding cell {cell:?} to a value that isn't a superset of what it holds"
             );
             if narrowed == old_value {
                 continue; // No-ops are okay
@@ -853,8 +857,8 @@ impl<'p, C: Clue> SolveState<'p, C> {
             if narrowed.is_known() && !old_value.is_known() {
                 self.cells_left += 1;
             }
-            for membership in lane_map.memberships(cell as u32) {
-                self.lanes[membership.lane as usize].note_change(narrowed, old_value);
+            for membership in lane_map.memberships(cell) {
+                self.lanes[membership.lane].note_change(narrowed, old_value);
             }
         }
 
@@ -879,8 +883,8 @@ impl<'p, C: Clue> SolveState<'p, C> {
     /// it immediately would just hand it straight back next.
     fn invalidate(
         &mut self,
-        changes: &[(u32, Cell)],
-        just_solved: Option<usize>,
+        changes: &[(CellIdx, Cell)],
+        just_solved: Option<LaneIdx>,
         lane_map: &LaneMap,
     ) {
         // Split the borrow: the lanes are updated while the queues and the grid are read.
@@ -895,11 +899,11 @@ impl<'p, C: Clue> SolveState<'p, C> {
         // cell in a single batch (the lane we just solved usually does), and checking a lane's
         // count or deciding to requeue it before the rest of the batch is folded in would act on
         // a half-updated lane.
-        let mut touched: Vec<usize> = vec![];
+        let mut touched: Vec<LaneIdx> = vec![];
         for &(cell, was) in changes {
-            let now = grid[cell as usize];
+            let now = grid[cell];
             for membership in lane_map.memberships(cell) {
-                let idx = membership.lane as usize;
+                let idx = membership.lane;
                 lanes[idx].note_change(was, now);
                 if !touched.contains(&idx) {
                     touched.push(idx);
@@ -983,11 +987,13 @@ fn analyze_line<C: Clue>(clues: &[C], lane: &[Cell]) -> LineStatus {
 pub fn analyze_lines<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
-) -> Vec<LineStatus> {
+) -> TiVec<LaneIdx, LineStatus> {
     let mut gathered = vec![];
 
     let lanes = puzzle.geometry.lane_map();
-    (0..lanes.lane_count())
+    lanes
+        .lanes()
+        .keys()
         .map(|lane| {
             gather_into(lanes, lane, grid, &mut gathered);
             analyze_line(&puzzle.lines[lane], &gathered)
@@ -1000,11 +1006,13 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
 pub fn fixed_clues<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
-) -> Vec<Vec<usize>> {
+) -> TiVec<LaneIdx, Vec<usize>> {
     let lanes = puzzle.geometry.lane_map();
     let mut gathered = vec![];
 
-    (0..lanes.lane_count())
+    lanes
+        .lanes()
+        .keys()
         .map(|lane| {
             gather_into(lanes, lane, grid, &mut gathered);
             skim_to_find_fixed_clues(&puzzle.lines[lane], &gathered)
@@ -1019,7 +1027,7 @@ pub fn verify_lines<C: Clue, K: GridKind>(
 ) -> anyhow::Result<()> {
     // TODO: this probably could be done fasters
     let lanes = puzzle.geometry.lane_map();
-    for family in 0..lanes.family_count() {
+    for family in lanes.families() {
         for lane in puzzle.geometry.lane_map().family(family) {
             let mut gathered = vec![];
             gather_into(lanes, lane, grid, &mut gathered);
@@ -1033,7 +1041,7 @@ pub enum DisambigResult {
     // The puzzle is already fully solvable without any extra cells: disambiguation is a no-op.
     Unnecessary,
     /// One entry per cell, in the dense order the geometry defines.
-    Report(Vec<(Color, f32)>),
+    Report(TiVec<CellIdx, (Color, f32)>),
 }
 
 pub async fn disambig_candidates(
@@ -1053,13 +1061,13 @@ pub async fn disambig_candidates(
         .expect("started from a solution; shouldn't be possible!");
 
     let cell_count = s.cells().len();
-    let mut res = vec![(BACKGROUND, 0.0); cell_count];
+    let mut res: TiVec<CellIdx, (Color, f32)> = vec![(BACKGROUND, 0.0); cell_count].into();
     if orig_cells_left == 0 {
         progress.send(0.0).unwrap();
         return DisambigResult::Unnecessary;
     }
 
-    for cell in 0..cell_count {
+    for cell in CellIdx::range(CellIdx(0)..CellIdx(cell_count as u32)) {
         let mut best_result = usize::MAX;
         let mut best_color = BACKGROUND;
 
@@ -1081,8 +1089,8 @@ pub async fn disambig_candidates(
             }
         }
 
-        if cell % 5 == 0 {
-            progress.send(cell as f32 / cell_count as f32).unwrap();
+        if cell.0 % 5 == 0 {
+            progress.send(cell.0 as f32 / cell_count as f32).unwrap();
         }
 
         gui::yield_now().await;
@@ -1124,21 +1132,21 @@ mod tests {
             vec![clue(1), clue(2)], // impossible
         );
 
-        let mut grid = vec![Cell::new(&puzzle.palette); 4];
-        grid[0] = Cell::from_color(BACKGROUND); // (x=0, y=0)
-        grid[3] = Cell::from_color(BACKGROUND); // (x=1, y=1)
+        let mut grid: PartialSolution = vec![Cell::new(&puzzle.palette); 4].into();
+        grid[CellIdx(0)] = Cell::from_color(BACKGROUND); // (x=0, y=0)
+        grid[CellIdx(3)] = Cell::from_color(BACKGROUND); // (x=1, y=1)
 
         let lanes = puzzle.geometry.lane_map();
         let analysis = analyze_lines(&puzzle, &grid);
-        let row_tech = &analysis[lanes.family(0)];
-        let col_tech = &analysis[lanes.family(1)];
+        let row_tech = &analysis[lanes.family_range(FamilyIdx(0))];
+        let col_tech = &analysis[lanes.family_range(FamilyIdx(1))];
 
         assert_eq!(
             row_tech.iter().map(|r| r.as_ref().ok()).collect::<Vec<_>>(),
             vec![Some(&Some(SolveMode::Skim)), Some(&Some(SolveMode::Skim))]
         );
-        assert!(col_tech[0].as_ref().is_ok());
-        assert!(col_tech[1].is_err());
+        assert!(col_tech[LaneIdx(0)].as_ref().is_ok());
+        assert!(col_tech[LaneIdx(1)].is_err());
     }
 
     #[test]
@@ -1158,10 +1166,10 @@ mod tests {
 
         // One column of two cells, so the flat indices are (x=0, y=0) and (x=0, y=1).
         let grid = solution.to_partial();
-        assert!(grid[0].is_known_to_be(BACKGROUND));
-        assert!(!grid[1].is_known());
-        assert!(grid[1].can_be(BACKGROUND));
-        assert!(grid[1].can_be(Color(1)));
+        assert!(grid[CellIdx(0)].is_known_to_be(BACKGROUND));
+        assert!(!grid[CellIdx(1)].is_known());
+        assert!(grid[CellIdx(1)].can_be(BACKGROUND));
+        assert!(grid[CellIdx(1)].can_be(Color(1)));
     }
 
     #[test]
@@ -1175,8 +1183,8 @@ mod tests {
                 count: 3,
             }],
         );
-        let mut grid = vec![Cell::new_anything(); 7];
-        grid[5] = Cell::from_color(Color(1));
+        let mut grid: PartialSolution = vec![Cell::new_anything(); 7].into();
+        grid[CellIdx(5)] = Cell::from_color(Color(1));
 
         let bkg_solved = line_logic_solve(
             &puz,
@@ -1193,7 +1201,7 @@ mod tests {
         assert_eq!(bkg_solved.cells_left, 3);
 
         assert_eq!(
-            grid,
+            grid.raw,
             vec![
                 Cell::from_color(BACKGROUND),
                 Cell::from_color(BACKGROUND),
@@ -1219,12 +1227,12 @@ mod tests {
         palette.insert(BACKGROUND, ColorInfo::default_bg());
         palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
 
-        let mut lines = vec![];
-        for lane in 0..geometry.lane_count() {
+        let mut lines: TiVec<LaneIdx, Vec<Nono>> = TiVec::new();
+        for lane in geometry.lane_map().lanes().keys() {
             let mut clues: Vec<Nono> = vec![];
             let mut run = 0u16;
-            for cell in &geometry.lane(lane).cells {
-                if filled[*cell as usize] {
+            for cell in geometry.lane(lane).cells.iter() {
+                if filled[usize::from(*cell)] {
                     run += 1;
                 } else if run > 0 {
                     clues.push(Nono {
@@ -1256,7 +1264,8 @@ mod tests {
         let puzzle = triangular_puzzle(outline, filled);
         let report = solve(&puzzle, &mut None, &SolveOptions::default()).unwrap();
 
-        let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let mut grid: PartialSolution =
+            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
         line_logic_solve(&puzzle, &mut None, &SolveOptions::default(), &mut grid).unwrap();
 
         for (cell, cell_filled) in grid.iter().zip(filled) {
@@ -1320,9 +1329,11 @@ mod tests {
         };
         // Fill the middle row only.
         let geometry = crate::geometry::Geometry::<crate::geometry::Tri>::new(outline);
-        let middle: std::collections::HashSet<u32> =
-            geometry.lane(1).cells.iter().copied().collect();
-        let filled: Vec<bool> = (0..geometry.cell_count() as u32)
+        let middle: std::collections::HashSet<CellIdx> =
+            geometry.lane(LaneIdx(1)).cells.iter().copied().collect();
+        let filled: Vec<bool> = geometry
+            .lane_map()
+            .cells()
             .map(|c| middle.contains(&c))
             .collect();
 
@@ -1352,7 +1363,7 @@ mod tests {
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
         let mut state = SolveState::new(
             &mut ctx,
-            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()],
+            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into(),
         );
         assert_eq!(state.run(&mut ctx).unwrap(), Step::Stalled);
 
@@ -1361,8 +1372,8 @@ mod tests {
 
         // The guess goes on the trail by hand — `learn` is the caller's own move, so record what
         // the cell held *before* making it — and `run_recording` appends the consequences.
-        let mut trail: Vec<(usize, Cell)> = vec![(0, state.grid[0])];
-        state.learn(&mut ctx, 0, true, Color(1)).unwrap();
+        let mut trail: Vec<(CellIdx, Cell)> = vec![(CellIdx(0), state.grid[CellIdx(0)])];
+        state.learn(&mut ctx, CellIdx(0), true, Color(1)).unwrap();
         assert_eq!(
             state.run_recording(&mut ctx, &mut trail).unwrap(),
             Step::Solved
@@ -1391,7 +1402,7 @@ mod tests {
         );
 
         // Quiesced, but not frozen: a new fact still wakes the lanes that hold it.
-        state.learn(&mut ctx, 0, false, Color(1)).unwrap();
+        state.learn(&mut ctx, CellIdx(0), false, Color(1)).unwrap();
         assert_eq!(state.run(&mut ctx).unwrap(), Step::Solved);
     }
 
@@ -1416,17 +1427,17 @@ mod tests {
         let options = SolveOptions::default();
         let mut line_cache = None;
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
-        let mut state = SolveState::new(&mut ctx, vec![Cell::new(&puzzle.palette); 5]);
+        let mut state = SolveState::new(&mut ctx, vec![Cell::new(&puzzle.palette); 5].into());
         assert_eq!(state.run(&mut ctx).unwrap(), Step::Stalled);
 
         let stalled_grid = state.grid.clone();
         let stalled_cells_left = state.cells_left;
 
         // Filling both ends needs a run of five, so this can't be completed.
-        let mut trail: Vec<(usize, Cell)> = vec![(0, state.grid[0])];
-        state.learn(&mut ctx, 0, true, Color(1)).unwrap();
-        trail.push((4, state.grid[4]));
-        state.learn(&mut ctx, 4, true, Color(1)).unwrap();
+        let mut trail: Vec<(CellIdx, Cell)> = vec![(CellIdx(0), state.grid[CellIdx(0)])];
+        state.learn(&mut ctx, CellIdx(0), true, Color(1)).unwrap();
+        trail.push((CellIdx(4), state.grid[CellIdx(4)]));
+        state.learn(&mut ctx, CellIdx(4), true, Color(1)).unwrap();
 
         assert!(
             state.run_recording(&mut ctx, &mut trail).is_err(),
@@ -1457,23 +1468,23 @@ mod tests {
         let options = SolveOptions::default();
         let mut line_cache = None;
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
-        let mut state = SolveState::new(&mut ctx, vec![Cell::new(&puzzle.palette); 4]);
+        let mut state = SolveState::new(&mut ctx, vec![Cell::new(&puzzle.palette); 4].into());
 
-        let wide = state.grid[2];
+        let wide = state.grid[CellIdx(2)];
         assert_eq!(state.cells_left, 4);
 
         // Narrow one cell in two steps, recording the trail the way a solver would.
-        let mut trail = vec![(2, state.grid[2])];
-        state.learn(&mut ctx, 2, false, Color(2)).unwrap();
-        assert!(!state.grid[2].is_known()); // still {BACKGROUND, 1}
-        trail.push((2, state.grid[2]));
-        state.learn(&mut ctx, 2, true, Color(1)).unwrap();
-        assert!(state.grid[2].is_known_to_be(Color(1)));
+        let mut trail = vec![(CellIdx(2), state.grid[CellIdx(2)])];
+        state.learn(&mut ctx, CellIdx(2), false, Color(2)).unwrap();
+        assert!(!state.grid[CellIdx(2)].is_known()); // still {BACKGROUND, 1}
+        trail.push((CellIdx(2), state.grid[CellIdx(2)]));
+        state.learn(&mut ctx, CellIdx(2), true, Color(1)).unwrap();
+        assert!(state.grid[CellIdx(2)].is_known_to_be(Color(1)));
         assert_eq!(state.cells_left, 3);
 
         state.unwind(&mut ctx, &trail);
 
-        assert_eq!(state.grid[2], wide);
+        assert_eq!(state.grid[CellIdx(2)], wide);
         assert_eq!(state.cells_left, 4);
     }
 
@@ -1491,13 +1502,13 @@ mod tests {
         };
         let puzzle = Puzzle::square(palette, vec![clue(1), clue(1)], vec![clue(1), clue(1)]);
 
-        let mut grid = vec![Cell::new(&puzzle.palette); 4];
-        grid[0] = Cell::from_color(Color(1)); // (x=0, y=0)
-        grid[3] = Cell::from_color(Color(1)); // (x=1, y=1)
+        let mut grid: PartialSolution = vec![Cell::new(&puzzle.palette); 4].into();
+        grid[CellIdx(0)] = Cell::from_color(Color(1)); // (x=0, y=0)
+        grid[CellIdx(3)] = Cell::from_color(Color(1)); // (x=1, y=1)
 
         settle_solution(&puzzle, &mut grid).unwrap();
 
-        assert!(grid[1].is_known_to_be(BACKGROUND)); // (x=1, y=0)
-        assert!(grid[2].is_known_to_be(BACKGROUND)); // (x=0, y=1)
+        assert!(grid[CellIdx(1)].is_known_to_be(BACKGROUND)); // (x=1, y=0)
+        assert!(grid[CellIdx(2)].is_known_to_be(BACKGROUND)); // (x=0, y=1)
     }
 }

@@ -5,7 +5,7 @@ use anyhow::Context;
 use priority_queue::PriorityQueue;
 
 use crate::{
-    geometry::GridKind,
+    geometry::{CellIdx, GridKind},
     gui,
     puzzle::{Clue, Color, PartialSolution, Puzzle},
     solve::grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
@@ -25,7 +25,7 @@ pub use bt_scoring::{ScoreKind, ScorerPair};
 /// A coordinate into the tree of hypotheticals (a stack of assumptions)
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
 struct HypoCoord {
-    guesses: Vec<(usize, Color)>,
+    guesses: Vec<(CellIdx, Color)>,
 }
 // TODO: we should really impl push/pop on `HypoCoord`
 
@@ -51,11 +51,11 @@ struct BtSolveState {
     /// It's cheaper to do `SolveState::resume` each time than to keep `SolveState`.
     grid: PartialSolution,
     /// We *could* add it to the grid immediately instead, but we'd need to track what coord is dirty
-    extra_knowledge: Vec<(usize, bool, Color)>,
+    extra_knowledge: Vec<(CellIdx, bool, Color)>,
     cells_left: usize,
     /// Keep the history of steps taken (TODO: this isn't that meaningful anyways.)
     solve_counts: ModeMap<usize>,
-    guesses_explored: BTreeSet<(usize, Color)>,
+    guesses_explored: BTreeSet<(CellIdx, Color)>,
     /// How many cells were unknown in the node this one was forked from, so a scorer can ask
     /// what this node's guess actually bought. The root is its own parent.
     parent_cells_left: usize,
@@ -93,7 +93,7 @@ impl BtSolveState {
             .sum()
     }
 
-    fn fork(&mut self, coord: &HypoCoord, guess: (usize, Color)) -> (HypoCoord, BtSolveState) {
+    fn fork(&mut self, coord: &HypoCoord, guess: (CellIdx, Color)) -> (HypoCoord, BtSolveState) {
         let mut new_coord = coord.clone();
         new_coord.guesses.push(guess);
 
@@ -167,7 +167,7 @@ fn nuke_descendants<'p, 'x, C: Clue, K: GridKind>(
 
 fn inform_descendents<'p, 'x, C: Clue, K: GridKind>(
     coord: &HypoCoord,
-    (cell_idx, is, color): (usize, bool, Color),
+    (cell_idx, is, color): (CellIdx, bool, Color),
     ctx: &mut BtContext<'p, 'x, C, K>,
 ) {
     if let Some(state) = ctx.possibilities.get(&coord) {
@@ -192,7 +192,7 @@ fn inform_descendents<'p, 'x, C: Clue, K: GridKind>(
 /// Returns `None` if the search is still incomplete
 fn suppose<'p, 'x, C: Clue, K: GridKind>(
     coord: &HypoCoord,
-    cell_idx: usize,
+    cell_idx: CellIdx,
     is: bool,
     color: Color,
     ctx: &mut BtContext<'p, 'x, C, K>,
@@ -262,7 +262,9 @@ fn suppose<'p, 'x, C: Clue, K: GridKind>(
             let mut higher_coord = coord.clone();
             if let Some((prev_cell_idx, prev_color)) = higher_coord.guesses.pop() {
                 if ctx.linear_ctx.options.trace_backtrack {
-                    println!("Assumption {coord:?} wasn't true! So {prev_cell_idx} isn't {color:?}")
+                    println!(
+                        "Assumption {coord:?} wasn't true! So {prev_cell_idx:?} isn't {color:?}"
+                    )
                 }
 
                 nuke_node(coord, ctx); // Get rid of the contradiction node
@@ -351,7 +353,7 @@ pub async fn backtrack_solve<C: Clue, K: GridKind>(
 
     let mut init_linear_state = SolveState::new(
         &mut ctx.linear_ctx,
-        vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()],
+        vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into(),
     );
     init_linear_state.run_and_check(&mut ctx.linear_ctx)?; // `?` because contradictions here are "real"
 
@@ -506,7 +508,7 @@ mod tests {
             geometry.cell_count(),
             "wrong number of cells for this outline"
         );
-        Solution::new(ClueStyle::Nono, bw_palette(), geometry, cells)
+        Solution::new(ClueStyle::Nono, bw_palette(), geometry, cells.into())
     }
 
     /// One lane's worth of `Nono` clues, all in `Color(1)`, for the tests that write clues out
@@ -572,7 +574,8 @@ mod tests {
         let want = ["..###", "..#.#", "##...", "....#", ".##.."];
         let puzzle = solution_to_puzzle(&picture(&want));
 
-        let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let mut grid: crate::puzzle::PartialSolution =
+            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
         let line_only = crate::solve::grid_solve::line_logic_solve(
             &puzzle,
             &mut None,
@@ -606,7 +609,8 @@ mod tests {
         ];
         let puzzle = solution_to_puzzle(&picture(&want));
 
-        let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let mut grid: crate::puzzle::PartialSolution =
+            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
         let line_only = crate::solve::grid_solve::line_logic_solve(
             &puzzle,
             &mut None,
@@ -666,7 +670,8 @@ mod tests {
         );
 
         // Line logic really doesn't notice; if it learns to, this stops testing the search.
-        let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let mut grid: crate::puzzle::PartialSolution =
+            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
         let line_only = crate::solve::grid_solve::line_logic_solve(
             &puzzle,
             &mut None,
@@ -688,7 +693,8 @@ mod tests {
         let want = [".#..#", "..##..", "....."];
         let puzzle = solution_to_tri_puzzle(&tri_picture(&want));
 
-        let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let mut grid: crate::puzzle::PartialSolution =
+            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
         let line_only = crate::solve::grid_solve::line_logic_solve(
             &puzzle,
             &mut None,

@@ -3,6 +3,7 @@ mod tests {
     use egui::{Event, Modifiers, PointerButton, Pos2};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
+    use number_loom::geometry::{CellIdx, FamilyIdx, LaneIdx};
     use number_loom::{gui::NonogramGui, import};
 
     /// A point that's actually on the canvas, taken from where the last frame drew the picture.
@@ -1019,7 +1020,8 @@ mod tests {
 
         // Whichever cell the click landed on. (Background inference may have filled in others,
         // so this looks for the one that took the drawing color.)
-        let painted: Vec<usize> = (0..after.len())
+        let painted: Vec<CellIdx> = after
+            .keys()
             .filter(|i| after[*i] == Color(1) && before[*i] != Color(1))
             .collect();
         assert_eq!(painted.len(), 1, "one click should paint one cell");
@@ -1056,11 +1058,11 @@ mod tests {
         // from where the picture was drawn, since hardcoding a point goes stale with the layout.
         let solve_gui = harness.state().solve_gui.as_ref().unwrap();
         let row_clues: Vec<usize> = with_puzzle!(&solve_gui.clues, |p| {
-            let rows = p.geometry.lane_map().family(0);
+            let rows = p.geometry.lane_map().family_range(FamilyIdx(0));
             p.lines[rows].iter().map(|l| l.len()).collect()
         });
         let row = row_clues.iter().position(|n| *n > 0).unwrap();
-        let clue = (row, row_clues[row] - 1);
+        let clue = (LaneIdx(row as u32), row_clues[row] - 1);
 
         // `draw_clues`' own layout, in reverse: one cell per row, a `CLUE_PAD` gap against the
         // grid, and then the boxes marching outward. The picture's rect is inset by the canvas's
@@ -1159,7 +1161,7 @@ mod tests {
         let changes = solution
             .iter()
             .enumerate()
-            .map(|(i, c)| (i as u32, *c))
+            .map(|(i, c)| (CellIdx(i as u32), *c))
             .collect();
         harness
             .state_mut()
@@ -1181,7 +1183,7 @@ mod tests {
                 .fixed_clues
                 .val
                 .as_ref()
-                .unwrap()[row]
+                .unwrap()[clue.0]
                 .contains(&clue.1),
             "the solver should have resolved the clue being clicked"
         );
@@ -1232,17 +1234,18 @@ mod tests {
             .mark_fixed_clues = true;
         harness.run();
 
-        let fixed = |harness: &Harness<NonogramGui>| -> Vec<Vec<usize>> {
-            harness
-                .state()
-                .solve_gui
-                .as_ref()
-                .unwrap()
-                .fixed_clues
-                .val
-                .clone()
-                .expect("the aid is on, so it should have run")
-        };
+        let fixed =
+            |harness: &Harness<NonogramGui>| -> number_loom::gui::TiVec<LaneIdx, Vec<usize>> {
+                harness
+                    .state()
+                    .solve_gui
+                    .as_ref()
+                    .unwrap()
+                    .fixed_clues
+                    .val
+                    .clone()
+                    .expect("the aid is on, so it should have run")
+            };
 
         // Nothing painted, so nothing is resolved yet.
         assert!(fixed(&harness).iter().all(|line| line.is_empty()));
@@ -1259,7 +1262,7 @@ mod tests {
         let changes = solution
             .iter()
             .enumerate()
-            .map(|(i, c)| (i as u32, *c))
+            .map(|(i, c)| (CellIdx(i as u32), *c))
             .collect();
         harness
             .state_mut()
@@ -1312,7 +1315,7 @@ mod tests {
                 .enumerate()
                 .skip(chunk * third)
                 .take(third)
-                .map(|(i, c)| (i as u32, *c))
+                .map(|(i, c)| (CellIdx(i as u32), *c))
                 .collect();
             harness
                 .state_mut()

@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
             .context("--disambiguate can only print square puzzles")?;
         for y in 0..solution.y_size() {
             for x in 0..solution.x_size() {
-                let index = solution.geometry.cell((x, y)).unwrap() as usize;
+                let index = solution.geometry.cell((x, y)).unwrap();
                 let ci = &solution.palette[&solution.cells[index]];
                 if disambig[index].1 <= display_threshold {
                     let new_ch = &solution.palette[&disambig[index].0].ch;

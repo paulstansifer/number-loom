@@ -148,9 +148,9 @@ impl CanvasGui {
         }
     }
 
-    fn flood_fill(&mut self, start: u32) {
+    fn flood_fill(&mut self, start: CellIdx) {
         let picture = self.document.solution_mut();
-        let target_color = picture.cells()[start as usize];
+        let target_color = picture.cells()[start];
         if target_color == self.current_color {
             return; // Nothing to do
         }
@@ -166,7 +166,7 @@ impl CanvasGui {
             changes.insert(cell, self.current_color);
 
             for neighbor in picture.neighbor_cells(cell) {
-                if picture.cells()[neighbor as usize] == target_color && visited.insert(neighbor) {
+                if picture.cells()[neighbor] == target_color && visited.insert(neighbor) {
                     q.push_back(neighbor);
                 }
             }
@@ -181,7 +181,7 @@ impl CanvasGui {
     ///
     /// The lasso never arrives here: it has to keep tracking the pointer once it leaves the
     /// grid, so `canvas_with_clues` deals with it before there is a cell to speak of.
-    pub(super) fn pointer_tool_input(&mut self, cell: u32, pointer: &egui::PointerState) {
+    pub(super) fn pointer_tool_input(&mut self, cell: CellIdx, pointer: &egui::PointerState) {
         let picture = self.document.solution_mut();
         // What "no idea yet" looks like: the solver's own marker where there is one, and plain
         // background in the editor, whose palette has no such entry.
@@ -190,7 +190,7 @@ impl CanvasGui {
         } else {
             BACKGROUND
         };
-        let under_pointer = picture.cells()[cell as usize];
+        let under_pointer = picture.cells()[cell];
         let paint_color = if pointer.middle_down() {
             unknown
         } else if pointer.secondary_down() {
@@ -272,7 +272,7 @@ impl CanvasGui {
     }
 
     /// The cells between two points along whichever lane best matches the drag.
-    fn line_between(&mut self, start: u32, end: u32) -> HashMap<u32, Color> {
+    fn line_between(&mut self, start: CellIdx, end: CellIdx) -> HashMap<CellIdx, Color> {
         let picture = self.document.solution_mut();
 
         let mut changes = HashMap::new();
@@ -284,7 +284,7 @@ impl CanvasGui {
         // Cell *centres*, not raw origins: a triangle's centroid sits off-corner and at a
         // different offset for ▲ than ▼, so mixing origins would misjudge lane direction
         // whenever a lane's cells alternate orientation.
-        let center = |cell: u32| picture.cell_shape(cell).center(picture.cell_origin(cell));
+        let center = |cell: CellIdx| picture.cell_shape(cell).center(picture.cell_origin(cell));
         let (start_center, end_center) = (center(start), center(end));
         let drag =
             crate::layout::Vec2::new(end_center.x - start_center.x, end_center.y - start_center.y);
@@ -294,7 +294,7 @@ impl CanvasGui {
                 let lane = picture.lane_map().lane(along.lane);
                 let to = along.target(lane.cells.len());
                 let (from, to) = (along.from.min(to), along.from.max(to));
-                for cell in &lane.cells[from..=to] {
+                for cell in lane.cells[LanePos::from(from)..=LanePos::from(to)].iter() {
                     changes.insert(*cell, self.drag_start_color);
                 }
             }
@@ -311,7 +311,7 @@ impl CanvasGui {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DragAlongLane {
     /// Index into `LaneMap::lanes()`.
-    pub lane: usize,
+    pub lane: LaneIdx,
     /// Where the cell the drag started from sits in that lane.
     pub from: usize,
     /// How far along the lane the drag reached, in cells: signed, so negative runs back toward
@@ -347,7 +347,7 @@ impl DragAlongLane {
 /// gives a stable average per-cell spacing along it.
 pub(super) fn lane_along_drag(
     picture: &DynSolution,
-    cell: u32,
+    cell: CellIdx,
     drag: crate::layout::Vec2,
 ) -> Option<DragAlongLane> {
     let drag_len = (drag.x * drag.x + drag.y * drag.y).sqrt();
@@ -356,15 +356,15 @@ pub(super) fn lane_along_drag(
     }
 
     let lanes = picture.lane_map();
-    let center = |cell: u32| picture.cell_shape(cell).center(picture.cell_origin(cell));
+    let center = |cell: CellIdx| picture.cell_shape(cell).center(picture.cell_origin(cell));
 
     let mut best: Option<(DragAlongLane, f32)> = None; // (candidate, |cos angle| to the drag)
     for membership in lanes.memberships(cell) {
-        let lane = lanes.lane(membership.lane as usize);
+        let lane = lanes.lane(membership.lane);
         if lane.cells.len() < 2 {
             continue; // No direction to compare against.
         }
-        let first = center(lane.cells[0]);
+        let first = center(lane.cells[LanePos(0)]);
         let last = center(*lane.cells.last().unwrap());
         let span = crate::layout::Vec2::new(last.x - first.x, last.y - first.y);
         let span_len = (span.x * span.x + span.y * span.y).sqrt();
@@ -380,8 +380,8 @@ pub(super) fn lane_along_drag(
         if best.is_none_or(|(_, best_cos)| cos_angle > best_cos) {
             best = Some((
                 DragAlongLane {
-                    lane: membership.lane as usize,
-                    from: membership.position as usize,
+                    lane: membership.lane,
+                    from: usize::from(membership.position),
                     steps,
                 },
                 cos_angle,
@@ -396,8 +396,8 @@ mod line_tool_tests {
     use super::*;
     use crate::puzzle::Solution;
 
-    fn at(x: usize, y: usize) -> u32 {
-        (y * 6 + x) as u32
+    fn at(x: usize, y: usize) -> CellIdx {
+        CellIdx((y * 6 + x) as u32)
     }
 
     fn canvas() -> CanvasGui {
@@ -421,7 +421,7 @@ mod line_tool_tests {
         // (angle 0) is closer than the column (angle 90) to the drag direction.
         let changes = gui.line_between(at(1, 1), at(4, 2));
 
-        let mut got: Vec<u32> = changes.keys().copied().collect();
+        let mut got: Vec<CellIdx> = changes.keys().copied().collect();
         got.sort();
         assert_eq!(got, vec![at(1, 1), at(2, 1), at(3, 1), at(4, 1)]);
         assert!(changes.values().all(|c| *c == Color(1)));
@@ -434,7 +434,7 @@ mod line_tool_tests {
         // From (1,1), drag toward (2,4): mostly downward with a little sideways drift.
         let changes = gui.line_between(at(1, 1), at(2, 4));
 
-        let mut got: Vec<u32> = changes.keys().copied().collect();
+        let mut got: Vec<CellIdx> = changes.keys().copied().collect();
         got.sort();
         assert_eq!(got, vec![at(1, 1), at(1, 2), at(1, 3), at(1, 4)]);
     }
@@ -446,7 +446,7 @@ mod line_tool_tests {
         let mut gui = canvas();
         let changes = gui.line_between(at(4, 2), at(1, 3));
 
-        let mut got: Vec<u32> = changes.keys().copied().collect();
+        let mut got: Vec<CellIdx> = changes.keys().copied().collect();
         got.sort();
         assert_eq!(got, vec![at(1, 2), at(2, 2), at(3, 2), at(4, 2)]);
     }
@@ -466,7 +466,7 @@ mod line_tool_tests {
             ClueStyle::Nono,
             HashMap::from([(BACKGROUND, ColorInfo::default_bg())]),
             geometry,
-            vec![BACKGROUND; Geometry::<Tri>::new(Outline::hexagon(2)).cell_count()],
+            vec![BACKGROUND; Geometry::<Tri>::new(Outline::hexagon(2)).cell_count()].into(),
         );
         let lane_map = sol.geometry.lane_map().clone();
         let mut gui = NonogramGui::new(Document::from_solution(
@@ -479,23 +479,23 @@ mod line_tool_tests {
 
         // Every "/" and "\" lane (families 1 and 2) with more than one cell: dragging end to end
         // should paint every cell in it, no matter which orientation each end happens to be.
-        for family in [1usize, 2usize] {
+        for family in [FamilyIdx(1), FamilyIdx(2)] {
             for lane_idx in lane_map.family(family) {
                 let lane = lane_map.lane(lane_idx);
                 if lane.cells.len() < 2 {
                     continue;
                 }
-                let first = lane.cells[0];
+                let first = lane.cells[LanePos(0)];
                 let last = *lane.cells.last().unwrap();
 
-                let mut got: Vec<u32> = gui.line_between(first, last).keys().copied().collect();
+                let mut got: Vec<CellIdx> = gui.line_between(first, last).keys().copied().collect();
                 got.sort();
-                let mut want = lane.cells.clone();
+                let mut want = lane.cells.raw.clone();
                 want.sort();
                 assert_eq!(
                     got,
                     want,
-                    "family {family} lane {lane_idx} (len {}) didn't paint end to end",
+                    "family {family:?} lane {lane_idx:?} (len {}) didn't paint end to end",
                     lane.cells.len()
                 );
             }

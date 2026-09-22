@@ -19,6 +19,7 @@ use super::solver::{
 use egui::{Pos2, Vec2};
 use std::collections::HashSet;
 
+use crate::geometry::{CellIdx, FamilyIdx};
 use crate::layout::Point;
 use crate::puzzle::{Clue, ColorInfo, DynSolution};
 
@@ -206,11 +207,11 @@ pub(super) fn draw_rosette(
     ui: &egui::Ui,
     painter: &egui::Painter,
     picture: &DynSolution,
-    cell: u32,
+    cell: CellIdx,
     center: Pos2,
     scale: f32,
 ) {
-    let color = picture.cells()[cell as usize];
+    let color = picture.cells()[cell];
     let rgb = picture.palette()[&color].rgb;
     let text = if color == crate::puzzle::UNSOLVED {
         "?"
@@ -233,9 +234,13 @@ pub(super) fn draw_rosette(
 
     let arm_size = scale * 0.68;
     let arm_distance = scale * 1.7;
-    for (family, (back, forward)) in runs.iter().enumerate() {
+    for (family, (back, forward)) in runs
+        .iter()
+        .enumerate()
+        .map(|(f, r)| (FamilyIdx(f as u32), r))
+    {
         for (i, count) in [back, forward].into_iter().enumerate() {
-            let Some(dir) = dirs.get(family * 2 + i) else {
+            let Some(dir) = dirs.get(usize::from(family) * 2 + i) else {
                 continue;
             };
             if *count == 0 {

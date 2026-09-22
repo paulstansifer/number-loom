@@ -10,9 +10,10 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use typed_index_collections::TiVec;
 
 use crate::{
-    geometry::{Square, Tri},
+    geometry::{CellIdx, Square, Tri},
     puzzle::{BACKGROUND, ClueStyle, Color, ColorInfo, Corner, DynSolution, Solution},
 };
 
@@ -272,13 +273,13 @@ fn char_grid_to_tri_solution(char_grid: &str) -> anyhow::Result<Solution<Tri>> {
     };
     let geometry = Geometry::<Tri>::new(outline);
 
-    let mut cells = vec![BACKGROUND; geometry.cell_count()];
-    for i in 0..geometry.cell_count() as u32 {
+    let mut cells: TiVec<CellIdx, Color> = vec![BACKGROUND; geometry.cell_count()].into();
+    for i in geometry.lane_map().cells() {
         let coord = geometry.coord(i);
         let ch = ch_by_coord
             .get(&coord)
             .with_context(|| format!("triddler chargrid is missing a cell at {coord:?}"))?;
-        cells[i as usize] = palette[ch].color;
+        cells[i] = palette[ch].color;
     }
 
     Ok(Solution::new(
@@ -309,6 +310,7 @@ pub fn as_char_grid(solution: &Solution<Square>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::FamilyIdx;
 
     #[test]
     fn a_leading_slash_after_whitespace_still_means_triddler() {
@@ -348,7 +350,7 @@ mod tests {
         assert_eq!(solution.geometry.cell_count(), 16);
         let rows: Vec<usize> = solution
             .geometry
-            .family(0)
+            .family(FamilyIdx(0))
             .map(|i| solution.geometry.lane(i).cells.len())
             .collect();
         assert_eq!(rows, vec![5, 6, 5]);
@@ -374,7 +376,7 @@ mod tests {
         assert_eq!(solution.geometry.cell_count(), 11); // 5 + 6, as in the full example.
         let rows: Vec<usize> = solution
             .geometry
-            .family(0)
+            .family(FamilyIdx(0))
             .map(|i| solution.geometry.lane(i).cells.len())
             .collect();
         assert_eq!(rows, vec![5, 6]);

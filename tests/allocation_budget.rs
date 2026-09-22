@@ -64,7 +64,7 @@ fn stepping_the_solver_stays_within_its_allocation_budget() {
         let mut line_cache = None;
 
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
-        let grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()];
+        let grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
         let mut state = SolveState::new(&mut ctx, grid);
 
         // Untimed warm-up, so the buffers reach their working size before anything is charged.

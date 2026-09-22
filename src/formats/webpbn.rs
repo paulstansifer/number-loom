@@ -1,7 +1,12 @@
 use anyhow::{Context, bail};
 use std::collections::{HashMap, HashSet};
 
-use crate::geometry::{ClueSet, ClueSetCounts, GridKind, Outline, Shape, Square, Tri};
+use typed_index_collections::{TiSlice, TiVec};
+
+use crate::geometry::{
+    CellIdx, ClueSet, ClueSetCounts, FamilyIdx, GridKind, LaneIdx, LanePos, Outline, Shape, Square,
+    Tri,
+};
 use crate::puzzle::{
     BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynPuzzle, DynSolution, Nono, Puzzle,
     Solution,
@@ -69,7 +74,8 @@ fn triddler_puzzle(
 
     // Each set's lines are in increasing lane order, so they line up one-for-one with the lanes
     // the geometry assigns to that set.
-    let mut lines = vec![vec![]; geometry.lane_map().lane_count()];
+    let mut lines: TiVec<LaneIdx, Vec<Nono>> =
+        vec![vec![]; geometry.lane_map().lane_count()].into();
     for set in [
         ClueSet::TopLeft,
         ClueSet::BottomLeft,
@@ -118,7 +124,7 @@ fn parse_solution_image(
 fn solution_from_image<K: GridKind>(
     palette: HashMap<Color, ColorInfo>,
     geometry: crate::geometry::Geometry<K>,
-    cells: Vec<Color>,
+    cells: TiVec<CellIdx, Color>,
 ) -> anyhow::Result<Solution<K>> {
     anyhow::ensure!(
         cells.len() == geometry.cell_count(),
@@ -305,14 +311,14 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
     let (puzzle, solution): (DynPuzzle, Option<DynSolution>) = if triddler {
         let p = triddler_puzzle(palette.clone(), &triddler_clues)?;
         let solution = goal_solution
-            .map(|cells| solution_from_image(palette, p.geometry.clone(), cells))
+            .map(|cells| solution_from_image(palette, p.geometry.clone(), cells.into()))
             .transpose()?
             .map(DynSolution::Tri);
         (p.into(), solution)
     } else {
         let p = Puzzle::square(palette.clone(), rows, cols);
         let solution = goal_solution
-            .map(|cells| solution_from_image(palette, p.geometry.clone(), cells))
+            .map(|cells| solution_from_image(palette, p.geometry.clone(), cells.into()))
             .transpose()?
             .map(DynSolution::Square);
         (p.into(), solution)
@@ -361,11 +367,17 @@ fn websafe_chars(palette: &HashMap<Color, ColorInfo>) -> HashMap<Color, ColorInf
 /// How `write_webpbn` delimits one text row of a `<solution>` image; `webpbn_tridder.md` uses `|`
 /// for a grid's rows and `/`/`\` (chosen per end) for a triddler's.
 trait ImageDelimiter: GridKind {
-    fn row_delimiters(geometry: &crate::geometry::Geometry<Self>, cells: &[u32]) -> (char, char);
+    fn row_delimiters(
+        geometry: &crate::geometry::Geometry<Self>,
+        cells: &TiSlice<LanePos, CellIdx>,
+    ) -> (char, char);
 }
 
 impl ImageDelimiter for Square {
-    fn row_delimiters(_geometry: &crate::geometry::Geometry<Self>, _cells: &[u32]) -> (char, char) {
+    fn row_delimiters(
+        _geometry: &crate::geometry::Geometry<Self>,
+        _cells: &TiSlice<LanePos, CellIdx>,
+    ) -> (char, char) {
         ('|', '|')
     }
 }
@@ -375,8 +387,11 @@ impl ImageDelimiter for Tri {
     /// downward-pointing triangle's edges slope the other way — worked out (and cross-checked
     /// against every row of `webpbn_tridder.md`'s own worked example) alongside the chargrid
     /// reader that shares this convention, `char_grid::char_grid_to_tri_solution`.
-    fn row_delimiters(geometry: &crate::geometry::Geometry<Self>, cells: &[u32]) -> (char, char) {
-        let leftmost_points_up = geometry.coord(cells[0]).points_up();
+    fn row_delimiters(
+        geometry: &crate::geometry::Geometry<Self>,
+        cells: &TiSlice<LanePos, CellIdx>,
+    ) -> (char, char) {
+        let leftmost_points_up = geometry.coord(cells[LanePos(0)]).points_up();
         let rightmost_points_up = geometry.coord(*cells.last().unwrap()).points_up();
         (
             if leftmost_points_up { '/' } else { '\\' },
@@ -392,12 +407,12 @@ fn solution_image<K: GridKind + ImageDelimiter>(
     palette: &HashMap<Color, ColorInfo>,
 ) -> String {
     let mut image = String::new();
-    for lane in solution.geometry.family(0) {
+    for lane in solution.geometry.family(FamilyIdx(0)) {
         let cells = &solution.geometry.lane(lane).cells;
         let (left, right) = K::row_delimiters(&solution.geometry, cells);
         image.push(left);
-        for &cell in cells {
-            image.push(palette[&solution.cells[cell as usize]].ch);
+        for &cell in cells.iter() {
+            image.push(palette[&solution.cells[cell]].ch);
         }
         image.push(right);
         image.push('\n');
@@ -525,7 +540,7 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
     match puzzle.geometry.shape() {
         Shape::Square { .. } => {
             // Family 0 is rows and family 1 is columns.
-            for (name, family) in [("columns", 1), ("rows", 0)] {
+            for (name, family) in [("columns", FamilyIdx(1)), ("rows", FamilyIdx(0))] {
                 let lines: Vec<&Vec<Nono>> = puzzle
                     .lane_map()
                     .family(family)
@@ -609,20 +624,20 @@ mod tests {
         assert_eq!(puzzle.geometry.cell_count(), 16);
         let rows: Vec<usize> = puzzle
             .geometry
-            .family(0)
+            .family(FamilyIdx(0))
             .map(|i| puzzle.geometry.lane(i).cells.len())
             .collect();
         assert_eq!(rows, vec![5, 6, 5]);
 
         // Every clue must fit the lane it landed in; `2,3` needs 6 cells, so it pins the
         // assignment.
-        for lane in 0..puzzle.geometry.lane_count() {
+        for lane in puzzle.lane_map().lanes().keys() {
             let clues = &puzzle.lines[lane];
             let needed: usize = clues.iter().map(|c| c.count as usize).sum::<usize>()
                 + clues.len().saturating_sub(1);
             assert!(
                 needed <= puzzle.geometry.lane(lane).cells.len(),
-                "clues {clues:?} don't fit lane {lane}"
+                "clues {clues:?} don't fit lane {lane:?}"
             );
         }
     }
@@ -660,10 +675,10 @@ mod tests {
     /// Guards the direction finding above: flipping any one family must break the puzzle.
     #[test]
     fn no_other_reading_direction_works() {
-        for family_to_flip in 0..3 {
+        for family_to_flip in (0..3).map(FamilyIdx) {
             let mut doc = webpbn_to_document(DOC_TRIDDLER).unwrap();
             let mut puzzle = doc.puzzle().as_tri_nono().unwrap().clone();
-            for lane in 0..puzzle.geometry.lane_count() {
+            for lane in puzzle.lane_map().lanes().keys() {
                 if puzzle.geometry.lane(lane).family == family_to_flip {
                     puzzle.lines[lane].reverse();
                 }
@@ -671,7 +686,7 @@ mod tests {
             let solved_cleanly = matches!(puzzle.plain_solve(), Ok(r) if r.cells_left == 0);
             assert!(
                 !solved_cleanly,
-                "reversing family {family_to_flip} should not also work"
+                "reversing family {family_to_flip:?} should not also work"
             );
         }
     }

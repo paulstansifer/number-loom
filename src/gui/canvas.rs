@@ -14,14 +14,14 @@ use super::*;
 #[derive(Clone, PartialEq, Debug)]
 pub struct HoverBlocks {
     /// `(lane, length)` per clue family, as `DynSolution::blocks_at_cell` reports it.
-    pub by_family: Vec<(usize, usize)>,
+    pub by_family: Vec<(LaneIdx, usize)>,
     /// The hovered cell's color: what the numbers are drawn in.
     pub rgb: (u8, u8, u8),
 }
 
 impl HoverBlocks {
     /// How long the hovered block is along `lane`, if it runs along that lane at all.
-    pub fn on_lane(&self, lane: usize) -> Option<usize> {
+    pub fn on_lane(&self, lane: LaneIdx) -> Option<usize> {
         self.by_family
             .iter()
             .find(|(l, _)| *l == lane)
@@ -30,16 +30,16 @@ impl HoverBlocks {
 }
 
 /// A clue in a gutter: which lane it belongs to, and which of that lane's clues it is.
-pub type ClueId = (usize, usize);
+pub type ClueId = (LaneIdx, usize);
 
 /// What a canvas needs in order to draw clue gutters around the picture. Only the solve view
 /// supplies this; the editor draws the picture alone.
 pub struct ClueOverlay<'a> {
     pub puzzle: &'a crate::puzzle::DynPuzzle,
     /// One `LineStatus` per lane, parallel to `LaneMap::lanes()`.
-    pub analysis: Option<&'a [crate::solve::grid_solve::LineStatus]>,
+    pub analysis: Option<&'a TiSlice<LaneIdx, crate::solve::grid_solve::LineStatus>>,
     /// One `Vec<usize>` of resolved clue indices per lane, indexed like `analysis`.
-    pub fixed: Option<&'a [Vec<usize>]>,
+    pub fixed: Option<&'a TiSlice<LaneIdx, Vec<usize>>>,
     pub is_stale: bool,
     /// The hovered cell's block lengths, shown in place of the analysis marks on its own lanes.
     pub hover: Option<HoverBlocks>,
@@ -66,7 +66,7 @@ impl CanvasGui {
         ui: &mut egui::Ui,
         scale: f32,
         render_style: RenderStyle,
-    ) -> Option<u32> {
+    ) -> Option<CellIdx> {
         self.canvas_with_clues(ui, scale, render_style, None).0
     }
 
@@ -79,7 +79,7 @@ impl CanvasGui {
         scale: f32,
         render_style: RenderStyle,
         clues: Option<ClueOverlay<'_>>,
-    ) -> (Option<u32>, Option<ClueId>) {
+    ) -> (Option<CellIdx>, Option<ClueId>) {
         let extent = self.document.solution_mut().extent();
 
         // Grow the drawing area to cover wherever the clues reach — the same bounds the HTML
@@ -115,7 +115,7 @@ impl CanvasGui {
             Vec2::new(extent.x, extent.y),
         )));
 
-        let cell_under = |picture: &crate::puzzle::DynSolution, pos: Pos2| -> Option<u32> {
+        let cell_under = |picture: &crate::puzzle::DynSolution, pos: Pos2| -> Option<CellIdx> {
             let p = from_screen * pos;
             picture
                 .cell_at(crate::layout::Point::new(p.x, p.y))
@@ -204,7 +204,7 @@ impl CanvasGui {
         crate::with_solution!(picture, |sol| {
             for row in sol.geometry.rows() {
                 for drawn in row.cells() {
-                    let index = drawn.cell as usize;
+                    let index = drawn.cell;
                     let color_info = &palette[&sol.cells[index]];
                     let solved =
                         solved_mask.is_none_or(|sm| sm.1[index]) || overlays_suppress_unsolved;

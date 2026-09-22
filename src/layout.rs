@@ -7,6 +7,8 @@
 //! The y axis points down, matching egui, so a canvas transform is a plain uniform scale with no
 //! flip.
 
+use crate::geometry::{FamilyIdx, LaneIdx};
+
 /// A position in abstract units.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Point {
@@ -120,21 +122,21 @@ impl CellShape {
     /// bottom-right) borders whichever family groups by the coordinate that changes across that
     /// edge, and so on for the other two edges and for a down-triangle's `[top-left, top-right,
     /// bottom-apex]`.
-    pub fn family_edge(self, origin: Point, family: usize, near: bool) -> (Point, Point) {
+    pub fn family_edge(self, origin: Point, family: FamilyIdx, near: bool) -> (Point, Point) {
         let (p, _) = self.vertices(origin);
         match self {
-            CellShape::Square => match (family, near) {
+            CellShape::Square => match (family.0, near) {
                 (0, true) => (p[0], p[1]),  // top
                 (0, false) => (p[3], p[2]), // bottom
                 (_, true) => (p[3], p[0]),  // left
                 (_, false) => (p[1], p[2]), // right
             },
-            CellShape::UpTriangle => match family {
+            CellShape::UpTriangle => match family.0 {
                 0 => (p[1], p[2]), // bottom
                 1 => (p[2], p[0]), // left
                 _ => (p[0], p[1]), // right
             },
-            CellShape::DownTriangle => match family {
+            CellShape::DownTriangle => match family.0 {
                 0 => (p[0], p[1]), // top
                 1 => (p[1], p[2]), // right
                 _ => (p[2], p[0]), // left
@@ -147,10 +149,10 @@ impl CellShape {
     /// up-triangle's bottom edge leads to the *next* row, so it's a family-0 far edge; its left
     /// edge leads to the previous "/" lane, so it's a family-1 near edge; and so on. Meaningless
     /// for a square, which has both sides on every cell.
-    pub fn triangle_edge_is_near(self, family: usize) -> bool {
+    pub fn triangle_edge_is_near(self, family: FamilyIdx) -> bool {
         match self {
-            CellShape::UpTriangle => family == 1,
-            CellShape::DownTriangle => family != 1,
+            CellShape::UpTriangle => family.0 == 1,
+            CellShape::DownTriangle => family.0 != 1,
             CellShape::Square => true,
         }
     }
@@ -248,7 +250,7 @@ pub fn convex_hull(mut points: Vec<Point>) -> Vec<Point> {
 pub struct Guide {
     pub from: Point,
     pub to: Point,
-    pub family: usize,
+    pub family: FamilyIdx,
     /// Which boundary within the family, counting from 0.
     pub index: usize,
     /// Every fifth line, drawn heavier — the same emphasis square grids have always had.
@@ -356,7 +358,7 @@ pub fn corner_triangle(upper: bool, left: bool, origin: Point, size: Vec2) -> ([
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct GutterLane {
     /// Index into `LaneMap::lanes()`.
-    pub lane: usize,
+    pub lane: LaneIdx,
     /// The midpoint of the outer edge of the lane's clued end.
     pub anchor: Point,
     /// The unit vector clue boxes march along, pointing away from the grid.

@@ -1,12 +1,14 @@
 use anyhow::{Context, bail};
 use std::{collections::HashMap, io::Cursor, io::Read, path::PathBuf};
 
+use typed_index_collections::TiSlice;
+
 use crate::{
     formats::{
         char_grid::char_grid_to_solution, image::image_to_solution, olsak::olsak_to_puzzle,
         webpbn::webpbn_to_document, woven::from_woven,
     },
-    geometry::{GridKind, Square, Tri},
+    geometry::{CellIdx, GridKind, LanePos, Square, Tri},
     puzzle::{
         self, BACKGROUND, Color, ColorInfo, Corner, Document, DynSolution, Nono, NonogramFormat,
         Puzzle, Solution, Triano,
@@ -176,14 +178,17 @@ pub fn solution_to_triano_puzzle(solution: &Solution<Square>) -> Puzzle<Triano, 
 }
 
 /// Read off nonogram clues for one lane: maximal runs of a single non-background color.
-fn clues_along_lane<K: GridKind>(solution: &Solution<K>, cells: &[u32]) -> Vec<Nono> {
+fn clues_along_lane<K: GridKind>(
+    solution: &Solution<K>,
+    cells: &TiSlice<LanePos, CellIdx>,
+) -> Vec<Nono> {
     let mut clues = Vec::<Nono>::new();
 
     let mut prev_color: Option<Color> = None;
     let mut run = 1;
     // One extra step past the end, so the final run gets flushed.
     for i in 0..cells.len() + 1 {
-        let color = cells.get(i).map(|c| solution.cells[*c as usize]);
+        let color = cells.get(LanePos::from(i)).map(|c| solution.cells[*c]);
         if prev_color == color {
             run += 1;
             continue;
@@ -202,7 +207,9 @@ fn clues_along_lane<K: GridKind>(solution: &Solution<K>, cells: &[u32]) -> Vec<N
 /// Derive a puzzle's clues from a finished picture, for any geometry.
 pub fn solution_to_nono_puzzle<K: GridKind>(solution: &Solution<K>) -> Puzzle<Nono, K> {
     let lanes = solution.geometry.lane_map();
-    let lines = (0..lanes.lane_count())
+    let lines = lanes
+        .lanes()
+        .keys()
         .map(|lane| clues_along_lane(solution, &lanes.lane(lane).cells))
         .collect();
 

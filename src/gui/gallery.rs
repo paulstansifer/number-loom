@@ -97,7 +97,8 @@ fn count_colors(doc: &Document) -> HashMap<(u8, u8, u8), usize> {
         let puzzle = doc.try_puzzle().unwrap();
         let mut filled = 0usize;
         crate::with_puzzle!(puzzle, |p| {
-            for lane in p.lane_map().family(0) {
+            use crate::geometry::FamilyIdx;
+            for lane in p.lane_map().family(FamilyIdx(0)) {
                 for clue in &p.lines[lane] {
                     for (color_info, count) in clue.express(&p.palette) {
                         let n = count.unwrap_or(1) as usize;
