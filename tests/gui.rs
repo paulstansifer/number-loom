@@ -1181,7 +1181,7 @@ mod tests {
                 .fixed_clues
                 .val
                 .as_ref()
-                .unwrap()[0][row]
+                .unwrap()[row]
                 .contains(&clue.1),
             "the solver should have resolved the clue being clicked"
         );
@@ -1232,7 +1232,7 @@ mod tests {
             .mark_fixed_clues = true;
         harness.run();
 
-        let fixed = |harness: &Harness<NonogramGui>| -> Vec<Vec<Vec<usize>>> {
+        let fixed = |harness: &Harness<NonogramGui>| -> Vec<Vec<usize>> {
             harness
                 .state()
                 .solve_gui
@@ -1245,7 +1245,7 @@ mod tests {
         };
 
         // Nothing painted, so nothing is resolved yet.
-        assert!(fixed(&harness).iter().flatten().all(|line| line.is_empty()));
+        assert!(fixed(&harness).iter().all(|line| line.is_empty()));
 
         let solve_gui = harness.state().solve_gui.as_ref().unwrap();
         let solution = solve_gui.intended_solution.cells().to_vec();
@@ -1273,11 +1273,7 @@ mod tests {
         harness.step();
 
         // A solved picture resolves every clue in it.
-        let counts: Vec<usize> = fixed(&harness)
-            .iter()
-            .flatten()
-            .map(|line| line.len())
-            .collect();
+        let counts: Vec<usize> = fixed(&harness).iter().map(|line| line.len()).collect();
         assert_eq!(counts, clue_counts);
         assert!(clue_counts.iter().sum::<usize>() > 0);
     }

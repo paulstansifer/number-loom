@@ -36,10 +36,10 @@ pub type ClueId = (usize, usize);
 /// supplies this; the editor draws the picture alone.
 pub struct ClueOverlay<'a> {
     pub puzzle: &'a crate::puzzle::DynPuzzle,
-    /// One `Vec<LineStatus>` per clue family, in family order.
-    pub analysis: Option<&'a Vec<Vec<crate::solve::grid_solve::LineStatus>>>,
-    /// One `Vec<usize>` of resolved clue indices per lane, grouped by family like `analysis`.
-    pub fixed: Option<&'a Vec<Vec<Vec<usize>>>>,
+    /// One `LineStatus` per lane, parallel to `LaneMap::lanes()`.
+    pub analysis: Option<&'a [crate::solve::grid_solve::LineStatus]>,
+    /// One `Vec<usize>` of resolved clue indices per lane, indexed like `analysis`.
+    pub fixed: Option<&'a [Vec<usize>]>,
     pub is_stale: bool,
     /// The hovered cell's block lengths, shown in place of the analysis marks on its own lanes.
     pub hover: Option<HoverBlocks>,
@@ -48,11 +48,9 @@ pub struct ClueOverlay<'a> {
 impl ClueOverlay<'_> {
     /// Whether the solver has worked a clue out for itself. Those ignore clicks: there's nothing
     /// for the user to check off, and unchecking it would only last until the next repaint.
-    pub(super) fn auto_fixed(&self, picture: &DynSolution, (lane, clue_idx): ClueId) -> bool {
-        let family = picture.lane_map().lanes()[lane].family;
-        let line = lane - picture.lane_map().family(family).start;
+    pub(super) fn auto_fixed(&self, (lane, clue_idx): ClueId) -> bool {
         self.fixed
-            .and_then(|f| f.get(family)?.get(line))
+            .and_then(|f| f.get(lane))
             .is_some_and(|fixed| fixed.contains(&clue_idx))
     }
 }

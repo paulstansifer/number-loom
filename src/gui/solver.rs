@@ -19,11 +19,11 @@ pub struct SolveGui {
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
-    /// Per clue family, per line: can line-logic fully solve any cells?
-    pub line_analysis: Staleable<Option<Vec<Vec<LineStatus>>>>,
+    /// Per lane, parallel to `LaneMap::lanes()`: can line-logic fully solve any cells?
+    pub line_analysis: Staleable<Option<Vec<LineStatus>>>,
     pub mark_fixed_clues: bool,
-    /// Per clue family, per line: which of that line's clues are "done"
-    pub fixed_clues: Staleable<Option<Vec<Vec<Vec<usize>>>>>,
+    /// Per lane, indexed like `line_analysis`: which of that lane's clues are "done"
+    pub fixed_clues: Staleable<Option<Vec<Vec<usize>>>>,
     pub render_style: RenderStyle,
     last_inferred_version: u32,
     pub hovered_cell: Option<u32>,
@@ -405,8 +405,8 @@ impl SolveGui {
         if matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_)) {
             let overlay = super::ClueOverlay {
                 puzzle: &self.clues,
-                analysis: self.line_analysis.val.as_ref(),
-                fixed: self.fixed_clues.val.as_ref(),
+                analysis: self.line_analysis.val.as_deref(),
+                fixed: self.fixed_clues.val.as_deref(),
                 is_stale,
                 hover,
             };
@@ -421,19 +421,18 @@ impl SolveGui {
         }
 
         // The square gutters number their lines within a clue family, while `hover` names whole
-        // lanes; a family's first lane is the offset between the two.
+        // lanes.
         let hint = |family: usize| -> Option<BlockHint> {
             let hover = hover.as_ref()?;
             let &(lane, len) = hover.by_family.get(family)?;
-            let start = self
+            let (_, line) = self
                 .canvas
                 .document
                 .try_solution()?
                 .lane_map()
-                .family(family)
-                .start;
+                .split_family(lane);
             Some(BlockHint {
-                line: lane - start,
+                line,
                 len,
                 rgb: hover.rgb,
             })
@@ -450,13 +449,16 @@ impl SolveGui {
                 .spacing(Vec2::ZERO)
                 .show(ui, |ui| {
                     ui.label(""); // Top-left is empty
-                    let line_analysis = self.line_analysis.val.as_ref();
-                    let fixed_clues = self.fixed_clues.val.as_ref();
-                    // Family 0 is the rows, family 1 the columns, in both analyses.
+                    let line_analysis = self.line_analysis.val.as_deref();
+                    let fixed_clues = self.fixed_clues.val.as_deref();
+                    // Both analyses run parallel to the lanes, and lanes are grouped by family,
+                    // so one family's worth is the slice over that family's range. Family 0 is
+                    // the rows, family 1 the columns.
+                    let lane_map = self.clues.lane_map();
                     let checked = &self.canvas.checked_clues;
                     let marks = |family: usize, hint: Option<BlockHint>| GutterMarks {
-                        analysis: line_analysis.and_then(|la| la.get(family)).map(|v| &v[..]),
-                        fixed: fixed_clues.and_then(|fc| fc.get(family)).map(|v| &v[..]),
+                        analysis: line_analysis.map(|la| &la[lane_map.family(family)]),
+                        fixed: fixed_clues.map(|fc| &fc[lane_map.family(family)]),
                         checked,
                         is_stale,
                         hover: hint,
@@ -976,12 +978,13 @@ fn draw_clues<C: crate::puzzle::Clue>(
     let hover_pos = response.hover_pos();
     let mut clicked = None;
 
-    // Rows are family 0 and columns family 1, so this gutter's lanes start here.
+    // Rows are family 0 and columns family 1; `clues_vec` is numbered within the family, so every
+    // clue this draws has to name its whole lane to be a `ClueId`.
     let family = match orientation {
         Orientation::Horizontal => 0,
         Orientation::Vertical => 1,
     };
-    let family_start = puzzle.geometry.lane_map().family(family).start;
+    let lane_map = puzzle.geometry.lane_map();
 
     for i in 0..clues_vec.len() {
         // The indicator strip against the grid: the hovered line's block length if there is one,
@@ -1018,7 +1021,10 @@ fn draw_clues<C: crate::puzzle::Clue>(
         let fixed_here = marks.fixed.and_then(|f| f.get(i));
         for (clue_idx, clue) in line_clues.iter().enumerate().rev() {
             let auto_fixed = fixed_here.is_some_and(|fixed| fixed.contains(&clue_idx));
-            let fixed = auto_fixed || marks.checked.contains(&(family_start + i, clue_idx));
+            let fixed = auto_fixed
+                || marks
+                    .checked
+                    .contains(&(lane_map.lane_in_family(family, i), clue_idx));
             // A triano clue is a shape as much as a number — the caps say which way its ends
             // slant — so it's drawn as one silhouette: filled while there's still work in it, and
             // outlined once it's resolved. A nonogram clue is a lone box, and needs neither.
@@ -1056,7 +1062,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if click_pos.is_some_and(on_clue) {
-                    clicked = Some((family_start + i, clue_idx));
+                    clicked = Some((lane_map.lane_in_family(family, i), clue_idx));
                 }
             }
 

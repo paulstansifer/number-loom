@@ -548,6 +548,25 @@ impl LaneMap {
         self.family_starts[family]..self.family_starts[family + 1]
     }
 
+    /// The lane index of the `index_in_family`th lane of `family`.
+    ///
+    /// Nearly everything (`Puzzle::lines`, `Membership`, `GutterLane`, the solver's analyses) is
+    /// indexed by a single index into `lanes()`. A square puzzle's clue gutters are the
+    /// exception: each draws one family, and numbers its lines within it. This converts, and
+    /// [`split_family`](Self::split_family) converts back.
+    pub fn lane_in_family(&self, family: usize, index_in_family: usize) -> usize {
+        let range = self.family(family);
+        debug_assert!(index_in_family < range.len());
+        range.start + index_in_family
+    }
+
+    /// A lane index as `(family, index_in_family)` — the inverse of
+    /// [`lane_in_family`](Self::lane_in_family).
+    pub fn split_family(&self, lane: usize) -> (usize, usize) {
+        let family = self.lanes[lane].family;
+        (family, lane - self.family(family).start)
+    }
+
     /// Every lane containing this cell, one per family.
     pub fn memberships(&self, cell: u32) -> &[Membership] {
         &self.memberships[cell as usize]

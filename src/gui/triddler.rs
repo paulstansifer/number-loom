@@ -125,7 +125,7 @@ pub(super) fn clue_box_at(
             for (i, (_, _, clue_idx)) in expressed_clues(overlay.puzzle, g).iter().enumerate() {
                 if crate::layout::convex_contains(&clue_box_points(g, i), at) {
                     let id = (g.lane, *clue_idx);
-                    return (!overlay.auto_fixed(picture, id)).then_some(id);
+                    return (!overlay.auto_fixed(id)).then_some(id);
                 }
             }
         }
@@ -148,16 +148,6 @@ pub(super) fn draw_clue_gutters(
     scale: f32,
     to_screen: &egui::emath::RectTransform,
 ) {
-    let lane_families: Vec<usize> = picture
-        .lane_map()
-        .lanes()
-        .iter()
-        .map(|l| l.family)
-        .collect();
-    let family_starts: Vec<usize> = (0..picture.lane_map().family_count())
-        .map(|f| picture.lane_map().family(f).start)
-        .collect();
-
     for (_, gutter) in picture.gutters() {
         for g in gutter {
             // Each entry carries the clue it came from, since a clue can express as several
@@ -172,7 +162,7 @@ pub(super) fn draw_clue_gutters(
                 };
                 // A resolved clue loses its box: nothing about it is left to work out.
                 let id = (g.lane, *clue_idx);
-                if checked.contains(&id) || overlay.auto_fixed(picture, id) {
+                if checked.contains(&id) || overlay.auto_fixed(id) {
                     draw_bare_number_in_rhombus(ui, painter, &points, &text, scale, color_info.rgb);
                 } else {
                     draw_string_in_rhombus(ui, painter, &points, &text, scale, color_info.rgb);
@@ -196,18 +186,8 @@ pub(super) fn draw_clue_gutters(
                     solver::draw_bare_number(ui, painter, at, &len.to_string(), scale, rgb)
                 }
                 None => {
-                    if let Some(analysis) = overlay.analysis {
-                        let family = lane_families[g.lane];
-                        let index = g.lane - family_starts[family];
-                        if let Some(status) = analysis.get(family).and_then(|f| f.get(index)) {
-                            solver::draw_analysis_mark(
-                                painter,
-                                at,
-                                scale,
-                                status,
-                                overlay.is_stale,
-                            );
-                        }
+                    if let Some(status) = overlay.analysis.and_then(|a| a.get(g.lane)) {
+                        solver::draw_analysis_mark(painter, at, scale, status, overlay.is_stale);
                     }
                 }
             }

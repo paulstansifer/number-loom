@@ -977,44 +977,37 @@ fn analyze_line<C: Clue>(clues: &[C], lane: &[Cell]) -> LineStatus {
     Ok(None)
 }
 
+/// Can line logic fully solve any cells? One entry per lane, parallel to `LaneMap::lanes()`.
+///
+/// Lanes are grouped by family there, so `&analysis[lane_map.family(f)]` is one family's worth.
 pub fn analyze_lines<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
-) -> Vec<Vec<LineStatus>> {
+) -> Vec<LineStatus> {
     let mut gathered = vec![];
 
     let lanes = puzzle.geometry.lane_map();
-    (0..lanes.family_count())
-        .map(|family| {
-            lanes
-                .family(family)
-                .map(|lane| {
-                    gather_into(lanes, lane, grid, &mut gathered);
-                    analyze_line(&puzzle.lines[lane], &gathered)
-                })
-                .collect::<Vec<_>>()
+    (0..lanes.lane_count())
+        .map(|lane| {
+            gather_into(lanes, lane, grid, &mut gathered);
+            analyze_line(&puzzle.lines[lane], &gathered)
         })
         .collect()
 }
 
 /// Which clues each lane has fully resolved — pinned down and painted in. One `Vec<usize>` of
-/// clue indices per lane, grouped by clue family, indexed exactly like `analyze_lines`.
+/// clue indices per lane, indexed exactly like `analyze_lines`.
 pub fn fixed_clues<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
-) -> Vec<Vec<Vec<usize>>> {
+) -> Vec<Vec<usize>> {
     let lanes = puzzle.geometry.lane_map();
     let mut gathered = vec![];
 
-    (0..lanes.family_count())
-        .map(|family| {
-            lanes
-                .family(family)
-                .map(|lane| {
-                    gather_into(lanes, lane, grid, &mut gathered);
-                    skim_to_find_fixed_clues(&puzzle.lines[lane], &gathered)
-                })
-                .collect::<Vec<_>>()
+    (0..lanes.lane_count())
+        .map(|lane| {
+            gather_into(lanes, lane, grid, &mut gathered);
+            skim_to_find_fixed_clues(&puzzle.lines[lane], &gathered)
         })
         .collect()
 }
@@ -1135,13 +1128,14 @@ mod tests {
         grid[0] = Cell::from_color(BACKGROUND); // (x=0, y=0)
         grid[3] = Cell::from_color(BACKGROUND); // (x=1, y=1)
 
-        let mut families = analyze_lines(&puzzle, &grid).into_iter();
-        let row_tech = families.next().unwrap();
-        let col_tech = families.next().unwrap();
+        let lanes = puzzle.geometry.lane_map();
+        let analysis = analyze_lines(&puzzle, &grid);
+        let row_tech = &analysis[lanes.family(0)];
+        let col_tech = &analysis[lanes.family(1)];
 
         assert_eq!(
-            row_tech.into_iter().map(|r| r.ok()).collect::<Vec<_>>(),
-            vec![Some(Some(SolveMode::Skim)), Some(Some(SolveMode::Skim))]
+            row_tech.iter().map(|r| r.as_ref().ok()).collect::<Vec<_>>(),
+            vec![Some(&Some(SolveMode::Skim)), Some(&Some(SolveMode::Skim))]
         );
         assert!(col_tech[0].as_ref().is_ok());
         assert!(col_tech[1].is_err());

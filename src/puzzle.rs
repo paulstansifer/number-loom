@@ -523,10 +523,10 @@ pub trait PuzzleDynOps {
     fn plain_solve(&self) -> anyhow::Result<crate::solve::grid_solve::Report> {
         self.solve(/*backtrack=*/ false, &SolveOptions::default())
     }
-    /// One `Vec<LineStatus>` per clue family — two for a square puzzle, three for a triddler.
-    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>>;
-    /// The clues each lane has fully resolved, grouped and indexed like `analyze_lines`.
-    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<Vec<usize>>>;
+    /// One `LineStatus` per lane, parallel to `LaneMap::lanes()`.
+    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<LineStatus>;
+    /// The clues each lane has fully resolved, indexed like `analyze_lines`.
+    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<usize>>;
     fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()>;
 }
 
@@ -572,11 +572,11 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
         }
     }
 
-    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>> {
+    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<LineStatus> {
         grid_solve::analyze_lines(self, partial)
     }
 
-    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<Vec<usize>>> {
+    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<usize>> {
         grid_solve::fixed_clues(self, partial)
     }
 
@@ -614,11 +614,11 @@ impl PuzzleDynOps for DynPuzzle {
         with_puzzle!(self, |p| p.solve(backtrack, options))
     }
 
-    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<Vec<LineStatus>> {
+    fn analyze_lines(&self, partial: &PartialSolution) -> Vec<LineStatus> {
         with_puzzle!(self, |p| p.analyze_lines(partial))
     }
 
-    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<Vec<usize>>> {
+    fn fixed_clues(&self, partial: &PartialSolution) -> Vec<Vec<usize>> {
         with_puzzle!(self, |p| p.fixed_clues(partial))
     }
 
@@ -638,6 +638,10 @@ impl DynPuzzle {
 
     pub fn clue_lines(&self) -> usize {
         with_puzzle!(self, |p| p.lines.len())
+    }
+
+    pub fn lane_map(&self) -> &crate::geometry::LaneMap {
+        with_puzzle!(self, |p| p.geometry.lane_map())
     }
 
     /// See `Puzzle::drawing_bounds`.
