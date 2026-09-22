@@ -208,9 +208,9 @@ fn clues_along_lane<K: GridKind>(
 pub fn solution_to_nono_puzzle<K: GridKind>(solution: &Solution<K>) -> Puzzle<Nono, K> {
     let lanes = solution.geometry.lane_map();
     let lines = lanes
-        .lanes()
+        .lanes
         .keys()
-        .map(|lane| clues_along_lane(solution, &lanes.lane(lane).cells))
+        .map(|lane| clues_along_lane(solution, &lanes.lanes[lane].cells))
         .collect();
 
     Puzzle {

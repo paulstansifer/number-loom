@@ -110,8 +110,8 @@ impl GuessPicker for Edge {
             .cells()
             .map(|cell| {
                 dists.clear();
-                dists.extend(lane_map.memberships(cell).iter().map(|m| {
-                    let len = lane_map.lane(m.lane).cells.len();
+                dists.extend(lane_map.memberships[cell].iter().map(|m| {
+                    let len = lane_map.lanes[m.lane].cells.len();
                     let pos = usize::from(m.position);
                     pos.min(len - (pos + 1))
                 }));
@@ -219,9 +219,9 @@ impl GuessPicker for Disagreement {
             + 1;
 
         // Per lane, the naïve probability of each color.
-        let mut lane_p = vec![0.0_f32; lane_map.lane_count() * stride];
+        let mut lane_p = vec![0.0_f32; lane_map.lanes.len() * stride];
         let mut wanted = vec![0_i32; stride];
-        for (lane_idx, lane) in lane_map.lanes().iter_enumerated() {
+        for (lane_idx, lane) in lane_map.lanes.iter_enumerated() {
             wanted.fill(0);
 
             // What the clues call for...
@@ -255,7 +255,7 @@ impl GuessPicker for Disagreement {
         // Now rate each cell by how much the lanes crossing it disagree.
         let mut ratings = vec![0.0_f32; lane_map.cell_count() * stride];
         for cell in lane_map.cells() {
-            let memberships = lane_map.memberships(cell);
+            let memberships = &lane_map.memberships[cell];
             for color in 0..stride {
                 let mut lowest = f32::MAX;
                 let mut highest = f32::MIN;
@@ -303,8 +303,8 @@ fn neighborhood<C: Clue, K: GridKind>(
         .cells()
         .map(|cell| {
             let mut total = 0.0;
-            for m in lane_map.memberships(cell) {
-                let lane = &lane_map.lane(m.lane).cells;
+            for m in &lane_map.memberships[cell] {
+                let lane = &lane_map.lanes[m.lane].cells;
                 let pos = m.position;
 
                 let before = pos.0.checked_sub(1).map(|p| lane[LanePos(p)]);

@@ -291,7 +291,7 @@ impl CanvasGui {
 
         match lane_along_drag(picture, start, drag) {
             Some(along) => {
-                let lane = picture.lane_map().lane(along.lane);
+                let lane = &picture.lane_map().lanes[along.lane];
                 let to = along.target(lane.cells.len());
                 let (from, to) = (along.from.min(to), along.from.max(to));
                 for cell in lane.cells[LanePos::from(from)..=LanePos::from(to)].iter() {
@@ -310,7 +310,7 @@ impl CanvasGui {
 /// Which lane a drag away from a cell means, and how far along it the drag got.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DragAlongLane {
-    /// Index into `LaneMap::lanes()`.
+    /// Index into `LaneMap::lanes`.
     pub lane: LaneIdx,
     /// Where the cell the drag started from sits in that lane.
     pub from: usize,
@@ -359,8 +359,8 @@ pub(super) fn lane_along_drag(
     let center = |cell: CellIdx| picture.cell_shape(cell).center(picture.cell_origin(cell));
 
     let mut best: Option<(DragAlongLane, f32)> = None; // (candidate, |cos angle| to the drag)
-    for membership in lanes.memberships(cell) {
-        let lane = lanes.lane(membership.lane);
+    for membership in &lanes.memberships[cell] {
+        let lane = &lanes.lanes[membership.lane];
         if lane.cells.len() < 2 {
             continue; // No direction to compare against.
         }
@@ -481,7 +481,7 @@ mod line_tool_tests {
         // should paint every cell in it, no matter which orientation each end happens to be.
         for family in [FamilyIdx(1), FamilyIdx(2)] {
             for lane_idx in lane_map.family(family) {
-                let lane = lane_map.lane(lane_idx);
+                let lane = &lane_map.lanes[lane_idx];
                 if lane.cells.len() < 2 {
                     continue;
                 }

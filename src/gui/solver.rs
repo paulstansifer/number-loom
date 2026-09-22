@@ -21,7 +21,7 @@ pub struct SolveGui {
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
-    /// Per lane, parallel to `LaneMap::lanes()`: can line-logic fully solve any cells?
+    /// Per lane, parallel to `LaneMap::lanes`: can line-logic fully solve any cells?
     pub line_analysis: Staleable<Option<TiVec<LaneIdx, LineStatus>>>,
     pub mark_fixed_clues: bool,
     /// Per lane, indexed like `line_analysis`: which of that lane's clues are "done"

@@ -357,7 +357,7 @@ pub fn corner_triangle(upper: bool, left: bool, origin: Point, size: Vec2) -> ([
 /// Where one lane's clues should be drawn.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct GutterLane {
-    /// Index into `LaneMap::lanes()`.
+    /// Index into `LaneMap::lanes`.
     pub lane: LaneIdx,
     /// The midpoint of the outer edge of the lane's clued end.
     pub anchor: Point,

@@ -58,7 +58,7 @@ impl Annotation {
     /// One cell has no direction, so the lane this ends up filed under is only a way of naming
     /// the cell — any lane through it would do, and the drawing ignores the choice entirely.
     fn lone(picture: &DynSolution, cell: CellIdx) -> Option<Annotation> {
-        let membership = picture.lane_map().memberships(cell).first()?;
+        let membership = picture.lane_map().memberships[cell].first()?;
         let position = usize::from(membership.position);
         Some(Annotation {
             lane: membership.lane,
@@ -76,7 +76,7 @@ impl Annotation {
         if self.cells_covered() != 1 {
             return None;
         }
-        let lane = picture.lane_map().lanes().get(self.lane)?;
+        let lane = picture.lane_map().lanes.get(self.lane)?;
         lane.cells
             .get(LanePos::from(self.from.min(self.to)))
             .copied()
@@ -92,9 +92,7 @@ impl Annotation {
     /// Cell `i` of a lane sits between borders `i` and `i + 1`, so the covered cells are the
     /// half-open range between the two ends.
     fn covers(&self, picture: &DynSolution, cell: CellIdx) -> bool {
-        picture
-            .lane_map()
-            .memberships(cell)
+        picture.lane_map().memberships[cell]
             .iter()
             .find(|m| m.lane == self.lane)
             .is_some_and(|m| {
@@ -172,7 +170,7 @@ pub(super) fn lane_step_edge(
 /// doesn't exist on this grid — which the drawing path relies on, so that annotations left over
 /// from a differently-shaped picture are skipped rather than panicking.
 fn border_edge(picture: &DynSolution, border: Border) -> Option<(Point, Point)> {
-    let lane = picture.lane_map().lanes().get(border.lane)?;
+    let lane = picture.lane_map().lanes.get(border.lane)?;
     // Every border but the last is the near side of the cell it precedes; the last one is the far
     // side of the cell it follows.
     let (cell, near) = if border.index < lane.cells.len() {
@@ -235,7 +233,7 @@ fn span_from_drag(
     drag: crate::layout::Vec2,
 ) -> Option<Annotation> {
     let along = super::tools::lane_along_drag(picture, origin, drag)?;
-    let target = along.target(picture.lane_map().lane(along.lane).cells.len());
+    let target = along.target(picture.lane_map().lanes[along.lane].cells.len());
 
     // Border `i` is the near side of cell `i`, so enclosing a run means taking the border before
     // its first cell and the one after its last. Which of the two is the origin's depends on
@@ -904,7 +902,7 @@ mod annotate_tests {
 
         for family in lane_map.families() {
             for lane_idx in lane_map.family(family) {
-                let lane = lane_map.lane(lane_idx);
+                let lane = &lane_map.lanes[lane_idx];
                 if lane.cells.len() < 2 {
                     continue;
                 }
@@ -957,7 +955,7 @@ mod annotate_tests {
 
         for (shape, picture) in [("square", &square), ("triddler", &tri)] {
             let lanes = picture.lane_map();
-            for (lane_idx, lane) in lanes.lanes().iter_enumerated() {
+            for (lane_idx, lane) in lanes.lanes.iter_enumerated() {
                 if lane.cells.len() < 2 {
                     continue;
                 }
@@ -1033,7 +1031,7 @@ mod annotate_tests {
 
         for picture in [&square, &tri] {
             let lanes = picture.lane_map();
-            for (lane_idx, lane) in lanes.lanes().iter_enumerated() {
+            for (lane_idx, lane) in lanes.lanes.iter_enumerated() {
                 for (position, pair) in lane.cells.raw.windows(2).enumerate() {
                     let far_side_of_earlier = lane_step_edge(
                         picture.cell_shape(pair[0]),

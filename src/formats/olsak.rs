@@ -238,8 +238,7 @@ fn olsak_triddler(
     let outline = Outline::from_clue_set_counts(counts)?;
     let geometry = Geometry::<Tri>::new(outline);
 
-    let mut lines: TiVec<LaneIdx, Vec<Nono>> =
-        vec![vec![]; geometry.lane_map().lane_count()].into();
+    let mut lines: TiVec<LaneIdx, Vec<Nono>> = vec![vec![]; geometry.lane_map().lanes.len()].into();
     // Group index, its clue set, whether Olsak lists that side's lines backwards, and whether the
     // blocks within each line are written in the opposite order to ours.
     let assignment = [

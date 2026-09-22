@@ -36,7 +36,7 @@ pub type ClueId = (LaneIdx, usize);
 /// supplies this; the editor draws the picture alone.
 pub struct ClueOverlay<'a> {
     pub puzzle: &'a crate::puzzle::DynPuzzle,
-    /// One `LineStatus` per lane, parallel to `LaneMap::lanes()`.
+    /// One `LineStatus` per lane, parallel to `LaneMap::lanes`.
     pub analysis: Option<&'a TiSlice<LaneIdx, crate::solve::grid_solve::LineStatus>>,
     /// One `Vec<usize>` of resolved clue indices per lane, indexed like `analysis`.
     pub fixed: Option<&'a TiSlice<LaneIdx, Vec<usize>>>,

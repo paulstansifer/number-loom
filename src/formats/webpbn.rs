@@ -74,8 +74,7 @@ fn triddler_puzzle(
 
     // Each set's lines are in increasing lane order, so they line up one-for-one with the lanes
     // the geometry assigns to that set.
-    let mut lines: TiVec<LaneIdx, Vec<Nono>> =
-        vec![vec![]; geometry.lane_map().lane_count()].into();
+    let mut lines: TiVec<LaneIdx, Vec<Nono>> = vec![vec![]; geometry.lane_map().lanes.len()].into();
     for set in [
         ClueSet::TopLeft,
         ClueSet::BottomLeft,
@@ -391,8 +390,8 @@ impl ImageDelimiter for Tri {
         geometry: &crate::geometry::Geometry<Self>,
         cells: &TiSlice<LanePos, CellIdx>,
     ) -> (char, char) {
-        let leftmost_points_up = geometry.coord(cells[LanePos(0)]).points_up();
-        let rightmost_points_up = geometry.coord(*cells.last().unwrap()).points_up();
+        let leftmost_points_up = geometry.coords[cells[LanePos(0)]].points_up();
+        let rightmost_points_up = geometry.coords[*cells.last().unwrap()].points_up();
         (
             if leftmost_points_up { '/' } else { '\\' },
             if rightmost_points_up { '\\' } else { '/' },
@@ -408,7 +407,7 @@ fn solution_image<K: GridKind + ImageDelimiter>(
 ) -> String {
     let mut image = String::new();
     for lane in solution.geometry.family(FamilyIdx(0)) {
-        let cells = &solution.geometry.lane(lane).cells;
+        let cells = &solution.geometry.lane_map().lanes[lane].cells;
         let (left, right) = K::row_delimiters(&solution.geometry, cells);
         image.push(left);
         for &cell in cells.iter() {
@@ -625,18 +624,18 @@ mod tests {
         let rows: Vec<usize> = puzzle
             .geometry
             .family(FamilyIdx(0))
-            .map(|i| puzzle.geometry.lane(i).cells.len())
+            .map(|i| puzzle.geometry.lane_map().lanes[i].cells.len())
             .collect();
         assert_eq!(rows, vec![5, 6, 5]);
 
         // Every clue must fit the lane it landed in; `2,3` needs 6 cells, so it pins the
         // assignment.
-        for lane in puzzle.lane_map().lanes().keys() {
+        for lane in puzzle.lane_map().lanes.keys() {
             let clues = &puzzle.lines[lane];
             let needed: usize = clues.iter().map(|c| c.count as usize).sum::<usize>()
                 + clues.len().saturating_sub(1);
             assert!(
-                needed <= puzzle.geometry.lane(lane).cells.len(),
+                needed <= puzzle.geometry.lane_map().lanes[lane].cells.len(),
                 "clues {clues:?} don't fit lane {lane:?}"
             );
         }
@@ -678,8 +677,8 @@ mod tests {
         for family_to_flip in (0..3).map(FamilyIdx) {
             let mut doc = webpbn_to_document(DOC_TRIDDLER).unwrap();
             let mut puzzle = doc.puzzle().as_tri_nono().unwrap().clone();
-            for lane in puzzle.lane_map().lanes().keys() {
-                if puzzle.geometry.lane(lane).family == family_to_flip {
+            for lane in puzzle.lane_map().lanes.keys() {
+                if puzzle.geometry.lane_map().lanes[lane].family == family_to_flip {
                     puzzle.lines[lane].reverse();
                 }
             }

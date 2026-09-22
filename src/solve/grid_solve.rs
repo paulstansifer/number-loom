@@ -87,7 +87,7 @@ impl Report {
 #[derive(Clone)]
 pub struct LaneState<'a, C: Clue> {
     clues: &'a [C], // just convenience, since `lane` suffices to find it again
-    /// Index into `LaneMap::lanes()`.
+    /// Index into `LaneMap::lanes`.
     lane: LaneIdx,
     family: FamilyIdx,
     /// Position within the family, for display only.
@@ -131,7 +131,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
         LaneState {
             clues,
             lane,
-            family: lanes.lane(lane).family,
+            family: lanes.lanes[lane].family,
             index_in_family,
             queued: ModeMap::new_uniform(true),
             unknown_cells: gathered.iter().filter(|c| !c.is_known()).count() as i32,
@@ -159,12 +159,12 @@ impl<'a, C: Clue> LaneState<'a, C> {
 /// each one costs ~9% on such puzzles.
 fn gather_into(lanes: &LaneMap, lane: LaneIdx, grid: &PartialSolution, buf: &mut Vec<Cell>) {
     buf.clear();
-    buf.extend(lanes.lane(lane).cells.iter().map(|c| grid[*c]));
+    buf.extend(lanes.lanes[lane].cells.iter().map(|c| grid[*c]));
 }
 
 /// The inverse of `gather_into`.
 fn scatter(lanes: &LaneMap, lane: LaneIdx, buf: &[Cell], grid: &mut PartialSolution) {
-    for (position, cell) in lanes.lane(lane).cells.iter().enumerate() {
+    for (position, cell) in lanes.lanes[lane].cells.iter().enumerate() {
         grid[*cell] = buf[position];
     }
 }
@@ -178,8 +178,7 @@ fn debug_assert_unknown_cells_agree<C: Clue>(
     grid: &PartialSolution,
 ) {
     if cfg!(debug_assertions) {
-        let walked = lane_map
-            .lane(lane_state.lane)
+        let walked = lane_map.lanes[lane_state.lane]
             .cells
             .iter()
             .filter(|cell| !grid[**cell].is_known())
@@ -445,7 +444,7 @@ const INITIAL_ALLOWED_FAILURES: ModeMap<i32> = ModeMap {
 #[derive(Clone)]
 pub struct SolveState<'p, C: Clue> {
     pub grid: PartialSolution,
-    /// Parallel to `LaneMap::lanes()`, so a lane index indexes both this and the geometry.
+    /// Parallel to `LaneMap::lanes`, so a lane index indexes both this and the geometry.
     pub lanes: TiVec<LaneIdx, LaneState<'p, C>>,
     /// Per mode, which lanes are waiting for a turn, in the order they'll get one. Seeded once
     /// (sorted best-score-first) in `new` — or left empty in `resume`, for a caller that already
@@ -472,7 +471,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         // Each lane's initial (skim, scrub) score, parallel to `lanes`; only needed for the
         // one-time queue sort below, not kept around afterward.
         let mut initial_scores: TiVec<LaneIdx, (i32, i32)> = TiVec::new();
-        // `lanes` is parallel to `geometry.lanes()`, so a lane index indexes both.
+        // `lanes` is parallel to `geometry.lane_map().lanes`, so a lane index indexes both.
         for family in lane_map.families() {
             for (index_in_family, lane) in lane_map.family(family).enumerate() {
                 gather_into(lane_map, lane, &grid, &mut scratch.seed);
@@ -720,7 +719,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
             recorded,
             ..
         } = &mut ctx.scratch;
-        let solved_lane_cells = &lane_map.lane(solved_lane).cells;
+        let solved_lane_cells = &lane_map.lanes[solved_lane].cells;
         changes.clear();
         recorded.clear();
         recorded.resize(lane.len(), false);
@@ -857,7 +856,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
             if narrowed.is_known() && !old_value.is_known() {
                 self.cells_left += 1;
             }
-            for membership in lane_map.memberships(cell) {
+            for membership in &lane_map.memberships[cell] {
                 self.lanes[membership.lane].note_change(narrowed, old_value);
             }
         }
@@ -902,7 +901,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         let mut touched: Vec<LaneIdx> = vec![];
         for &(cell, was) in changes {
             let now = grid[cell];
-            for membership in lane_map.memberships(cell) {
+            for membership in &lane_map.memberships[cell] {
                 let idx = membership.lane;
                 lanes[idx].note_change(was, now);
                 if !touched.contains(&idx) {
@@ -981,7 +980,7 @@ fn analyze_line<C: Clue>(clues: &[C], lane: &[Cell]) -> LineStatus {
     Ok(None)
 }
 
-/// Can line logic fully solve any cells? One entry per lane, parallel to `LaneMap::lanes()`.
+/// Can line logic fully solve any cells? One entry per lane, parallel to `LaneMap::lanes`.
 ///
 /// Lanes are grouped by family there, so `&analysis[lane_map.family(f)]` is one family's worth.
 pub fn analyze_lines<C: Clue, K: GridKind>(
@@ -992,7 +991,7 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
 
     let lanes = puzzle.geometry.lane_map();
     lanes
-        .lanes()
+        .lanes
         .keys()
         .map(|lane| {
             gather_into(lanes, lane, grid, &mut gathered);
@@ -1011,7 +1010,7 @@ pub fn fixed_clues<C: Clue, K: GridKind>(
     let mut gathered = vec![];
 
     lanes
-        .lanes()
+        .lanes
         .keys()
         .map(|lane| {
             gather_into(lanes, lane, grid, &mut gathered);
@@ -1228,10 +1227,10 @@ mod tests {
         palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
 
         let mut lines: TiVec<LaneIdx, Vec<Nono>> = TiVec::new();
-        for lane in geometry.lane_map().lanes().keys() {
+        for lane in geometry.lane_map().lanes.keys() {
             let mut clues: Vec<Nono> = vec![];
             let mut run = 0u16;
-            for cell in geometry.lane(lane).cells.iter() {
+            for cell in geometry.lane_map().lanes[lane].cells.iter() {
                 if filled[usize::from(*cell)] {
                     run += 1;
                 } else if run > 0 {
@@ -1329,8 +1328,11 @@ mod tests {
         };
         // Fill the middle row only.
         let geometry = crate::geometry::Geometry::<crate::geometry::Tri>::new(outline);
-        let middle: std::collections::HashSet<CellIdx> =
-            geometry.lane(LaneIdx(1)).cells.iter().copied().collect();
+        let middle: std::collections::HashSet<CellIdx> = geometry.lane_map().lanes[LaneIdx(1)]
+            .cells
+            .iter()
+            .copied()
+            .collect();
         let filled: Vec<bool> = geometry
             .lane_map()
             .cells()
