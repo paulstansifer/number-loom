@@ -355,12 +355,12 @@ pub(super) fn lane_along_drag(
         return None;
     }
 
-    let lanes = picture.lane_map();
+    let lane_map = picture.lane_map();
     let center = |cell: CellIdx| picture.cell_shape(cell).center(picture.cell_origin(cell));
 
     let mut best: Option<(DragAlongLane, f32)> = None; // (candidate, |cos angle| to the drag)
-    for membership in &lanes.memberships[cell] {
-        let lane = &lanes.lanes[membership.lane];
+    for membership in &lane_map.memberships[cell] {
+        let lane = &lane_map.lanes[membership.lane];
         if lane.cells.len() < 2 {
             continue; // No direction to compare against.
         }
@@ -468,7 +468,7 @@ mod line_tool_tests {
             geometry,
             vec![BACKGROUND; Geometry::<Tri>::new(Outline::hexagon(2)).cell_count()].into(),
         );
-        let lane_map = sol.geometry.lane_map().clone();
+        let lane_map = sol.geometry.lane_map.clone();
         let mut gui = NonogramGui::new(Document::from_solution(
             DynSolution::Tri(sol),
             "test".to_string(),

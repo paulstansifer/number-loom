@@ -318,7 +318,7 @@ impl<K: GridKind> Solution<K> {
 pub struct Puzzle<C: Clue, K: GridKind> {
     pub palette: HashMap<Color, ColorInfo>, // should include the background!
     pub geometry: Geometry<K>,
-    /// One clue list per lane, indexed exactly like `geometry.lane_map().lanes`. For square
+    /// One clue list per lane, indexed exactly like `geometry.lane_map.lanes`. For square
     /// puzzles that means all the rows first, then all the columns; use `row_clues`/`col_clues`.
     pub lines: TiVec<LaneIdx, Vec<C>>,
 }
@@ -364,11 +364,11 @@ impl<C: Clue> Puzzle<C, Square> {
     }
 
     pub fn row_clues(&self) -> &TiSlice<LaneIdx, Vec<C>> {
-        &self.lines[self.geometry.lane_map().family_range(FamilyIdx(0))]
+        &self.lines[self.geometry.lane_map.family_range(FamilyIdx(0))]
     }
 
     pub fn col_clues(&self) -> &TiSlice<LaneIdx, Vec<C>> {
-        &self.lines[self.geometry.lane_map().family_range(FamilyIdx(1))]
+        &self.lines[self.geometry.lane_map.family_range(FamilyIdx(1))]
     }
 }
 
@@ -381,7 +381,7 @@ impl<C: Clue> Puzzle<C, Tri> {
         let geometry = Geometry::new(outline);
         assert_eq!(
             lines.len(),
-            geometry.lane_map().lanes.len(),
+            geometry.lane_map.lanes.len(),
             "wrong number of clue lists for this outline"
         );
         Puzzle {
@@ -394,7 +394,7 @@ impl<C: Clue> Puzzle<C, Tri> {
 
 impl<C: Clue, K: GridKind> Puzzle<C, K> {
     pub fn lane_map(&self) -> &crate::geometry::LaneMap {
-        self.geometry.lane_map()
+        &self.geometry.lane_map
     }
 
     /// How far out from the grid lane `lane`'s clues reach, in abstract units.
@@ -540,8 +540,11 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
     }
 
     fn family_lane_counts(&self) -> Vec<usize> {
-        let lanes = self.geometry.lane_map();
-        lanes.families().map(|f| lanes.family_len(f)).collect()
+        let lane_map = &self.geometry.lane_map;
+        lane_map
+            .families()
+            .map(|f| lane_map.family_len(f))
+            .collect()
     }
 
     fn extent(&self) -> crate::layout::Vec2 {
@@ -645,7 +648,7 @@ impl DynPuzzle {
     }
 
     pub fn lane_map(&self) -> &crate::geometry::LaneMap {
-        with_puzzle!(self, |p| p.geometry.lane_map())
+        with_puzzle!(self, |p| &p.geometry.lane_map)
     }
 
     /// See `Puzzle::drawing_bounds`.
@@ -705,7 +708,7 @@ impl DynSolution {
     }
 
     pub fn lane_map(&self) -> &crate::geometry::LaneMap {
-        with_solution!(self, |s| s.geometry.lane_map())
+        with_solution!(self, |s| &s.geometry.lane_map)
     }
 
     pub fn to_partial(&self) -> PartialSolution {
@@ -806,7 +809,7 @@ impl DynSolution {
     pub fn blocks_at_cell(&self, cell: CellIdx) -> Vec<(LaneIdx, usize)> {
         with_solution!(self, |s| {
             let target = s.cells[cell];
-            s.geometry.lane_map().memberships[cell]
+            s.geometry.lane_map.memberships[cell]
                 .iter()
                 .zip(s.geometry.runs(cell, |c| s.cells[c] == target))
                 .map(|(m, (back, fwd))| (m.lane, back + fwd + 1))
@@ -944,7 +947,7 @@ impl<K: GridKind> Solution<K> {
         // Not `x_size`/`y_size`: a triddler has no width or height, but the heuristics below
         // only need a sense of scale, and cell count plus lane count gives that for any shape.
         let cell_count = self.cells.len();
-        let lane_count = self.geometry.lane_map().lanes.len();
+        let lane_count = self.geometry.lane_map.lanes.len();
 
         // TODO: this is wrong if the puzzle wasn't fully solved!
         let bg_squares_found: usize = self.cells.iter().filter(|c| **c == BACKGROUND).count();
@@ -1371,12 +1374,12 @@ mod resize_tests {
             // ...and every newly added cell starts out background.
             let old_coords: std::collections::HashSet<TriCoord> = sol
                 .geometry
-                .lane_map()
+                .lane_map
                 .cells()
                 .map(|c| sol.geometry.coords[c])
                 .collect();
             let mut saw_new_cell = false;
-            for cell in bigger.geometry.lane_map().cells() {
+            for cell in bigger.geometry.lane_map.cells() {
                 if !old_coords.contains(&bigger.geometry.coords[cell]) {
                     saw_new_cell = true;
                     assert_eq!(

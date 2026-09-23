@@ -891,7 +891,7 @@ mod annotate_tests {
             geometry,
             vec![BACKGROUND; cell_count].into(),
         );
-        let lane_map = sol.geometry.lane_map().clone();
+        let lane_map = sol.geometry.lane_map.clone();
         let mut gui = NonogramGui::new(Document::from_solution(
             DynSolution::Tri(sol),
             "test".to_string(),
@@ -954,8 +954,8 @@ mod annotate_tests {
         ));
 
         for (shape, picture) in [("square", &square), ("triddler", &tri)] {
-            let lanes = picture.lane_map();
-            for (lane_idx, lane) in lanes.lanes.iter_enumerated() {
+            let lane_map = picture.lane_map();
+            for (lane_idx, lane) in lane_map.lanes.iter_enumerated() {
                 if lane.cells.len() < 2 {
                     continue;
                 }
@@ -1030,8 +1030,8 @@ mod annotate_tests {
         ));
 
         for picture in [&square, &tri] {
-            let lanes = picture.lane_map();
-            for (lane_idx, lane) in lanes.lanes.iter_enumerated() {
+            let lane_map = picture.lane_map();
+            for (lane_idx, lane) in lane_map.lanes.iter_enumerated() {
                 for (position, pair) in lane.cells.raw.windows(2).enumerate() {
                     let far_side_of_earlier = lane_step_edge(
                         picture.cell_shape(pair[0]),

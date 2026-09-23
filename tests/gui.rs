@@ -1058,7 +1058,7 @@ mod tests {
         // from where the picture was drawn, since hardcoding a point goes stale with the layout.
         let solve_gui = harness.state().solve_gui.as_ref().unwrap();
         let row_clues: Vec<usize> = with_puzzle!(&solve_gui.clues, |p| {
-            let rows = p.geometry.lane_map().family_range(FamilyIdx(0));
+            let rows = p.geometry.lane_map.family_range(FamilyIdx(0));
             p.lines[rows].iter().map(|l| l.len()).collect()
         });
         let row = row_clues.iter().position(|n| *n > 0).unwrap();

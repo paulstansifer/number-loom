@@ -206,11 +206,11 @@ fn clues_along_lane<K: GridKind>(
 
 /// Derive a puzzle's clues from a finished picture, for any geometry.
 pub fn solution_to_nono_puzzle<K: GridKind>(solution: &Solution<K>) -> Puzzle<Nono, K> {
-    let lanes = solution.geometry.lane_map();
-    let lines = lanes
+    let lane_map = &solution.geometry.lane_map;
+    let lines = lane_map
         .lanes
         .keys()
-        .map(|lane| clues_along_lane(solution, &lanes.lanes[lane].cells))
+        .map(|lane| clues_along_lane(solution, &lane_map.lanes[lane].cells))
         .collect();
 
     Puzzle {

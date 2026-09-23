@@ -123,7 +123,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
     /// still unknown, which it then keeps current itself via `note_change`.
     fn new(
         clues: &'a [C],
-        lanes: &LaneMap,
+        lane_map: &LaneMap,
         lane: LaneIdx,
         index_in_family: usize,
         gathered: &[Cell],
@@ -131,7 +131,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
         LaneState {
             clues,
             lane,
-            family: lanes.lanes[lane].family,
+            family: lane_map.lanes[lane].family,
             index_in_family,
             queued: ModeMap::new_uniform(true),
             unknown_cells: gathered.iter().filter(|c| !c.is_known()).count() as i32,
@@ -157,14 +157,14 @@ impl<'a, C: Clue> LaneState<'a, C> {
 /// the copy itself is cheap and the *allocation* is not: skim-only puzzles do no scrubbing and
 /// keep no line cache, so this gather is the only per-step work of its size, and allocating for
 /// each one costs ~9% on such puzzles.
-fn gather_into(lanes: &LaneMap, lane: LaneIdx, grid: &PartialSolution, buf: &mut Vec<Cell>) {
+fn gather_into(lane_map: &LaneMap, lane: LaneIdx, grid: &PartialSolution, buf: &mut Vec<Cell>) {
     buf.clear();
-    buf.extend(lanes.lanes[lane].cells.iter().map(|c| grid[*c]));
+    buf.extend(lane_map.lanes[lane].cells.iter().map(|c| grid[*c]));
 }
 
 /// The inverse of `gather_into`.
-fn scatter(lanes: &LaneMap, lane: LaneIdx, buf: &[Cell], grid: &mut PartialSolution) {
-    for (position, cell) in lanes.lanes[lane].cells.iter().enumerate() {
+fn scatter(lane_map: &LaneMap, lane: LaneIdx, buf: &[Cell], grid: &mut PartialSolution) {
+    for (position, cell) in lane_map.lanes[lane].cells.iter().enumerate() {
         grid[*cell] = buf[position];
     }
 }
@@ -266,7 +266,7 @@ fn display_step<C: Clue, K: GridKind>(
 
     let mut now_lane = vec![];
     gather_into(
-        puzzle.geometry.lane_map(),
+        &puzzle.geometry.lane_map,
         clue_lane.lane,
         grid,
         &mut now_lane,
@@ -346,9 +346,9 @@ pub fn settle_solution<C: Clue, K: GridKind>(
 ) -> anyhow::Result<()> {
     let mut buf: Vec<Cell> = vec![];
     for (lane, clues) in puzzle.lines.iter_enumerated() {
-        gather_into(puzzle.geometry.lane_map(), lane, grid, &mut buf);
+        gather_into(&puzzle.geometry.lane_map, lane, grid, &mut buf);
         crate::solve::line_solve::settle_line(clues, &mut buf)?;
-        scatter(puzzle.geometry.lane_map(), lane, &buf, grid);
+        scatter(&puzzle.geometry.lane_map, lane, &buf, grid);
     }
     Ok(())
 }
@@ -392,7 +392,7 @@ impl<'p, C: Clue, K: GridKind> SolveContext<'p, '_, C, K> {
     /// Borrowing the puzzle separately from everything else is what lets a `SolveState` hold
     /// clue references (`'p`) that outlive any particular borrow of the line cache.
     pub fn lane_map(&self) -> &'p LaneMap {
-        self.puzzle.geometry.lane_map()
+        &self.puzzle.geometry.lane_map
     }
 }
 
@@ -471,7 +471,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         // Each lane's initial (skim, scrub) score, parallel to `lanes`; only needed for the
         // one-time queue sort below, not kept around afterward.
         let mut initial_scores: TiVec<LaneIdx, (i32, i32)> = TiVec::new();
-        // `lanes` is parallel to `geometry.lane_map().lanes`, so a lane index indexes both.
+        // `lanes` is parallel to `geometry.lane_map.lanes`, so a lane index indexes both.
         for family in lane_map.families() {
             for (index_in_family, lane) in lane_map.family(family).enumerate() {
                 gather_into(lane_map, lane, &grid, &mut scratch.seed);
@@ -989,12 +989,12 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
 ) -> TiVec<LaneIdx, LineStatus> {
     let mut gathered = vec![];
 
-    let lanes = puzzle.geometry.lane_map();
-    lanes
+    let lane_map = &puzzle.geometry.lane_map;
+    lane_map
         .lanes
         .keys()
         .map(|lane| {
-            gather_into(lanes, lane, grid, &mut gathered);
+            gather_into(lane_map, lane, grid, &mut gathered);
             analyze_line(&puzzle.lines[lane], &gathered)
         })
         .collect()
@@ -1006,14 +1006,14 @@ pub fn fixed_clues<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
 ) -> TiVec<LaneIdx, Vec<usize>> {
-    let lanes = puzzle.geometry.lane_map();
+    let lane_map = &puzzle.geometry.lane_map;
     let mut gathered = vec![];
 
-    lanes
+    lane_map
         .lanes
         .keys()
         .map(|lane| {
-            gather_into(lanes, lane, grid, &mut gathered);
+            gather_into(lane_map, lane, grid, &mut gathered);
             skim_to_find_fixed_clues(&puzzle.lines[lane], &gathered)
         })
         .collect()
@@ -1025,11 +1025,11 @@ pub fn verify_lines<C: Clue, K: GridKind>(
     grid: &PartialSolution,
 ) -> anyhow::Result<()> {
     // TODO: this probably could be done fasters
-    let lanes = puzzle.geometry.lane_map();
-    for family in lanes.families() {
-        for lane in puzzle.geometry.lane_map().family(family) {
+    let lane_map = &puzzle.geometry.lane_map;
+    for family in lane_map.families() {
+        for lane in puzzle.geometry.lane_map.family(family) {
             let mut gathered = vec![];
-            gather_into(lanes, lane, grid, &mut gathered);
+            gather_into(lane_map, lane, grid, &mut gathered);
             skim_line(&puzzle.lines[lane], &mut gathered.to_vec())?;
         }
     }
@@ -1135,10 +1135,10 @@ mod tests {
         grid[CellIdx(0)] = Cell::from_color(BACKGROUND); // (x=0, y=0)
         grid[CellIdx(3)] = Cell::from_color(BACKGROUND); // (x=1, y=1)
 
-        let lanes = puzzle.geometry.lane_map();
+        let lane_map = &puzzle.geometry.lane_map;
         let analysis = analyze_lines(&puzzle, &grid);
-        let row_tech = &analysis[lanes.family_range(FamilyIdx(0))];
-        let col_tech = &analysis[lanes.family_range(FamilyIdx(1))];
+        let row_tech = &analysis[lane_map.family_range(FamilyIdx(0))];
+        let col_tech = &analysis[lane_map.family_range(FamilyIdx(1))];
 
         assert_eq!(
             row_tech.iter().map(|r| r.as_ref().ok()).collect::<Vec<_>>(),
@@ -1227,10 +1227,10 @@ mod tests {
         palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
 
         let mut lines: TiVec<LaneIdx, Vec<Nono>> = TiVec::new();
-        for lane in geometry.lane_map().lanes.keys() {
+        for lane in geometry.lane_map.lanes.keys() {
             let mut clues: Vec<Nono> = vec![];
             let mut run = 0u16;
-            for cell in geometry.lane_map().lanes[lane].cells.iter() {
+            for cell in geometry.lane_map.lanes[lane].cells.iter() {
                 if filled[usize::from(*cell)] {
                     run += 1;
                 } else if run > 0 {
@@ -1328,13 +1328,13 @@ mod tests {
         };
         // Fill the middle row only.
         let geometry = crate::geometry::Geometry::<crate::geometry::Tri>::new(outline);
-        let middle: std::collections::HashSet<CellIdx> = geometry.lane_map().lanes[LaneIdx(1)]
+        let middle: std::collections::HashSet<CellIdx> = geometry.lane_map.lanes[LaneIdx(1)]
             .cells
             .iter()
             .copied()
             .collect();
         let filled: Vec<bool> = geometry
-            .lane_map()
+            .lane_map
             .cells()
             .map(|c| middle.contains(&c))
             .collect();

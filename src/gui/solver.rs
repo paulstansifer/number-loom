@@ -998,7 +998,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
         Orientation::Horizontal => FamilyIdx(0),
         Orientation::Vertical => FamilyIdx(1),
     };
-    let lane_map = puzzle.geometry.lane_map();
+    let lane_map = &puzzle.geometry.lane_map;
 
     for i in 0..clues_vec.len() {
         // The indicator strip against the grid: the hovered line's block length if there is one,

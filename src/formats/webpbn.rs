@@ -74,7 +74,7 @@ fn triddler_puzzle(
 
     // Each set's lines are in increasing lane order, so they line up one-for-one with the lanes
     // the geometry assigns to that set.
-    let mut lines: TiVec<LaneIdx, Vec<Nono>> = vec![vec![]; geometry.lane_map().lanes.len()].into();
+    let mut lines: TiVec<LaneIdx, Vec<Nono>> = vec![vec![]; geometry.lane_map.lanes.len()].into();
     for set in [
         ClueSet::TopLeft,
         ClueSet::BottomLeft,
@@ -407,7 +407,7 @@ fn solution_image<K: GridKind + ImageDelimiter>(
 ) -> String {
     let mut image = String::new();
     for lane in solution.geometry.family(FamilyIdx(0)) {
-        let cells = &solution.geometry.lane_map().lanes[lane].cells;
+        let cells = &solution.geometry.lane_map.lanes[lane].cells;
         let (left, right) = K::row_delimiters(&solution.geometry, cells);
         image.push(left);
         for &cell in cells.iter() {
@@ -624,7 +624,7 @@ mod tests {
         let rows: Vec<usize> = puzzle
             .geometry
             .family(FamilyIdx(0))
-            .map(|i| puzzle.geometry.lane_map().lanes[i].cells.len())
+            .map(|i| puzzle.geometry.lane_map.lanes[i].cells.len())
             .collect();
         assert_eq!(rows, vec![5, 6, 5]);
 
@@ -635,7 +635,7 @@ mod tests {
             let needed: usize = clues.iter().map(|c| c.count as usize).sum::<usize>()
                 + clues.len().saturating_sub(1);
             assert!(
-                needed <= puzzle.geometry.lane_map().lanes[lane].cells.len(),
+                needed <= puzzle.geometry.lane_map.lanes[lane].cells.len(),
                 "clues {clues:?} don't fit lane {lane:?}"
             );
         }
@@ -678,7 +678,7 @@ mod tests {
             let mut doc = webpbn_to_document(DOC_TRIDDLER).unwrap();
             let mut puzzle = doc.puzzle().as_tri_nono().unwrap().clone();
             for lane in puzzle.lane_map().lanes.keys() {
-                if puzzle.geometry.lane_map().lanes[lane].family == family_to_flip {
+                if puzzle.geometry.lane_map.lanes[lane].family == family_to_flip {
                     puzzle.lines[lane].reverse();
                 }
             }

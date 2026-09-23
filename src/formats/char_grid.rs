@@ -274,7 +274,7 @@ fn char_grid_to_tri_solution(char_grid: &str) -> anyhow::Result<Solution<Tri>> {
     let geometry = Geometry::<Tri>::new(outline);
 
     let mut cells: TiVec<CellIdx, Color> = vec![BACKGROUND; geometry.cell_count()].into();
-    for i in geometry.lane_map().cells() {
+    for i in geometry.lane_map.cells() {
         let coord = geometry.coords[i];
         let ch = ch_by_coord
             .get(&coord)
@@ -351,7 +351,7 @@ mod tests {
         let rows: Vec<usize> = solution
             .geometry
             .family(FamilyIdx(0))
-            .map(|i| solution.geometry.lane_map().lanes[i].cells.len())
+            .map(|i| solution.geometry.lane_map.lanes[i].cells.len())
             .collect();
         assert_eq!(rows, vec![5, 6, 5]);
 
@@ -377,7 +377,7 @@ mod tests {
         let rows: Vec<usize> = solution
             .geometry
             .family(FamilyIdx(0))
-            .map(|i| solution.geometry.lane_map().lanes[i].cells.len())
+            .map(|i| solution.geometry.lane_map.lanes[i].cells.len())
             .collect();
         assert_eq!(rows, vec![5, 6]);
         // Only two distinct letters were used, so only two colors should have been minted.
