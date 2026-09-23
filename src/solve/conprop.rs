@@ -84,7 +84,7 @@ impl Nogood {
 // TODO: there are a bunch of indices
 
 #[derive(Clone)]
-struct ConpropState<'p, C: Clue> {
+pub struct ConpropState<'p, C: Clue> {
     nogoods: Vec<Nogood>,
     // Outer is indexable by `cell_idx`, inner contains indices to `nogoods`
     nogoods_by_cell: TiVec<CellIdx, Vec<usize>>,
@@ -92,7 +92,7 @@ struct ConpropState<'p, C: Clue> {
 
     nogoods_updated_to: usize, // index into trail: where are the nogoods current up to?
     guesses_in_trail: Vec<(usize, Color)>, // (index into trail, guessed color)
-    ll_state: SolveState<'p, C>,
+    pub ll_state: SolveState<'p, C>,
 
     guesses_made: usize,
     // TODO: feed this to the picker, so it only picks things that contradict this
@@ -103,6 +103,20 @@ struct ConpropState<'p, C: Clue> {
 }
 
 impl<'p, C: Clue> ConpropState<'p, C> {
+    pub fn new(ll_state: SolveState<'p, C>) -> Self {
+        ConpropState {
+            nogoods: vec![],
+            nogoods_by_cell: vec![vec![]; ll_state.grid.len()].into(),
+            trail: vec![],
+            nogoods_updated_to: 0,
+            guesses_in_trail: vec![],
+            ll_state,
+            guesses_made: 0,
+            solution_found: None,
+            root_knowledge: None,
+        }
+    }
+
     // Typically, you'll call `propagate{,_and_learn}` after this.
     // `Err(_)` if the guess is inherently wrong, `Ok(false)` if the guess was already true.
     fn make_guess<'x, K: GridKind>(
@@ -420,17 +434,7 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
         return Ok(linear_state.report(puzzle)); // No fancy stuff required!
     }
 
-    let mut state = ConpropState {
-        nogoods: vec![],
-        nogoods_by_cell: vec![vec![]; linear_state.grid.len()].into(),
-        trail: vec![],
-        nogoods_updated_to: 0,
-        guesses_in_trail: vec![],
-        ll_state: linear_state,
-        guesses_made: 0,
-        solution_found: None,
-        root_knowledge: None,
-    };
+    let mut state = ConpropState::new(linear_state);
 
     loop {
         let picker = linear_ctx
