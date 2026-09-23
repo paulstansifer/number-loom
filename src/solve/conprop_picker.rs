@@ -15,10 +15,15 @@ use crate::{
 type Pick = (CellIdx, Color);
 
 struct Picker {
+    // Best pick is at the end.
     order: Vec<Pick>,
 }
 
 impl Picker {
+    pub fn pick(&mut self) -> Option<Pick> {
+        self.order.pop()
+    }
+
     /// Add the length of the longest unfixed clue of each color to `lane_clue_len` (BACKGROUND is the max of all the colors)
     /// Extend `prob_range` to inclue the implied probability that each cell is that color, from this lane's point of view.
     fn score_lane<C: Clue, K: GridKind>(
@@ -164,6 +169,8 @@ impl Picker {
                 seen.insert(candidate);
             }
         }
+
+        res.reverse();
 
         Picker { order: res }
     }
@@ -546,14 +553,15 @@ mod tests {
 
         // Most clue length: (0, 0), with 3 across and 2 down; 5 for both colors.
         // Widest disagreement: (0, 1). Its row says 1 is 1/3 likely; its column says certain.
-        let (picker, grid) = pick(&puzzle, Some(grid), false);
+        let (mut picker, grid) = pick(&puzzle, Some(grid), false);
         assert_permutation_of_open_picks(&picker, &grid);
 
-        let cells: Vec<CellIdx> = picker.order.iter().map(|&(cell, _)| cell).collect();
+        let picks: Vec<Pick> = std::iter::from_fn(|| picker.pick()).collect();
+        let cells: Vec<CellIdx> = picks.iter().map(|&(cell, _)| cell).collect();
         assert_eq!(cells[0..4], [at(0, 0), at(0, 1), at(0, 0), at(0, 1)]);
 
         // Each cell's two colors tie, so they come out back to back (in either order).
-        let colors = |i: usize, j: usize| HashSet::from([picker.order[i].1, picker.order[j].1]);
+        let colors = |i: usize, j: usize| HashSet::from([picks[i].1, picks[j].1]);
         assert_eq!(colors(0, 2), HashSet::from([BACKGROUND, C1]));
         assert_eq!(colors(1, 3), HashSet::from([BACKGROUND, C1]));
     }
