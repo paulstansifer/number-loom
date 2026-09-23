@@ -1,17 +1,64 @@
 use std::{
     collections::{HashMap, HashSet},
-    ops::AddAssign,
+    ops::{AddAssign, Index, IndexMut},
 };
 
 use typed_index_collections::TiVec;
 
 use crate::{
     geometry::{CellIdx, GridKind, LaneIdx},
-    puzzle::{BACKGROUND, Clue, Color, Puzzle},
+    puzzle::{BACKGROUND, Clue, Color, Palette, Puzzle},
     solve::{conprop::ConpropState, grid_solve, line_solve::Cell},
 };
 
 type Pick = (CellIdx, Color);
+
+/// This is a perhaps somewhat excessive replacement for `HashMap<Pick, T>`
+/// that is faster because we know the keys are dense.
+/// (`nohash-hasher` would be a good alternative if `Pick` were just one natural number)
+struct PickTable<T> {
+    /// One past the highest color in the palette (which might have gaps).
+    stride: usize,
+    data: Vec<T>,
+}
+
+impl<T: Clone> PickTable<T> {
+    fn new(cell_count: usize, palette: &Palette, fill: T) -> Self {
+        let stride = palette.keys().map(|c| c.0 as usize).max().unwrap_or(0) + 1;
+        PickTable {
+            stride,
+            data: vec![fill; cell_count * stride],
+        }
+    }
+}
+
+impl<T> PickTable<T> {
+    fn flat_idx(&self, (cell, color): Pick) -> usize {
+        // Otherwise, it'd silently alias the next cell's entry.
+        debug_assert!(
+            (color.0 as usize) < self.stride,
+            "{color:?} isn't in the palette"
+        );
+        cell.0 as usize * self.stride + color.0 as usize
+    }
+}
+
+impl<T> Index<Pick> for PickTable<T> {
+    type Output = T;
+    fn index(&self, pick: Pick) -> &T {
+        &self.data[self.flat_idx(pick)]
+    }
+}
+
+impl<T> IndexMut<Pick> for PickTable<T> {
+    fn index_mut(&mut self, pick: Pick) -> &mut T {
+        let idx = self.flat_idx(pick);
+        &mut self.data[idx]
+    }
+}
+
+/// What `prob_range` starts as: an empty range, which the first probability widens to a point.
+const UNSCORED: (f32, f32) = (f32::INFINITY, f32::NEG_INFINITY);
 
 struct Picker {
     // Best pick is at the end.
@@ -31,8 +78,8 @@ impl Picker {
         fixed_clues: &TiVec<LaneIdx, Vec<usize>>,
         puzzle: &Puzzle<C, K>,
         grid: &TiVec<CellIdx, Cell>,
-        lane_clue_len: &mut HashMap<Pick, usize>,
-        prob_range: &mut HashMap<Pick, (f32, f32)>,
+        lane_clue_len: &mut PickTable<usize>,
+        prob_range: &mut PickTable<(f32, f32)>,
     ) {
         let mut max_clue = HashMap::new();
         let mut color_count: HashMap<Color, usize> = HashMap::new();
@@ -71,13 +118,13 @@ impl Picker {
 
         // Each lane contributes its highest unfixed clue.
         for (color, len) in &max_clue {
-            for cell_idx in cell_line {
-                *lane_clue_len.entry((*cell_idx, *color)).or_insert(0) += len;
+            for &cell_idx in cell_line {
+                lane_clue_len[(cell_idx, *color)] += len;
             }
             max_len = max_len.max(*len);
         }
-        for cell_idx in cell_line {
-            *lane_clue_len.entry((*cell_idx, BACKGROUND)).or_insert(0) += max_len;
+        for &cell_idx in cell_line {
+            lane_clue_len[(cell_idx, BACKGROUND)] += max_len;
         }
 
         // Each lane extends the range of implied probabilities.
@@ -86,14 +133,10 @@ impl Picker {
                 continue; // ultimately irrelevant, but don't crash.
             }
             let prob = *cell_count as f32 / color_denominator[color] as f32;
-            for cell_idx in cell_line {
-                prob_range
-                    .entry((*cell_idx, *color))
-                    .and_modify(|(lo, hi)| {
-                        *lo = lo.min(prob); // extend
-                        *hi = hi.max(prob); // extend
-                    })
-                    .or_insert((prob, prob));
+            for &cell_idx in cell_line {
+                let (lo, hi) = &mut prob_range[(cell_idx, *color)];
+                *lo = lo.min(prob); // extend
+                *hi = hi.max(prob); // extend
             }
         }
     }
@@ -119,8 +162,9 @@ impl Picker {
 
         let fixed_clues = grid_solve::fixed_clues(puzzle, &state.ll_state.grid);
 
-        let mut lane_clue_len: HashMap<Pick, usize> = HashMap::default();
-        let mut prob_range: HashMap<Pick, (f32, f32)> = HashMap::default();
+        let cell_count = puzzle.geometry.cell_count();
+        let mut lane_clue_len = PickTable::new(cell_count, &puzzle.palette, 0);
+        let mut prob_range = PickTable::new(cell_count, &puzzle.palette, UNSCORED);
 
         for (lane_idx, clue_line) in puzzle.lines.iter_enumerated() {
             Self::score_lane(
@@ -139,13 +183,17 @@ impl Picker {
         let mut ll_remaining = remaining_indices.clone();
 
         // Sort shortest-first (best-last):
-        ll_remaining.sort_unstable_by_key(|key| lane_clue_len[key]);
+        ll_remaining.sort_unstable_by_key(|&key| lane_clue_len[key]);
 
         let mut disag_remaining = remaining_indices;
 
         // Sort smallest-separation-first (best-last):
         disag_remaining.sort_unstable_by(|key_a, key_b| {
-            let (a, b) = (prob_range[key_a], prob_range[key_b]);
+            let (a, b) = (prob_range[*key_a], prob_range[*key_b]);
+            debug_assert!(
+                a != UNSCORED && b != UNSCORED,
+                "no lane scored {key_a:?} or {key_b:?}"
+            );
             (a.1 - a.0).total_cmp(&(b.1 - b.0))
         });
 
@@ -223,15 +271,16 @@ mod tests {
     }
 
     struct Scores {
-        lane_clue_len: HashMap<Pick, usize>,
-        prob_range: HashMap<Pick, (f32, f32)>,
+        lane_clue_len: PickTable<usize>,
+        prob_range: PickTable<(f32, f32)>,
     }
 
     impl Scores {
         fn new() -> Self {
             Scores {
-                lane_clue_len: HashMap::new(),
-                prob_range: HashMap::new(),
+                // Enough cells for any lane in these tests.
+                lane_clue_len: PickTable::new(16, &palette(), 0),
+                prob_range: PickTable::new(16, &palette(), UNSCORED),
             }
         }
 
@@ -251,11 +300,11 @@ mod tests {
         }
 
         fn len(&self, cell: u32, color: Color) -> usize {
-            self.lane_clue_len[&(CellIdx(cell), color)]
+            self.lane_clue_len[(CellIdx(cell), color)]
         }
 
         fn prob(&self, cell: u32, color: Color) -> (f32, f32) {
-            self.prob_range[&(CellIdx(cell), color)]
+            self.prob_range[(CellIdx(cell), color)]
         }
     }
 
@@ -275,8 +324,8 @@ mod tests {
             assert_eq!(s.prob(cell, BACKGROUND), (3.0 / 5.0, 3.0 / 5.0));
         }
         // C2 isn't in this lane's clues, so this lane has nothing to say about it.
-        assert!(!s.lane_clue_len.contains_key(&(CellIdx(0), C2)));
-        assert!(!s.prob_range.contains_key(&(CellIdx(0), C2)));
+        assert_eq!(s.len(0, C2), 0);
+        assert_eq!(s.prob(0, C2), UNSCORED);
     }
 
     #[test]
@@ -302,7 +351,7 @@ mod tests {
         s.score(Vec::<Nono>::new(), vec![], "???");
 
         assert_eq!(s.len(0, BACKGROUND), 0);
-        assert!(!s.lane_clue_len.contains_key(&(CellIdx(0), C1)));
+        assert_eq!(s.len(0, C1), 0);
         assert_eq!(s.prob(0, BACKGROUND), (1.0, 1.0));
     }
 
@@ -369,7 +418,7 @@ mod tests {
         let mut s = Scores::new();
         s.score(vec![nono(C2, 2), nono(C1, 1)], vec![0], "22.???");
 
-        assert!(!s.lane_clue_len.contains_key(&(CellIdx(4), C2)));
+        assert_eq!(s.len(4, C2), 0);
         assert_eq!(s.len(4, C1), 1);
         assert_eq!(s.len(4, BACKGROUND), 1);
     }

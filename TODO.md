@@ -18,6 +18,7 @@
 * Replace the line-logic quality check with a time-limited backtracking solve check.
 * Add CC-0 (public domain) as an license option
 * Speed up the replay a little for larger puzzles.
+* Try `FxHashMap` instead of `HashMap`.
 
 # Maybe?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)
