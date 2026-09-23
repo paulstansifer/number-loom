@@ -58,7 +58,6 @@ typed-index-collections = { version = "3.5.0", features = ["serde", "std"] }
 rand = "0.8.5"
 
 [dev-dependencies]
-rand = "0.8.5"
 egui_kittest = "0.31.1"
 
 [[test]]

@@ -6,8 +6,7 @@ use std::{
 use typed_index_collections::TiVec;
 
 use crate::{
-    geometry::{CellIdx, GridKind},
-    gui::LaneIdx,
+    geometry::{CellIdx, GridKind, LaneIdx},
     puzzle::{BACKGROUND, Clue, Color, Puzzle},
     solve::{conprop::ConpropState, grid_solve, line_solve::Cell},
 };
@@ -25,7 +24,7 @@ impl Picker {
     }
 
     /// Add the length of the longest unfixed clue of each color to `lane_clue_len` (BACKGROUND is the max of all the colors)
-    /// Extend `prob_range` to inclue the implied probability that each cell is that color, from this lane's point of view.
+    /// Extend `prob_range` to include the implied probability that each cell is that color, from this lane's point of view.
     fn score_lane<C: Clue, K: GridKind>(
         lane_idx: LaneIdx,
         clue_line: &[C],
@@ -39,12 +38,12 @@ impl Picker {
         let mut color_count: HashMap<Color, usize> = HashMap::new();
         for (clue_idx, clue) in clue_line.iter().enumerate() {
             for (color, range) in clue.color_ranges() {
-                *color_count.entry(color).or_insert(0) += range.clone().count();
+                *color_count.entry(color).or_insert(0) += range.len();
 
                 if !fixed_clues[lane_idx].contains(&clue_idx) {
                     // Only non-fixed clues count for length:
                     let v = max_clue.entry(color).or_insert(0);
-                    *v = (*v).max(range.count());
+                    *v = (*v).max(range.len());
                 }
             }
         }
@@ -68,26 +67,29 @@ impl Picker {
             }
         }
 
-        for cell_idx in cell_line {
-            let mut max_len = 0; // over all colors
+        let mut max_len = 0; // over all colors
 
-            // Each lane contributes its highest unfixed clue.
-            for (color, len) in &max_clue {
+        // Each lane contributes its highest unfixed clue.
+        for (color, len) in &max_clue {
+            for cell_idx in cell_line {
                 *lane_clue_len.entry((*cell_idx, *color)).or_insert(0) += len;
-
-                max_len = max_len.max(*len);
             }
+            max_len = max_len.max(*len);
+        }
+        for cell_idx in cell_line {
             *lane_clue_len.entry((*cell_idx, BACKGROUND)).or_insert(0) += max_len;
+        }
 
-            // Each lane extends the range of implied probabilities.
-            for (color, cell_count) in &color_count {
-                if *color_denominator.entry(*color).or_insert(0) == 0 {
-                    continue; // ultimately irrelevant, but don't crash.
-                }
-                let prob = *cell_count as f32 / color_denominator[color] as f32;
+        // Each lane extends the range of implied probabilities.
+        for (color, cell_count) in &color_count {
+            if *color_denominator.entry(*color).or_insert(0) == 0 {
+                continue; // ultimately irrelevant, but don't crash.
+            }
+            let prob = *cell_count as f32 / color_denominator[color] as f32;
+            for cell_idx in cell_line {
                 prob_range
                     .entry((*cell_idx, *color))
-                    .and_modify(|&mut (ref mut lo, ref mut hi)| {
+                    .and_modify(|(lo, hi)| {
                         *lo = lo.min(prob); // extend
                         *hi = hi.max(prob); // extend
                     })
@@ -109,7 +111,6 @@ impl Picker {
             for color in cell.can_be_iter() {
                 remaining_indices.push((idx, color));
             }
-            if !cell.is_known() {}
         }
 
         use rand::seq::SliceRandom;
