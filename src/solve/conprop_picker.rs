@@ -184,19 +184,20 @@ impl Picker {
 
         let mut ll_remaining = remaining_indices.clone();
 
+        // TODO: we should occasionally regenerate these to use fresher VSIDS numbers
+        // Probably important at the low levels and irrelevent higher up?
+
         // Sort shortest-first (best-last):
-        ll_remaining.sort_unstable_by_key(|&key| lane_clue_len[key]);
+        ll_remaining.sort_by_cached_key(|key| {
+            Score(lane_clue_len[*key] as f32 + *state.vsids.get(key).unwrap_or(&0.0) * 0.5)
+        });
 
         let mut disag_remaining = remaining_indices;
 
         // Sort smallest-separation-first (best-last):
-        disag_remaining.sort_unstable_by(|key_a, key_b| {
-            let (a, b) = (prob_range[*key_a], prob_range[*key_b]);
-            debug_assert!(
-                a != UNSCORED && b != UNSCORED,
-                "no lane scored {key_a:?} or {key_b:?}"
-            );
-            (a.1 - a.0).total_cmp(&(b.1 - b.0))
+        disag_remaining.sort_by_cached_key(|key| {
+            let (lo, hi) = prob_range[*key];
+            Score(hi - lo + state.vsids.get(key).unwrap_or(&0.0) * 0.05)
         });
 
         let mut seen: HashSet<Pick> = HashSet::default();
@@ -224,6 +225,17 @@ impl Picker {
         res.reverse();
 
         Picker { order: res }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+struct Score(f32);
+
+impl Eq for Score {}
+
+impl Ord for Score {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
     }
 }
 

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use typed_index_collections::TiVec;
 
@@ -88,6 +88,8 @@ pub struct ConpropState<'p, C: Clue> {
     nogoods: Vec<Nogood>,
     // Outer is indexable by `cell_idx`, inner contains indices to `nogoods`
     nogoods_by_cell: TiVec<CellIdx, Vec<usize>>,
+    pub vsids: HashMap<(CellIdx, Color), f32>,
+    vsids_decay: u8,
 
     trail: Vec<(CellIdx, Cell)>, // (cell_idx, old_value)
 
@@ -109,6 +111,8 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         ConpropState {
             nogoods: vec![],
             nogoods_by_cell: vec![vec![]; ll_state.grid.len()].into(),
+            vsids: HashMap::default(),
+            vsids_decay: 0,
             trail: vec![],
             nogoods_updated_to: 0,
             guesses_in_trail: vec![],
@@ -132,7 +136,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         let old_cell = self.ll_state.grid[cell_idx];
         let res = self
             .ll_state
-            .learn(linear_ctx, cell_idx, /*is*/true, color)?;
+            .learn(linear_ctx, cell_idx, /*is*/ true, color)?;
         if res {
             self.guesses_made += 1;
             self.guesses_in_trail.push((self.trail.len(), color));
@@ -168,10 +172,21 @@ impl<'p, C: Clue> ConpropState<'p, C> {
     /// Start watching a nogood.
     fn add_nogood(&mut self, nogood: Nogood) {
         let nogood_idx = self.nogoods.len();
-        for &(cell_idx, _) in &nogood.not_all_true {
+        for &(cell_idx, color) in &nogood.not_all_true {
             self.nogoods_by_cell[cell_idx].push(nogood_idx);
+
+            *self.vsids.entry((cell_idx, color)).or_insert(0.0) += 1.0;
         }
         self.nogoods.push(nogood);
+
+        if self.vsids_decay >= 16 {
+            for (_, score) in &mut self.vsids {
+                *score *= 0.95;
+            }
+            self.vsids_decay = 0;
+        } else {
+            self.vsids_decay += 1;
+        }
     }
 
     /// Make a simple nogood from the trail. This is used to *rule out* a valid solution
