@@ -486,6 +486,7 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
         if linear_ctx.options.trace_backtrack {
             println!("Making guess ({cell_idx:?}, {color:?})");
         }
+        
         if !state
             .make_guess((cell_idx, color), &mut linear_ctx)
             .is_ok_and(|b| b)

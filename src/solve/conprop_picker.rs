@@ -13,50 +13,6 @@ use crate::{
 
 type Pick = (CellIdx, Color);
 
-/// This is a perhaps somewhat excessive replacement for `HashMap<Pick, T>`
-/// that is faster because we know the keys are dense.
-/// (`nohash-hasher` would be a good alternative if `Pick` were just one natural number)
-struct PickTable<T> {
-    /// One past the highest color in the palette (which might have gaps).
-    stride: usize,
-    data: Vec<T>,
-}
-
-impl<T: Clone> PickTable<T> {
-    fn new(cell_count: usize, palette: &Palette, fill: T) -> Self {
-        let stride = palette.keys().map(|c| c.0 as usize).max().unwrap_or(0) + 1;
-        PickTable {
-            stride,
-            data: vec![fill; cell_count * stride],
-        }
-    }
-}
-
-impl<T> PickTable<T> {
-    fn flat_idx(&self, (cell, color): Pick) -> usize {
-        // Otherwise, it'd silently alias the next cell's entry.
-        debug_assert!(
-            (color.0 as usize) < self.stride,
-            "{color:?} isn't in the palette"
-        );
-        cell.0 as usize * self.stride + color.0 as usize
-    }
-}
-
-impl<T> Index<Pick> for PickTable<T> {
-    type Output = T;
-    fn index(&self, pick: Pick) -> &T {
-        &self.data[self.flat_idx(pick)]
-    }
-}
-
-impl<T> IndexMut<Pick> for PickTable<T> {
-    fn index_mut(&mut self, pick: Pick) -> &mut T {
-        let idx = self.flat_idx(pick);
-        &mut self.data[idx]
-    }
-}
-
 /// What `prob_range` starts as: an empty range, which the first probability widens to a point.
 const UNSCORED: (f32, f32) = (f32::INFINITY, f32::NEG_INFINITY);
 
@@ -270,6 +226,50 @@ impl Eq for Score {}
 impl Ord for Score {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.total_cmp(&other.0)
+    }
+}
+
+/// This is a perhaps somewhat excessive replacement for `HashMap<Pick, T>`
+/// that is faster because we know the keys are dense.
+/// (`nohash-hasher` would be a good alternative if `Pick` were just one natural number)
+struct PickTable<T> {
+    /// One past the highest color in the palette (which might have gaps).
+    stride: usize,
+    data: Vec<T>,
+}
+
+impl<T: Clone> PickTable<T> {
+    fn new(cell_count: usize, palette: &Palette, fill: T) -> Self {
+        let stride = palette.keys().map(|c| c.0 as usize).max().unwrap_or(0) + 1;
+        PickTable {
+            stride,
+            data: vec![fill; cell_count * stride],
+        }
+    }
+}
+
+impl<T> PickTable<T> {
+    fn flat_idx(&self, (cell, color): Pick) -> usize {
+        // Otherwise, it'd silently alias the next cell's entry.
+        debug_assert!(
+            (color.0 as usize) < self.stride,
+            "{color:?} isn't in the palette"
+        );
+        cell.0 as usize * self.stride + color.0 as usize
+    }
+}
+
+impl<T> Index<Pick> for PickTable<T> {
+    type Output = T;
+    fn index(&self, pick: Pick) -> &T {
+        &self.data[self.flat_idx(pick)]
+    }
+}
+
+impl<T> IndexMut<Pick> for PickTable<T> {
+    fn index_mut(&mut self, pick: Pick) -> &mut T {
+        let idx = self.flat_idx(pick);
+        &mut self.data[idx]
     }
 }
 
