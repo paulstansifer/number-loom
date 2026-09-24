@@ -1,6 +1,6 @@
 //! Plain text, interpreted as a bitmap, sort of. Just guess the palette!
 //!
-//! 
+//!
 //! A grid whose first non-whitespace character is `/` is read as a triddler
 
 use std::{
