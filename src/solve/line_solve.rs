@@ -156,6 +156,11 @@ impl Cell {
     }
 
     #[must_use]
+    pub fn unknown_but_can_be(&self, color: Color) -> bool {
+        self.can_be(color) && !self.is_known_to_be(color)
+    }
+
+    #[must_use]
     pub fn can_be_iter(&self) -> impl Iterator<Item = Color> + use<> {
         let mut mask = self.possible_color_mask;
         std::iter::from_fn(move || {

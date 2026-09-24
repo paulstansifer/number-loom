@@ -8,7 +8,7 @@ use typed_index_collections::TiVec;
 use crate::{
     geometry::{CellIdx, GridKind, LaneIdx},
     puzzle::{BACKGROUND, Clue, Color, Palette, Puzzle},
-    solve::{conprop::ConpropState, grid_solve, line_solve::Cell},
+    solve::{grid_solve, line_solve::Cell},
 };
 
 type Pick = (CellIdx, Color);
@@ -64,10 +64,22 @@ const UNSCORED: (f32, f32) = (f32::INFINITY, f32::NEG_INFINITY);
 pub struct Picker {
     // Best pick is at the end.
     order: Vec<Pick>,
+    picks_made: usize,
 }
 
 impl Picker {
-    pub fn pick(&mut self) -> Option<Pick> {
+    pub fn pick<C: Clue, K: GridKind>(
+        &mut self,
+        puzzle: &Puzzle<C, K>,
+        grid: &TiVec<CellIdx, Cell>,
+        vsids: &HashMap<Pick, f32>,
+    ) -> Option<Pick> {
+        // Rescoring seems to have no substantial effect either way, but I suspect it
+        // might be beneficial in tough cases.
+        if self.picks_made % 5 == 0 {
+            self.rescore(/*check_guesses*/ true, puzzle, grid, vsids);
+        }
+        self.picks_made += 1;
         self.order.pop()
     }
 
@@ -143,26 +155,48 @@ impl Picker {
         }
     }
 
-    pub fn from_situation<'p, C: Clue, K: GridKind>(
+    pub fn from_situation<C: Clue, K: GridKind>(
         puzzle: &Puzzle<C, K>,
-        state: &ConpropState<'p, C>,
+        grid: &TiVec<CellIdx, Cell>,
+        vsids: &HashMap<Pick, f32>,
     ) -> Picker {
-        let mut remaining_indices = vec![];
+        let mut possible_guesses = vec![];
 
-        for (idx, cell) in state.ll_state.grid.iter_enumerated() {
+        for (idx, cell) in grid.iter_enumerated() {
             if cell.is_known() {
                 continue;
             }
             for color in cell.can_be_iter() {
-                remaining_indices.push((idx, color));
+                possible_guesses.push((idx, color));
             }
         }
-
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng(); // TODO: don't recreate this every time, also, seed it
-        remaining_indices.shuffle(&mut rng);
+        possible_guesses.shuffle(&mut rng);
 
-        let fixed_clues = grid_solve::fixed_clues(puzzle, &state.ll_state.grid);
+        let mut res = Picker {
+            order: possible_guesses,
+            picks_made: 0,
+        };
+
+        res.rescore(/*check_guesses*/ false, puzzle, grid, vsids);
+
+        res
+    }
+
+    fn rescore<C: Clue, K: GridKind>(
+        &mut self,
+        check_guesses: bool,
+        puzzle: &Puzzle<C, K>,
+        grid: &TiVec<CellIdx, Cell>,
+        vsids: &HashMap<Pick, f32>,
+    ) {
+        if check_guesses {
+            self.order
+                .retain(|(cell_idx, color)| grid[*cell_idx].unknown_but_can_be(*color));
+        }
+
+        let fixed_clues = grid_solve::fixed_clues(puzzle, grid);
 
         let cell_count = puzzle.geometry.cell_count();
         let mut lane_clue_len = PickTable::new(cell_count, &puzzle.palette, 0);
@@ -174,41 +208,41 @@ impl Picker {
                 clue_line,
                 &fixed_clues,
                 puzzle,
-                &state.ll_state.grid,
+                grid,
                 &mut lane_clue_len,
                 &mut prob_range,
             );
         }
 
-        let elts_needed = remaining_indices.len();
+        let elts_needed = self.order.len();
 
-        let mut ll_remaining = remaining_indices.clone();
+        let mut ll_remaining = self.order.clone();
 
         // TODO: we should occasionally regenerate these to use fresher VSIDS numbers
         // Probably important at the low levels and irrelevent higher up?
 
         // Sort shortest-first (best-last):
         ll_remaining.sort_by_cached_key(|key| {
-            Score(lane_clue_len[*key] as f32 + *state.vsids.get(key).unwrap_or(&0.0) * 0.5)
+            Score(lane_clue_len[*key] as f32 + *vsids.get(key).unwrap_or(&0.0) * 0.5)
         });
 
-        let mut disag_remaining = remaining_indices;
+        let mut disag_remaining = std::mem::take(&mut self.order);
 
         // Sort smallest-separation-first (best-last):
         disag_remaining.sort_by_cached_key(|key| {
             let (lo, hi) = prob_range[*key];
-            Score(hi - lo + state.vsids.get(key).unwrap_or(&0.0) * 0.05)
+            Score(hi - lo + vsids.get(key).unwrap_or(&0.0) * 0.05)
         });
 
         let mut seen: HashSet<Pick> = HashSet::default();
 
-        let mut res = vec![];
+        let mut new_order = vec![];
 
         // TODO: might want to try lazy-sorting (and lazy-shuffling?): I suspect that
         // we only rarely more than 10 elements
 
-        while res.len() < elts_needed {
-            let list = if res.len() % 2 == 0 {
+        while new_order.len() < elts_needed {
+            let list = if new_order.len() % 2 == 0 {
                 &mut ll_remaining
             } else {
                 &mut disag_remaining
@@ -217,14 +251,14 @@ impl Picker {
             let candidate = list.pop().unwrap();
 
             if !seen.contains(&candidate) {
-                res.push(candidate);
+                new_order.push(candidate);
                 seen.insert(candidate);
             }
         }
 
-        res.reverse();
+        new_order.reverse();
 
-        Picker { order: res }
+        self.order = new_order;
     }
 }
 
@@ -545,9 +579,8 @@ mod tests {
         if line_solve {
             ll_state.run_and_check(&mut ctx).unwrap();
         }
-        let state = ConpropState::new(ll_state);
-        let picker = Picker::from_situation(puzzle, &state);
-        (picker, state.ll_state.grid.clone())
+        let picker = Picker::from_situation(puzzle, &ll_state.grid, &HashMap::new());
+        (picker, ll_state.grid.clone())
     }
 
     fn bw_palette() -> HashMap<Color, ColorInfo> {
@@ -617,10 +650,11 @@ mod tests {
 
         // Most clue length: (0, 0), with 3 across and 2 down; 5 for both colors.
         // Widest disagreement: (0, 1). Its row says 1 is 1/3 likely; its column says certain.
-        let (mut picker, grid) = pick(&puzzle, Some(grid), false);
+        let (picker, grid) = pick(&puzzle, Some(grid), false);
         assert_permutation_of_open_picks(&picker, &grid);
 
-        let picks: Vec<Pick> = std::iter::from_fn(|| picker.pick()).collect();
+        // Read `order` directly: `pick` would rescore partway through.
+        let picks: Vec<Pick> = picker.order.iter().rev().copied().collect();
         let cells: Vec<CellIdx> = picks.iter().map(|&(cell, _)| cell).collect();
         assert_eq!(cells[0..4], [at(0, 0), at(0, 1), at(0, 0), at(0, 1)]);
 

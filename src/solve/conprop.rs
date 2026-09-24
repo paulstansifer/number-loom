@@ -472,10 +472,13 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
                 state.guesses_in_trail.len(),
                 "We should only ever be one picker short!"
             );
-            state.pickers.push(Picker::from_situation(puzzle, &state));
+            let new_picker = Picker::from_situation(puzzle, &state.ll_state.grid, &state.vsids);
+            state.pickers.push(new_picker);
         }
 
-        let Some((cell_idx, color)) = state.pickers.last_mut().unwrap().pick() else {
+        let picker = state.pickers.last_mut().unwrap();
+        let Some((cell_idx, color)) = picker.pick(puzzle, &state.ll_state.grid, &state.vsids)
+        else {
             assert!(state.guesses_in_trail.is_empty());
             return Ok(state.no_guesses_left(puzzle));
         };
