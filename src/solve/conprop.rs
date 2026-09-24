@@ -8,7 +8,7 @@ use crate::{
     geometry::{CellIdx, GridKind},
     puzzle::{Clue, Color, PartialSolution, Puzzle},
     solve::{
-        conprop_picking::pick_guess,
+        conprop_picker::Picker,
         grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
         line_solve::Cell,
     },
@@ -88,10 +88,12 @@ pub struct ConpropState<'p, C: Clue> {
     nogoods: Vec<Nogood>,
     // Outer is indexable by `cell_idx`, inner contains indices to `nogoods`
     nogoods_by_cell: TiVec<CellIdx, Vec<usize>>,
+
     trail: Vec<(CellIdx, Cell)>, // (cell_idx, old_value)
 
     nogoods_updated_to: usize, // index into trail: where are the nogoods current up to?
     guesses_in_trail: Vec<(usize, Color)>, // (index into trail, guessed color)
+    pickers: Vec<Picker>,
     pub ll_state: SolveState<'p, C>,
 
     guesses_made: usize,
@@ -111,6 +113,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             nogoods_updated_to: 0,
             guesses_in_trail: vec![],
             ll_state,
+            pickers: vec![],
             guesses_made: 0,
             solution_found: None,
             root_knowledge: None,
@@ -119,17 +122,25 @@ impl<'p, C: Clue> ConpropState<'p, C> {
 
     // Typically, you'll call `propagate{,_and_learn}` after this.
     // `Err(_)` if the guess is inherently wrong, `Ok(false)` if the guess was already true.
+    // Only makes changes if it returns `Ok(true)`
+    // TODO: maybe just return a bool?
     fn make_guess<'x, K: GridKind>(
         &mut self,
         (cell_idx, color): (CellIdx, Color),
         linear_ctx: &mut SolveContext<'p, 'x, C, K>,
     ) -> anyhow::Result<bool> {
-        self.guesses_made += 1;
-        self.guesses_in_trail.push((self.trail.len(), color));
-        // TODO: fold the `trail` update in `.learn_new` ... if this wins out over `bt_solve`
-        self.trail.push((cell_idx, self.ll_state.grid[cell_idx]));
-        self.ll_state
-            .learn(linear_ctx, cell_idx, /*is*/ true, color)
+        let old_cell = self.ll_state.grid[cell_idx];
+        let res = self
+            .ll_state
+            .learn(linear_ctx, cell_idx, /*is*/true, color)?;
+        if res {
+            self.guesses_made += 1;
+            self.guesses_in_trail.push((self.trail.len(), color));
+            // TODO: fold the `trail` update in `.learn_new` ... if this wins out over `bt_solve`
+            self.trail.push((cell_idx, old_cell));
+        }
+
+        Ok(res)
     }
 
     /// Rewind to just *before* `guess_idx` (including its consequences)...
@@ -151,6 +162,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
 
         self.trail.truncate(trail_idx);
         self.guesses_in_trail.truncate(guess_idx);
+        self.pickers.truncate(guess_idx + 1);
     }
 
     /// Start watching a nogood.
@@ -197,7 +209,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
                 continue; // don't double-count! All we're doing here is seeing whether the cell became known
             }
             if old_value.is_known() {
-                panic!("Made a redundant guess"); // `continue` would be safe.
+                panic!("Made a redundant guess: {cell_idx:?} {old_value:?}"); // `continue` would be safe.
             }
 
             // High end knows it:
@@ -348,6 +360,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         // TODO: Claude thinks 1UIP is a better approach; investigate maybe.
         let mut exp_state = self.clone();
         exp_state.backjump(0, linear_ctx); // Back to the root, to try a different order
+        exp_state.pickers.clear(); // We'll be replaying guesses; don't need pickers.
 
         let mut res = Nogood {
             not_all_true: HashSet::new(),
@@ -437,12 +450,17 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
     let mut state = ConpropState::new(linear_state);
 
     loop {
-        let picker = linear_ctx
-            .options
-            .guess_picker_conprop
-            .for_guess(state.guesses_made);
+        // Lazily make new pickers so we can do it *after* propagation:
+        if state.pickers.len() <= state.guesses_in_trail.len() {
+            assert_eq!(
+                state.pickers.len(),
+                state.guesses_in_trail.len(),
+                "We should only ever be one picker short!"
+            );
+            state.pickers.push(Picker::from_situation(puzzle, &state));
+        }
 
-        let Some((cell_idx, color)) = pick_guess(picker, &state.ll_state, &linear_ctx) else {
+        let Some((cell_idx, color)) = state.pickers.last_mut().unwrap().pick() else {
             assert!(state.guesses_in_trail.is_empty());
             return Ok(state.no_guesses_left(puzzle));
         };
@@ -450,9 +468,12 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
         if linear_ctx.options.trace_backtrack {
             println!("Making guess ({cell_idx:?}, {color:?})");
         }
-        state
+        if !state
             .make_guess((cell_idx, color), &mut linear_ctx)
-            .expect("picked guesses should always be possible");
+            .is_ok_and(|b| b)
+        {
+            continue; // Skip impossible or already-known picks
+        }
 
         if let Some(report) = state.propagate_and_learn(puzzle, &mut linear_ctx) {
             return Ok(report);
@@ -491,21 +512,17 @@ mod tests {
             nogoods_by_cell[cell].push(0);
         }
 
-        ConpropState {
-            nogoods: vec![Nogood {
-                not_all_true: literals.iter().copied().collect(),
-                current_false_count: 0,
-                active: false,
-            }],
-            nogoods_by_cell,
-            trail: vec![],
-            nogoods_updated_to: 0,
-            guesses_in_trail: vec![],
-            ll_state: SolveState::new(ctx, vec![Cell::new(&puzzle.palette); cell_count].into()),
-            guesses_made: 0,
-            solution_found: None,
-            root_knowledge: None,
-        }
+        let ll_state = SolveState::new(ctx, vec![Cell::new(&puzzle.palette); cell_count].into());
+
+        let mut res = ConpropState::new(ll_state);
+        res.nogoods.push(Nogood {
+            not_all_true: literals.iter().copied().collect(),
+            current_false_count: 0,
+            active: false,
+        });
+        res.nogoods_by_cell = nogoods_by_cell;
+
+        res
     }
 
     /// Learn one fact, recording it on the trail the way the search does.

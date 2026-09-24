@@ -60,7 +60,8 @@ impl<T> IndexMut<Pick> for PickTable<T> {
 /// What `prob_range` starts as: an empty range, which the first probability widens to a point.
 const UNSCORED: (f32, f32) = (f32::INFINITY, f32::NEG_INFINITY);
 
-struct Picker {
+#[derive(Clone)]
+pub struct Picker {
     // Best pick is at the end.
     order: Vec<Pick>,
 }
@@ -82,7 +83,8 @@ impl Picker {
         prob_range: &mut PickTable<(f32, f32)>,
     ) {
         let mut max_clue = HashMap::new();
-        let mut color_count: HashMap<Color, usize> = HashMap::new();
+        let mut color_count: HashMap<Color, usize> =
+            puzzle.palette.keys().map(|&color| (color, 0)).collect();
         for (clue_idx, clue) in clue_line.iter().enumerate() {
             for (color, range) in clue.color_ranges() {
                 *color_count.entry(color).or_insert(0) += range.len();
@@ -323,9 +325,9 @@ mod tests {
             assert_eq!(s.prob(cell, C1), (2.0 / 5.0, 2.0 / 5.0));
             assert_eq!(s.prob(cell, BACKGROUND), (3.0 / 5.0, 3.0 / 5.0));
         }
-        // C2 isn't in this lane's clues, so this lane has nothing to say about it.
+        // C2 isn't in this lane's clues, so this lane says it can't be here.
         assert_eq!(s.len(0, C2), 0);
-        assert_eq!(s.prob(0, C2), UNSCORED);
+        assert_eq!(s.prob(0, C2), (0.0, 0.0));
     }
 
     #[test]

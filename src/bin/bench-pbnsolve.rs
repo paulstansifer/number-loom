@@ -506,13 +506,6 @@ fn solve_backtrack_child(
     let mut document = import::load_path(&path.to_path_buf(), None)
         .with_context(|| format!("couldn't load {}", path.display()))?;
     let options = SolveOptions {
-        // The two solvers keep their own copies of the pickers while `bt_solve` is still around,
-        // so `--picker` reaches `conprop_solve` by way of the spelling they share. When `bt_*`
-        // goes, so does the round trip.
-        guess_picker_conprop: picker
-            .to_string()
-            .parse()
-            .expect("the two `PickerMix`es spell their rotations the same way"),
         guess_picker: picker,
         node_scorer: scorer,
         stop_at_first_solution: first_solution,

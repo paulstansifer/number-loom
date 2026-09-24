@@ -30,7 +30,6 @@ pub struct SolveOptions {
     /// How `bt_solve` decides where to guess, and in what rotation. Ignored by line logic,
     /// which never guesses.
     pub guess_picker: crate::solve::bt_solve::PickerMix,
-    pub guess_picker_conprop: crate::solve::conprop_picking::PickerMix,
     /// How `bt_solve` orders its queue of hypotheses. Ignored by line logic, which has no queue.
     pub node_scorer: crate::solve::bt_solve::ScorerPair,
     /// Stop as soon as any complete grid turns up, instead of going on to prove it is the only
@@ -49,7 +48,6 @@ impl Default for SolveOptions {
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
             guess_picker: crate::solve::bt_solve::PickerMix::default(),
-            guess_picker_conprop: crate::solve::conprop_picking::PickerMix::default(),
             node_scorer: crate::solve::bt_solve::ScorerPair::default(),
             stop_at_first_solution: false,
         }
