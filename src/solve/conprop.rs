@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use typed_index_collections::TiVec;
 
 use anyhow::bail;
+use rand::{SeedableRng, rngs::StdRng};
 
 use crate::{
     geometry::{CellIdx, GridKind},
@@ -96,6 +97,7 @@ pub struct ConpropState<'p, C: Clue> {
     nogoods_updated_to: usize, // index into trail: where are the nogoods current up to?
     guesses_in_trail: Vec<(usize, Color)>, // (index into trail, guessed color)
     pickers: Vec<Picker>,
+    rng: StdRng, //Only used by the picker.
     pub ll_state: SolveState<'p, C>,
 
     guesses_made: usize,
@@ -118,6 +120,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             guesses_in_trail: vec![],
             ll_state,
             pickers: vec![],
+            rng: StdRng::seed_from_u64(0),
             guesses_made: 0,
             solution_found: None,
             root_knowledge: None,
@@ -472,7 +475,8 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
                 state.guesses_in_trail.len(),
                 "We should only ever be one picker short!"
             );
-            let new_picker = Picker::from_situation(puzzle, &state.ll_state.grid, &state.vsids);
+            let new_picker =
+                Picker::from_situation(puzzle, &state.ll_state.grid, &state.vsids, &mut state.rng);
             state.pickers.push(new_picker);
         }
 
@@ -486,7 +490,7 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
         if linear_ctx.options.trace_backtrack {
             println!("Making guess ({cell_idx:?}, {color:?})");
         }
-        
+
         if !state
             .make_guess((cell_idx, color), &mut linear_ctx)
             .is_ok_and(|b| b)

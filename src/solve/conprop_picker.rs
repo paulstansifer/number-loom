@@ -3,6 +3,7 @@ use std::{
     ops::{AddAssign, Index, IndexMut},
 };
 
+use rand::{Rng, seq::SliceRandom};
 use typed_index_collections::TiVec;
 
 use crate::{
@@ -115,6 +116,7 @@ impl Picker {
         puzzle: &Puzzle<C, K>,
         grid: &TiVec<CellIdx, Cell>,
         vsids: &HashMap<Pick, f32>,
+        rng: &mut impl Rng,
     ) -> Picker {
         let mut possible_guesses = vec![];
 
@@ -126,9 +128,7 @@ impl Picker {
                 possible_guesses.push((idx, color));
             }
         }
-        use rand::seq::SliceRandom;
-        let mut rng = rand::thread_rng(); // TODO: don't recreate this every time, also, seed it
-        possible_guesses.shuffle(&mut rng);
+        possible_guesses.shuffle(rng);
 
         let mut res = Picker {
             order: possible_guesses,
@@ -276,6 +276,8 @@ impl<T> IndexMut<Pick> for PickTable<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use rand::SeedableRng;
 
     use crate::{
         geometry::Square,
@@ -579,7 +581,8 @@ mod tests {
         if line_solve {
             ll_state.run_and_check(&mut ctx).unwrap();
         }
-        let picker = Picker::from_situation(puzzle, &ll_state.grid, &HashMap::new());
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+        let picker = Picker::from_situation(puzzle, &ll_state.grid, &HashMap::new(), &mut rng);
         (picker, ll_state.grid.clone())
     }
 
