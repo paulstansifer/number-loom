@@ -153,7 +153,7 @@ rates that allocation is plausibly on the hot path. I never profiled it (`perf` 
 
 (Tried; seems to barely affect performance. Perhaps lookup time is similar to actually performing a skim?)
 
-### [ ] 2.2 Stop the picker scoring every lane twice per picker
+### [x] 2.2 Stop the picker scoring every lane twice per picker
 
 `from_situation` calls `rescore`, then the first `pick` calls it again because `picks_made % 5 == 0`
 is true at zero. The counter confirms it: ~2.05 scoring passes per picker.
@@ -161,12 +161,16 @@ is true at zero. The counter confirms it: ~2.05 scoring passes per picker.
 **Measured** (median of 9 runs): `webpbn-04645` 0.130→0.077s, `color-02817` 0.493→0.332s,
 `webpbn-00803` 0.035→0.027s, `webpbn-01694` 0.299→0.259s. Worth 1.15–1.7x for a one-line change.
 
-### [ ] 2.3 The rest of the picker
+### [/] 2.3 The rest of the picker
 
 In rough order of value over effort:
 
 - **Bounded selection** instead of two full sorts. You need the top one or two candidates, not a
   total order over thousands. `select_nth_unstable` or a small heap. There is a TODO for this.
+  **Done** (two `BinaryHeap`s, popped lazily). On seed/puzzle pairs where the search came out
+  identical (same skim counts), 1.2–1.5x: `color-02817` 0.828→0.649s, `webpbn-01694` 0.417→0.338s,
+  `webpbn-04645` 0.085→0.061s, `webpbn-00803` 0.013→0.008s. Ties at the 5th-pick rescore now break by
+  the original shuffle rather than by the previous order, so some searches differ.
 - **Rescore only at shallow levels.** Deep levels get backjumped away in ~2 levels, so their scoring
   is thrown out. There is a TODO speculating exactly this, and the depth numbers support it.
 - **Incremental scoring.** Consecutive pickers see a grid differing by one guess plus propagation, so
