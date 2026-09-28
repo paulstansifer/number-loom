@@ -31,12 +31,12 @@ impl Picker {
         grid: &TiVec<CellIdx, Cell>,
         vsids: &HashMap<Pick, f32>,
     ) -> Option<Pick> {
+        self.picks_made += 1;
         // Rescoring seems to have no substantial effect either way, but I suspect it
         // might be beneficial in tough cases.
         if self.picks_made % 5 == 0 {
             self.rescore(/*check_guesses*/ true, puzzle, grid, vsids);
         }
-        self.picks_made += 1;
         self.order.pop()
     }
 
