@@ -2,7 +2,6 @@ use std::{fmt::Debug, sync::mpsc, vec};
 
 use typed_index_collections::{TiSlice, TiVec};
 
-use anyhow::Context;
 use colored::Colorize;
 
 use crate::{
@@ -55,6 +54,40 @@ impl Default for SolveOptions {
 }
 
 pub type LineStatus = anyhow::Result<Option<SolveMode>>;
+
+/// This trait exists because human users want explanations, but the constraint propagator wants
+/// to know which line failed.
+pub trait Unsolvable: Sized {
+    /// `lane` has no arrangement that fits its clues; `cause` is what the line solver said.
+    fn in_lane(lane: LaneIdx, cause: anyhow::Error) -> Self;
+}
+
+/// What most callers want: the line solver's own explanation.
+impl Unsolvable for anyhow::Error {
+    fn in_lane(_lane: LaneIdx, cause: anyhow::Error) -> Self {
+        cause
+    }
+}
+
+/// Where line logic hit a contradiction, for the conprop solver.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Contradiction {
+    pub lane: LaneIdx,
+}
+
+impl Unsolvable for Contradiction {
+    fn in_lane(lane: LaneIdx, _cause: anyhow::Error) -> Self {
+        Contradiction { lane }
+    }
+}
+
+impl std::fmt::Display for Contradiction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "contradiction in lane {:?}", self.lane)
+    }
+}
+
+impl std::error::Error for Contradiction {}
 
 pub struct Report {
     pub solve_counts: ModeMap<usize>,
@@ -569,11 +602,11 @@ impl<'p, C: Clue> SolveState<'p, C> {
         self.run_inner(ctx, Some(trail))
     }
 
-    fn run_inner<K: GridKind>(
+    fn run_inner<E: Unsolvable, K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
         mut trail: Option<&mut Vec<(CellIdx, Cell)>>,
-    ) -> anyhow::Result<Step> {
+    ) -> Result<Step, E> {
         loop {
             match self.step_inner(ctx, trail.as_deref_mut())? {
                 Step::Attempted => (),
@@ -588,22 +621,26 @@ impl<'p, C: Clue> SolveState<'p, C> {
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
     ) -> anyhow::Result<Step> {
-        let res = self.run(ctx)?;
-        // TODO: we can do this faster by only checking invalidated lines!
-        verify_lines(ctx.puzzle, &self.grid)?;
-
-        Ok(res)
+        self.run_and_check_inner(ctx, None)
     }
 
-    /// like `run_recording`, but also check for contradictions
+    /// like `run_recording`, but also check for contradictions, and report which lane led to one.
     pub fn run_and_check_recording<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
         trail: &mut Vec<(CellIdx, Cell)>,
-    ) -> anyhow::Result<Step> {
-        let res = self.run_recording(ctx, trail)?;
+    ) -> Result<Step, Contradiction> {
+        self.run_and_check_inner(ctx, Some(trail))
+    }
+
+    fn run_and_check_inner<E: Unsolvable, K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        trail: Option<&mut Vec<(CellIdx, Cell)>>,
+    ) -> Result<Step, E> {
+        let res = self.run_inner(ctx, trail)?;
         // TODO: we can do this faster by only checking invalidated lines!
-        verify_lines(ctx.puzzle, &self.grid)?;
+        verify_lines_inner(ctx.puzzle, &self.grid)?;
         Ok(res)
     }
 
@@ -647,11 +684,11 @@ impl<'p, C: Clue> SolveState<'p, C> {
         self.step_inner(ctx, Some(trail))
     }
 
-    fn step_inner<K: GridKind>(
+    fn step_inner<E: Unsolvable, K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
         trail: Option<&mut Vec<(CellIdx, Cell)>>,
-    ) -> anyhow::Result<Step> {
+    ) -> Result<Step, E> {
         let puzzle = ctx.puzzle;
         let options = ctx.options;
         let lane_map = ctx.lane_map();
@@ -680,20 +717,10 @@ impl<'p, C: Clue> SolveState<'p, C> {
         self.solve_counts[mode] += 1;
         let clues = self.lanes[idx].clues;
         let mut report = match mode {
-            SolveMode::Scrub => op_or_cache(exhaust_line, clues, grid_lane, ctx.line_cache)
-                .with_context(|| {
-                    format!(
-                        "scrubbing {:?} with {:?}",
-                        &self.lanes[idx], orig_version_of_line
-                    )
-                })?,
-            SolveMode::Skim => skim_line(clues, grid_lane).with_context(|| {
-                format!(
-                    "skimming {:?} with {:?}",
-                    &self.lanes[idx], orig_version_of_line
-                )
-            })?,
-        };
+            SolveMode::Scrub => op_or_cache(exhaust_line, clues, grid_lane, ctx.line_cache),
+            SolveMode::Skim => skim_line(clues, grid_lane),
+        }
+        .map_err(|e| E::in_lane(solved_lane, e))?;
         // `find_best_lane` already popped this lane out of `queues[mode]` and cleared its
         // `queued` flag; it goes back in only if `invalidate` below finds it touched again.
 
@@ -1022,13 +1049,21 @@ pub fn verify_lines<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
 ) -> anyhow::Result<()> {
+    verify_lines_inner(puzzle, grid)
+}
+
+fn verify_lines_inner<E: Unsolvable, C: Clue, K: GridKind>(
+    puzzle: &Puzzle<C, K>,
+    grid: &PartialSolution,
+) -> Result<(), E> {
     // TODO: this probably could be done fasters
     let lane_map = &puzzle.geometry.lane_map;
     for family in lane_map.families() {
         for lane in puzzle.geometry.lane_map.family(family) {
             let mut gathered = vec![];
             gather_into(lane_map, lane, grid, &mut gathered);
-            skim_line(&puzzle.lines[lane], &mut gathered.to_vec())?;
+            skim_line(&puzzle.lines[lane], &mut gathered.to_vec())
+                .map_err(|e| E::in_lane(lane, e))?;
         }
     }
     Ok(())

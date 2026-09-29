@@ -6,7 +6,7 @@ use anyhow::bail;
 use rand::{SeedableRng, rngs::StdRng};
 
 use crate::{
-    geometry::{CellIdx, GridKind},
+    geometry::{CellIdx, GridKind, LaneIdx},
     puzzle::{Clue, Color, PartialSolution, Puzzle},
     solve::{
         conprop_picker::Picker,
@@ -14,6 +14,15 @@ use crate::{
         line_solve::Cell,
     },
 };
+
+/// Why `propagate` found the current branch impossible.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Conflict {
+    /// Line logic found no arrangement of this lane that fits the grid as it stands.
+    Lane(LaneIdx),
+    /// Every literal of this nogood (an index into `nogoods`) holds.
+    Nogood(usize),
+}
 
 #[derive(Clone)]
 struct Nogood {
@@ -248,10 +257,12 @@ impl<'p, C: Clue> ConpropState<'p, C> {
     }
 
     /// Applies linear logic and nogoods until everything possible is deduced. `Ok(true)` if a solution is found.
+    ///
+    /// On a `Conflict`, the grid is left as the conflict found it, so explain it before unwinding.
     fn propagate<'x, K: GridKind>(
         &mut self,
         linear_ctx: &mut SolveContext<'p, 'x, C, K>,
-    ) -> anyhow::Result<bool> {
+    ) -> Result<bool, Conflict> {
         let mut any_nogoods_fired = true;
         while any_nogoods_fired {
             any_nogoods_fired = false;
@@ -261,24 +272,29 @@ impl<'p, C: Clue> ConpropState<'p, C> {
                 .run_and_check_recording(linear_ctx, &mut self.trail);
             self.update_nogood_counters(self.trail.len());
 
-            linear_res?; // Had to update the counters first.
+            // Had to update the counters first.
+            linear_res.map_err(|contradiction| Conflict::Lane(contradiction.lane))?;
 
             for nogood_idx in 0..self.nogoods.len() {
                 self.update_nogood_counters(self.trail.len()); // Get it right before `deduction`.
 
                 let nogood = &mut self.nogoods[nogood_idx];
 
-                if let Some((cell_idx, is_not_color)) = nogood.deduction(&self.ll_state)? {
+                let deduction = nogood
+                    .deduction(&self.ll_state)
+                    .map_err(|_| Conflict::Nogood(nogood_idx))?;
+                if let Some((cell_idx, is_not_color)) = deduction {
                     any_nogoods_fired = true;
                     nogood.active = true;
 
                     let before = self.ll_state.grid[cell_idx];
-                    if self.ll_state.learn(
-                        linear_ctx,
-                        cell_idx,
-                        /*is=*/ false,
-                        is_not_color,
-                    )? {
+                    // An error here means the implication of the nogood contradicts what we 
+                    // already know.
+                    let learned = self
+                        .ll_state
+                        .learn(linear_ctx, cell_idx, /*is=*/ false, is_not_color)
+                        .map_err(|_| Conflict::Nogood(nogood_idx))?;
+                    if learned {
                         // Only when it actually moved: a no-op entry is a cell the trail claims
                         // changed when it didn't, and `update_nogood_counters` believes the trail.
                         self.trail.push((cell_idx, before));
@@ -403,12 +419,10 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             res.not_all_true.insert((cell_idx, color));
             res.current_false_count += 1;
 
-            let mut guess_res = exp_state.make_guess((cell_idx, color), linear_ctx);
-            if guess_res.is_ok() {
-                guess_res = exp_state.propagate(linear_ctx);
-            }
+            let guess_ok = exp_state.make_guess((cell_idx, color), linear_ctx).is_ok()
+                && exp_state.propagate(linear_ctx).is_ok();
 
-            if guess_res.is_err() {
+            if !guess_ok {
                 return (res, after_guess_idx);
             }
         }

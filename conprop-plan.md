@@ -185,7 +185,7 @@ This is the core idea. The existing clause is a disjunction over *decisions*, wh
 wide as the trail. A clause over *derived cell values* can be narrow, because it describes the local
 cause rather than the route taken.
 
-### [ ] 3.1 Record which lane a contradiction came from
+### [x] 3.1 Record which lane a contradiction came from
 
 Add `SolveState::last_lane: Option<LaneIdx>`, set just before each line solve. A contradiction
 arrives as an `Err` from deep inside the solve with no room to say where it came from.
