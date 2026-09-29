@@ -6,12 +6,12 @@ use anyhow::bail;
 use rand::{SeedableRng, rngs::StdRng};
 
 use crate::{
-    geometry::{CellIdx, GridKind, LaneIdx},
+    geometry::{CellIdx, GridKind, LaneIdx, LanePos},
     puzzle::{Clue, Color, PartialSolution, Puzzle},
     solve::{
         conprop_picker::Picker,
-        grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState},
-        line_solve::Cell,
+        grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState, gather_into},
+        line_solve::{Cell, exhaust_line},
     },
 };
 
@@ -288,7 +288,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
                     nogood.active = true;
 
                     let before = self.ll_state.grid[cell_idx];
-                    // An error here means the implication of the nogood contradicts what we 
+                    // An error here means the implication of the nogood contradicts what we
                     // already know.
                     let learned = self
                         .ll_state
@@ -313,16 +313,30 @@ impl<'p, C: Clue> ConpropState<'p, C> {
     ) -> Option<Report> {
         let state = self;
         let mut run_res = state.propagate(linear_ctx);
-        while run_res.is_err() {
+        while let Err(conflict) = run_res {
             if state.guesses_in_trail.is_empty() {
                 // We would create an empty nogood (which isn't supported),
                 // indicating an unsolvable puzzle.
                 return Some(state.no_guesses_left(puzzle));
             }
-            let (nogood, backjump_guess_idx) = state.make_nogood(linear_ctx);
+            // We get a nogood from the guesses...
+            let (guess_nogood, mut backjump_dest) = state.guess_is_nogood(linear_ctx);
+            state.add_nogood(guess_nogood);
 
-            state.add_nogood(nogood);
-            state.backjump(backjump_guess_idx, linear_ctx);
+            let lane_nogood = match conflict {
+                // ...and maybe another one from the line where the conflict happened:
+                Conflict::Lane(lane_idx) => state.line_is_nogood(lane_idx, linear_ctx),
+                Conflict::Nogood(_) => None,
+            };
+
+            if let Some((lane_nogood, asserting_at)) = lane_nogood {
+                state.add_nogood(lane_nogood);
+                if let Some(asserting_at) = asserting_at {
+                    // Both backjumps are valid; take the more aggressive one:
+                    backjump_dest = backjump_dest.min(asserting_at);
+                }
+            }
+            state.backjump(backjump_dest, linear_ctx);
 
             run_res = state.propagate(linear_ctx)
         }
@@ -384,14 +398,124 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         }
     }
 
+    /// Turn a contradiction derived at `lane_idx` into a nogood. (Or `None` if partial knowledge
+    /// in a color puzzle makes it hard.)
+    /// Also returns the backjump destination implied by the nogood (Or `None`)
+    ///
+    /// This should be called with the contradiction still in the grid.
+    fn line_is_nogood<'x, K: GridKind>(
+        &self,
+        lane_idx: LaneIdx,
+        linear_ctx: &SolveContext<'p, 'x, C, K>,
+    ) -> Option<(Nogood, Option<usize>)> {
+        let lane_cells = &linear_ctx.lane_map().lanes[lane_idx].cells;
+        let clues = self.ll_state.lanes[lane_idx].clues;
+
+        let contradicts = |lane: &[Cell]| exhaust_line(clues, &mut lane.to_vec()).is_err();
+
+        let mut now = vec![];
+        // TODO: we `pub`ed `gather_into` and `.clue` just for this function; can we be less ad-hoc?
+        gather_into(
+            linear_ctx.lane_map(),
+            lane_idx,
+            &self.ll_state.grid,
+            &mut now,
+        );
+        if !contradicts(&now) {
+            debug_assert!(false, "{lane_idx:?} was blamed, but it's satisfiable");
+            return None;
+        }
+
+        let mut probe = now.clone();
+
+        // We want to know the "root" state (unconditional knowledge); scan the trail to find what
+        // has changed since then.
+        // We also want to know what level (how many guesses) a literal is settled at.
+
+        // TODO: why isn't `first_guess_at` always 0?
+        let first_guess_at = self.guesses_in_trail.first()?.0;
+        let lane_pos_of: HashMap<CellIdx, usize> = lane_cells
+            .iter()
+            .enumerate()
+            .map(|(pos, &cell_idx)| (cell_idx, pos))
+            .collect();
+        let mut root = now.clone();
+        let mut settled_at: Vec<usize> = vec![0; now.len()];
+        for (trail_idx, &(cell_idx, old_value)) in
+            self.trail.iter().enumerate().skip(first_guess_at)
+        {
+            if let Some(&pos) = lane_pos_of.get(&cell_idx) {
+                if settled_at[pos] == 0 {
+                    // First place it got set: the root value was stored
+                    root[pos] = old_value;
+                }
+                settled_at[pos] = trail_idx;
+
+                // We can't express partial knowledge in nogoods, so erase partial knowledge...
+                if !probe[pos].is_known() {
+                    probe[pos] = root[pos];
+                }
+            }
+        }
+
+        // ...but if the partial knowledge was important, then we gotta give up:
+        if !contradicts(&probe) {
+            return None;
+        }
+
+        // Try putting each cell back to its root value...
+        for pos in 0..probe.len() {
+            if probe[pos] == root[pos] {
+                continue;
+            }
+            let prob_orig = probe[pos];
+            probe[pos] = root[pos];
+            if !contradicts(&probe) {
+                // ...oops; that was needed to get the contradiction!
+                probe[pos] = prob_orig;
+            }
+        }
+
+        let kept: Vec<usize> = (0..probe.len())
+            .filter(|&pos| probe[pos] != root[pos])
+            .collect();
+        // The root lane was consistent when we left it, so something must have survived.
+        debug_assert!(!kept.is_empty(), "{lane_idx:?} contradicts at the root");
+
+        // A literal's level is how many guesses came at or before the entry that settled it.
+        let mut levels: Vec<usize> = kept
+            .iter()
+            .map(|&pos| {
+                self.guesses_in_trail
+                    .partition_point(|&(guess_at, _)| guess_at <= settled_at[pos])
+            })
+            .collect();
+        levels.sort_unstable();
+        let asserting_at = match levels.as_slice() {
+            [.., second_deepest, deepest] if second_deepest < deepest => Some(*second_deepest),
+            [_] => Some(0),
+            _ => None,
+        };
+
+        let not_all_true: HashSet<(CellIdx, Color)> = kept
+            .iter()
+            .map(|&pos| (lane_cells[LanePos::from(pos)], probe[pos].unwrap_color()))
+            .collect();
+        let nogood = Nogood {
+            current_false_count: not_all_true.len(),
+            not_all_true,
+            active: false,
+        };
+        Some((nogood, asserting_at))
+    }
+
     /// Minimizes the tail of the `Nogood`, and returns an index (to `guesses_in_trail`) to backjump past,
     /// or `None` if all the guesses should be cleared.
-    fn make_nogood<'x, K: GridKind>(
+    fn guess_is_nogood<'x, K: GridKind>(
         &self,
         linear_ctx: &mut SolveContext<'p, 'x, C, K>,
     ) -> (Nogood, usize) {
-        // TODO: the close is expensive: we might want to try reusing `self` (and restoring it after)
-        // TODO: Claude thinks 1UIP is a better approach; investigate maybe.
+        // TODO: the clone is expensive: we might want to try reusing `self` (and restoring it after)
         let mut exp_state = self.clone();
         exp_state.backjump(0, linear_ctx); // Back to the root, to try a different order
         exp_state.pickers.clear(); // We'll be replaying guesses; don't need pickers.
@@ -781,7 +905,7 @@ mod tests {
     /// so its deduction lands in the same guess block. Any rewind that reaches the deduction has
     /// to reach that literal too, and `inform` clears the flag on the way past.
     ///
-    /// A nogood naming *one* cell has no other literal to lean on — and `make_nogood` returns one
+    /// A nogood naming *one* cell has no other literal to lean on — and `guess_is_nogood` returns one
     /// of those from both of its early exits, whenever a guess turns out to be wrong on its own.
     /// Its deduction says that cell *isn't* a color, which leaves the cell unknown, so
     /// `update_nogood_counters` walks straight past it (`known_or()` is `None`) and `inform` is
@@ -794,7 +918,7 @@ mod tests {
         let mut line_cache = None;
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
 
-        // "cell 0 is not Color(1)" — what `make_nogood` hands back for a guess that's wrong alone.
+        // "cell 0 is not Color(1)" — what `guess_is_nogood` hands back for a guess that's wrong alone.
         let literals = [(CellIdx(0), Color(1))];
         let mut state = scratch_state(&puzzle, &mut ctx, &literals);
 
@@ -889,5 +1013,81 @@ mod tests {
             "the cells guess 1 settled are still settled after backjumping past it"
         );
         assert_eq!(state.ll_state.cells_left, cells_left_before);
+    }
+
+    /// One lane of `len` cells, with a single clue of two `Color(1)`s.
+    fn one_clue_puzzle(colors: &[Color], len: usize) -> Puzzle<Nono, Square> {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        for &color in colors {
+            palette.insert(color, ColorInfo::default_fg(color));
+        }
+        Puzzle::single_lane(
+            palette,
+            len,
+            vec![Nono {
+                color: Color(1),
+                count: 2,
+            }],
+        )
+    }
+
+    /// `1 . _ . 1` against a clue of `2`: the ends can't both be in the one block. The background
+    /// in the middle is on the trail too, but the contradiction doesn't need it, so the nogood
+    /// shouldn't name it. And since its two literals come from different guesses, it asserts.
+    #[test]
+    fn a_lane_nogood_names_only_what_the_contradiction_needs() {
+        let puzzle = one_clue_puzzle(&[Color(1)], 5);
+        let options = SolveOptions::default();
+        let mut line_cache = None;
+        let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
+        let mut state = scratch_state(&puzzle, &mut ctx, &[]);
+
+        guess_onto_trail(&mut state, &mut ctx, CellIdx(0), Color(1));
+        learn_onto_trail(
+            &mut state,
+            &mut ctx,
+            CellIdx(2),
+            /*is=*/ true,
+            BACKGROUND,
+        );
+        guess_onto_trail(&mut state, &mut ctx, CellIdx(4), Color(1));
+        state.update_nogood_counters(state.trail.len());
+
+        let (nogood, asserting_at) = state.line_is_nogood(LaneIdx(0), &ctx).unwrap();
+        assert_eq!(
+            nogood.not_all_true,
+            HashSet::from([(CellIdx(0), Color(1)), (CellIdx(4), Color(1))])
+        );
+        assert_eq!(nogood.current_false_count, 2);
+        assert_eq!(
+            asserting_at,
+            Some(1),
+            "rewinding guess 1 leaves cell 0 in place, so the nogood forces cell 4"
+        );
+    }
+
+    /// `{1,2} . 1` against a clue of `2`: the only `Color(1)` block that fits cell 0 is `0..2`,
+    /// which misses cell 2. But "cell 0 isn't background" isn't something a literal can say, so
+    /// there's no lane nogood to learn.
+    #[test]
+    fn a_lane_nogood_cant_lean_on_a_merely_narrowed_cell() {
+        let puzzle = one_clue_puzzle(&[Color(1), Color(2)], 3);
+        let options = SolveOptions::default();
+        let mut line_cache = None;
+        let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
+        let mut state = scratch_state(&puzzle, &mut ctx, &[]);
+
+        guess_onto_trail(&mut state, &mut ctx, CellIdx(2), Color(1));
+        learn_onto_trail(
+            &mut state,
+            &mut ctx,
+            CellIdx(0),
+            /*is=*/ false,
+            BACKGROUND,
+        );
+        state.update_nogood_counters(state.trail.len());
+
+        assert!(state.line_is_nogood(LaneIdx(0), &ctx).is_none());
     }
 }

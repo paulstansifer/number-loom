@@ -197,7 +197,7 @@ candidate and yields a clause asserting a contradiction that does not exist. Min
 `webpbn-01694` and `color-01503` report `multiple` for uniquely-solvable puzzles. It fires on about 3
 of 211 and 7 of 54 conflicts — rare enough to miss, frequent enough to break things.
 
-### [ ] 3.2 Minimize a lane reason by deletion
+### [x] 3.2 Minimize a lane reason by deletion
 
 To explain a contradiction in lane L: take the cells of L that the trail narrowed since the root, and
 drop each in turn — restoring it to **its root state**, not to blank — re-running `exhaust_line` each
@@ -224,7 +224,7 @@ colour is sound but nearly worthless (it rules out one case and lets the others 
 1158 literals, affecting 74 of 369 reasons (20%). So: skip those conflicts and let the guess-based
 clause handle them alone. No new vocabulary needed.
 
-### [ ] 3.4 Learn the lane reason as an extra nogood
+### [x] 3.4 Learn the lane reason as an extra nogood
 
 Add it *alongside* the guess-based clause, which still decides the backjump.
 

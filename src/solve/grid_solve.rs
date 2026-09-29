@@ -117,7 +117,7 @@ impl Report {
 
 #[derive(Clone)]
 pub struct LaneState<'a, C: Clue> {
-    clues: &'a [C], // just convenience, since `lane` suffices to find it again
+    pub clues: &'a [C], // just convenience, since `lane` suffices to find it again
     /// Index into `LaneMap::lanes`.
     lane: LaneIdx,
     family: FamilyIdx,
@@ -188,7 +188,7 @@ impl<'a, C: Clue> LaneState<'a, C> {
 /// the copy itself is cheap and the *allocation* is not: skim-only puzzles do no scrubbing and
 /// keep no line cache, so this gather is the only per-step work of its size, and allocating for
 /// each one costs ~9% on such puzzles.
-fn gather_into(lane_map: &LaneMap, lane: LaneIdx, grid: &PartialSolution, buf: &mut Vec<Cell>) {
+pub fn gather_into(lane_map: &LaneMap, lane: LaneIdx, grid: &PartialSolution, buf: &mut Vec<Cell>) {
     buf.clear();
     buf.extend(lane_map.lanes[lane].cells.iter().map(|c| grid[*c]));
 }
