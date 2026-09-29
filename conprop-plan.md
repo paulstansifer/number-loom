@@ -244,7 +244,7 @@ standalone.
 
 Now make the clause asserting, which is what buys the deep backjump.
 
-### [ ] 4.1 Put a reason on every trail entry
+### [x] 4.1 Put a reason on every trail entry
 
 Change the trail element to carry `Decision | Lane(LaneIdx) | Nogood(usize)`. Line logic sets
 `Lane`, guesses set `Decision`, nogood deductions set `Nogood`. About 15 edit sites.

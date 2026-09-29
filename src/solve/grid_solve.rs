@@ -89,6 +89,24 @@ impl std::fmt::Display for Contradiction {
 
 impl std::error::Error for Contradiction {}
 
+/// Why a trail entry added information
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TrailReason {
+    /// Line logic on this lane.
+    Lane(LaneIdx),
+    /// A conprop nogood (an index into its `nogoods`) fired
+    Nogood(usize),
+    Guess,
+}
+
+/// One entry on an undo trail
+#[derive(Clone, Copy, Debug)]
+pub struct TrailStep {
+    pub cell_idx: CellIdx,
+    pub old_value: Cell,
+    pub reason: TrailReason,
+}
+
 pub struct Report {
     pub solve_counts: ModeMap<usize>,
     pub cells_left: usize,
@@ -597,7 +615,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn run_recording<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &mut Vec<(CellIdx, Cell)>,
+        trail: &mut Vec<TrailStep>,
     ) -> anyhow::Result<Step> {
         self.run_inner(ctx, Some(trail))
     }
@@ -605,7 +623,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     fn run_inner<E: Unsolvable, K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        mut trail: Option<&mut Vec<(CellIdx, Cell)>>,
+        mut trail: Option<&mut Vec<TrailStep>>,
     ) -> Result<Step, E> {
         loop {
             match self.step_inner(ctx, trail.as_deref_mut())? {
@@ -628,7 +646,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn run_and_check_recording<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &mut Vec<(CellIdx, Cell)>,
+        trail: &mut Vec<TrailStep>,
     ) -> Result<Step, Contradiction> {
         self.run_and_check_inner(ctx, Some(trail))
     }
@@ -636,7 +654,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     fn run_and_check_inner<E: Unsolvable, K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: Option<&mut Vec<(CellIdx, Cell)>>,
+        trail: Option<&mut Vec<TrailStep>>,
     ) -> Result<Step, E> {
         let res = self.run_inner(ctx, trail)?;
         // TODO: we can do this faster by only checking invalidated lines!
@@ -679,7 +697,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn step_recording<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &mut Vec<(CellIdx, Cell)>,
+        trail: &mut Vec<TrailStep>,
     ) -> anyhow::Result<Step> {
         self.step_inner(ctx, Some(trail))
     }
@@ -687,7 +705,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
     fn step_inner<E: Unsolvable, K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: Option<&mut Vec<(CellIdx, Cell)>>,
+        trail: Option<&mut Vec<TrailStep>>,
     ) -> Result<Step, E> {
         let puzzle = ctx.puzzle;
         let options = ctx.options;
@@ -766,7 +784,11 @@ impl<'p, C: Clue> SolveState<'p, C> {
 
         // We need what it *used* to be:
         if let Some(trail) = trail {
-            trail.extend(changes.iter().map(|&(cell, was)| (cell, was)));
+            trail.extend(changes.iter().map(|&(cell_idx, old_value)| TrailStep {
+                cell_idx,
+                old_value,
+                reason: TrailReason::Lane(solved_lane),
+            }));
         }
 
         // Fold the changes into every lane that holds one, so that nothing below — the trace, a
@@ -861,11 +883,16 @@ impl<'p, C: Clue> SolveState<'p, C> {
     pub fn unwind<K: GridKind>(
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &[(CellIdx, Cell)],
+        trail: &[TrailStep],
     ) {
         let lane_map = ctx.lane_map();
 
-        for &(cell, old_value) in trail.iter().rev() {
+        for &TrailStep {
+            cell_idx: cell,
+            old_value,
+            ..
+        } in trail.iter().rev()
+        {
             let narrowed = self.grid[cell];
             // Undo only ever widens: whatever the cell says now must be among what it used to.
             debug_assert_eq!(
@@ -1375,6 +1402,15 @@ mod tests {
         assert_eq!(solve_triangular(outline, &filled), 0);
     }
 
+    /// A trail entry for a fact the test asserts by hand, rather than one line logic derived.
+    fn guessed(cell_idx: CellIdx, old_value: Cell) -> TrailStep {
+        TrailStep {
+            cell_idx,
+            old_value,
+            reason: TrailReason::Guess,
+        }
+    }
+
     /// Guess, let line logic run with it, then rewind the trail and check that the state is
     /// indistinguishable from the one we guessed in. `unknown_cells` is checked for us: every
     /// `invalidate` debug-asserts it against a full walk of the lane.
@@ -1407,7 +1443,7 @@ mod tests {
 
         // The guess goes on the trail by hand — `learn` is the caller's own move, so record what
         // the cell held *before* making it — and `run_recording` appends the consequences.
-        let mut trail: Vec<(CellIdx, Cell)> = vec![(CellIdx(0), state.grid[CellIdx(0)])];
+        let mut trail = vec![guessed(CellIdx(0), state.grid[CellIdx(0)])];
         state.learn(&mut ctx, CellIdx(0), true, Color(1)).unwrap();
         assert_eq!(
             state.run_recording(&mut ctx, &mut trail).unwrap(),
@@ -1469,9 +1505,9 @@ mod tests {
         let stalled_cells_left = state.cells_left;
 
         // Filling both ends needs a run of five, so this can't be completed.
-        let mut trail: Vec<(CellIdx, Cell)> = vec![(CellIdx(0), state.grid[CellIdx(0)])];
+        let mut trail = vec![guessed(CellIdx(0), state.grid[CellIdx(0)])];
         state.learn(&mut ctx, CellIdx(0), true, Color(1)).unwrap();
-        trail.push((CellIdx(4), state.grid[CellIdx(4)]));
+        trail.push(guessed(CellIdx(4), state.grid[CellIdx(4)]));
         state.learn(&mut ctx, CellIdx(4), true, Color(1)).unwrap();
 
         assert!(
@@ -1509,10 +1545,10 @@ mod tests {
         assert_eq!(state.cells_left, 4);
 
         // Narrow one cell in two steps, recording the trail the way a solver would.
-        let mut trail = vec![(CellIdx(2), state.grid[CellIdx(2)])];
+        let mut trail = vec![guessed(CellIdx(2), state.grid[CellIdx(2)])];
         state.learn(&mut ctx, CellIdx(2), false, Color(2)).unwrap();
         assert!(!state.grid[CellIdx(2)].is_known()); // still {BACKGROUND, 1}
-        trail.push((CellIdx(2), state.grid[CellIdx(2)]));
+        trail.push(guessed(CellIdx(2), state.grid[CellIdx(2)]));
         state.learn(&mut ctx, CellIdx(2), true, Color(1)).unwrap();
         assert!(state.grid[CellIdx(2)].is_known_to_be(Color(1)));
         assert_eq!(state.cells_left, 3);

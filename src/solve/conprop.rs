@@ -10,7 +10,10 @@ use crate::{
     puzzle::{Clue, Color, PartialSolution, Puzzle},
     solve::{
         conprop_picker::Picker,
-        grid_solve::{LineCache, Report, SolveContext, SolveOptions, SolveState, gather_into},
+        grid_solve::{
+            LineCache, Report, SolveContext, SolveOptions, SolveState, TrailReason, TrailStep,
+            gather_into,
+        },
         line_solve::{Cell, exhaust_line},
     },
 };
@@ -91,8 +94,7 @@ impl Nogood {
     }
 }
 
-// TODO: there are a bunch of indices
-
+// TODO: there are a bunch of indices; maybe type them, too.
 #[derive(Clone)]
 pub struct ConpropState<'p, C: Clue> {
     nogoods: Vec<Nogood>,
@@ -101,7 +103,7 @@ pub struct ConpropState<'p, C: Clue> {
     pub vsids: HashMap<(CellIdx, Color), f32>,
     vsids_decay: u8,
 
-    trail: Vec<(CellIdx, Cell)>, // (cell_idx, old_value)
+    trail: Vec<TrailStep>,
 
     nogoods_updated_to: usize, // index into trail: where are the nogoods current up to?
     guesses_in_trail: Vec<(usize, Color)>, // (index into trail, guessed color)
@@ -153,7 +155,11 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             self.guesses_made += 1;
             self.guesses_in_trail.push((self.trail.len(), color));
             // TODO: fold the `trail` update in `.learn_new` ... if this wins out over `bt_solve`
-            self.trail.push((cell_idx, old_cell));
+            self.trail.push(TrailStep {
+                cell_idx,
+                old_value: old_cell,
+                reason: TrailReason::Guess,
+            });
         }
 
         Ok(res)
@@ -207,7 +213,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         let not_all_true: HashSet<(CellIdx, Color)> = self
             .guesses_in_trail
             .iter()
-            .map(|&(trail_idx, color)| (self.trail[trail_idx].0, color))
+            .map(|&(trail_idx, color)| (self.trail[trail_idx].cell_idx, color))
             .collect();
 
         Nogood {
@@ -231,7 +237,12 @@ impl<'p, C: Clue> ConpropState<'p, C> {
         };
 
         let mut cells_seen = HashSet::<CellIdx>::new();
-        for &(cell_idx, old_value) in &self.trail[range] {
+        for &TrailStep {
+            cell_idx,
+            old_value,
+            ..
+        } in &self.trail[range]
+        {
             if !cells_seen.insert(cell_idx) {
                 continue; // don't double-count! All we're doing here is seeing whether the cell became known
             }
@@ -297,7 +308,11 @@ impl<'p, C: Clue> ConpropState<'p, C> {
                     if learned {
                         // Only when it actually moved: a no-op entry is a cell the trail claims
                         // changed when it didn't, and `update_nogood_counters` believes the trail.
-                        self.trail.push((cell_idx, before));
+                        self.trail.push(TrailStep {
+                            cell_idx,
+                            old_value: before,
+                            reason: TrailReason::Nogood(nogood_idx),
+                        });
                     }
                 }
             }
@@ -441,8 +456,14 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             .collect();
         let mut root = now.clone();
         let mut settled_at: Vec<usize> = vec![0; now.len()];
-        for (trail_idx, &(cell_idx, old_value)) in
-            self.trail.iter().enumerate().skip(first_guess_at)
+        for (
+            trail_idx,
+            &TrailStep {
+                cell_idx,
+                old_value,
+                ..
+            },
+        ) in self.trail.iter().enumerate().skip(first_guess_at)
         {
             if let Some(&pos) = lane_pos_of.get(&cell_idx) {
                 if settled_at[pos] == 0 {
@@ -534,7 +555,7 @@ impl<'p, C: Clue> ConpropState<'p, C> {
             .chain(pfx_guesses.iter())
             .enumerate()
         {
-            let cell_idx = self.trail[guess_idx_in_trail].0;
+            let cell_idx = self.trail[guess_idx_in_trail].cell_idx;
             if exp_state.ll_state.grid[cell_idx].is_known_to_be(color) {
                 continue; // no need to guess what we already know
             }
@@ -686,7 +707,8 @@ mod tests {
         res
     }
 
-    /// Learn one fact, recording it on the trail the way the search does.
+    /// Learn one fact, recording it on the trail the way the search does. It's blamed on lane 0
+    /// (the only lane these puzzles have), though nothing here actually derives it.
     fn learn_onto_trail<'p>(
         state: &mut ConpropState<'p, Nono>,
         ctx: &mut SolveContext<'p, '_, Nono, Square>,
@@ -694,7 +716,22 @@ mod tests {
         is: bool,
         color: Color,
     ) {
-        state.trail.push((cell, state.ll_state.grid[cell]));
+        learn_onto_trail_because(state, ctx, cell, is, color, TrailReason::Lane(LaneIdx(0)));
+    }
+
+    fn learn_onto_trail_because<'p>(
+        state: &mut ConpropState<'p, Nono>,
+        ctx: &mut SolveContext<'p, '_, Nono, Square>,
+        cell: CellIdx,
+        is: bool,
+        color: Color,
+        reason: TrailReason,
+    ) {
+        state.trail.push(TrailStep {
+            cell_idx: cell,
+            old_value: state.ll_state.grid[cell],
+            reason,
+        });
         assert!(
             state.ll_state.learn(ctx, cell, is, color).unwrap(),
             "the test meant to learn something new about cell {cell:?}"
@@ -839,7 +876,14 @@ mod tests {
         color: Color,
     ) {
         state.guesses_in_trail.push((state.trail.len(), color));
-        learn_onto_trail(state, ctx, cell, /*is=*/ true, color);
+        learn_onto_trail_because(
+            state,
+            ctx,
+            cell,
+            /*is=*/ true,
+            color,
+            TrailReason::Guess,
+        );
     }
 
     /// A trail of two guesses, each followed by one consequence, so the guesses sit at trail
@@ -932,13 +976,14 @@ mod tests {
             "a one-cell nogood with nothing counted against it is unit"
         );
         state.nogoods[0].active = true;
-        state
-            .trail
-            .push((CellIdx(0), state.ll_state.grid[CellIdx(0)]));
-        state
-            .ll_state
-            .learn(&mut ctx, CellIdx(0), /*is=*/ false, Color(1))
-            .unwrap();
+        learn_onto_trail_because(
+            &mut state,
+            &mut ctx,
+            CellIdx(0),
+            /*is=*/ false,
+            Color(1),
+            TrailReason::Nogood(0),
+        );
         assert!(
             !state.ll_state.grid[CellIdx(0)].is_known(),
             "still {{bg, 2}}"
