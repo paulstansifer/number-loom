@@ -104,6 +104,7 @@ pub enum TrailReason {
 pub struct TrailStep {
     pub cell_idx: CellIdx,
     pub old_value: Cell,
+    pub level: usize, // number of guesses before it
     pub reason: TrailReason,
 }
 
@@ -784,9 +785,12 @@ impl<'p, C: Clue> SolveState<'p, C> {
 
         // We need what it *used* to be:
         if let Some(trail) = trail {
+            let level = trail.last().map(|te| te.level).unwrap_or(0); // Level only changes for guesses
+
             trail.extend(changes.iter().map(|&(cell_idx, old_value)| TrailStep {
                 cell_idx,
                 old_value,
+                level,
                 reason: TrailReason::Lane(solved_lane),
             }));
         }
@@ -1402,13 +1406,15 @@ mod tests {
         assert_eq!(solve_triangular(outline, &filled), 0);
     }
 
-    /// A trail entry for a fact the test asserts by hand, rather than one line logic derived.
-    fn guessed(cell_idx: CellIdx, old_value: Cell) -> TrailStep {
-        TrailStep {
+    /// Add a trail entry for a fact the test asserts by hand, rather than one line logic derived.
+    fn guess(trail: &mut Vec<TrailStep>, cell_idx: CellIdx, old_value: Cell) {
+        let level = trail.last().map(|t| t.level).unwrap_or(0);
+        trail.push(TrailStep {
             cell_idx,
             old_value,
+            level,
             reason: TrailReason::Guess,
-        }
+        });
     }
 
     /// Guess, let line logic run with it, then rewind the trail and check that the state is
@@ -1443,7 +1449,8 @@ mod tests {
 
         // The guess goes on the trail by hand — `learn` is the caller's own move, so record what
         // the cell held *before* making it — and `run_recording` appends the consequences.
-        let mut trail = vec![guessed(CellIdx(0), state.grid[CellIdx(0)])];
+        let mut trail = vec![];
+        guess(&mut trail, CellIdx(0), state.grid[CellIdx(0)]);
         state.learn(&mut ctx, CellIdx(0), true, Color(1)).unwrap();
         assert_eq!(
             state.run_recording(&mut ctx, &mut trail).unwrap(),
@@ -1505,9 +1512,10 @@ mod tests {
         let stalled_cells_left = state.cells_left;
 
         // Filling both ends needs a run of five, so this can't be completed.
-        let mut trail = vec![guessed(CellIdx(0), state.grid[CellIdx(0)])];
+        let mut trail = vec![];
+        guess(&mut trail, CellIdx(0), state.grid[CellIdx(0)]);
         state.learn(&mut ctx, CellIdx(0), true, Color(1)).unwrap();
-        trail.push(guessed(CellIdx(4), state.grid[CellIdx(4)]));
+        guess(&mut trail, CellIdx(4), state.grid[CellIdx(4)]);
         state.learn(&mut ctx, CellIdx(4), true, Color(1)).unwrap();
 
         assert!(
@@ -1545,10 +1553,11 @@ mod tests {
         assert_eq!(state.cells_left, 4);
 
         // Narrow one cell in two steps, recording the trail the way a solver would.
-        let mut trail = vec![guessed(CellIdx(2), state.grid[CellIdx(2)])];
+        let mut trail = vec![];
+        guess(&mut trail, CellIdx(2), state.grid[CellIdx(2)]);
         state.learn(&mut ctx, CellIdx(2), false, Color(2)).unwrap();
         assert!(!state.grid[CellIdx(2)].is_known()); // still {BACKGROUND, 1}
-        trail.push(guessed(CellIdx(2), state.grid[CellIdx(2)]));
+        guess(&mut trail, CellIdx(2), state.grid[CellIdx(2)]);
         state.learn(&mut ctx, CellIdx(2), true, Color(1)).unwrap();
         assert!(state.grid[CellIdx(2)].is_known_to_be(Color(1)));
         assert_eq!(state.cells_left, 3);

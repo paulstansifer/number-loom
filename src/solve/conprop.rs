@@ -111,7 +111,6 @@ pub struct ConpropState<'p, 'c, 'x, C: Clue, K: GridKind> {
     rng: StdRng, //Only used by the picker.
     pub ll_state: SolveState<'p, C>,
 
-    guesses_made: usize,
     // TODO: feed this to the picker, so it only picks things that contradict this
     solution_found: Option<PartialSolution>, // never actually "Partial", of course.
     /// Everything we know at the root (without assumptions) when a first solution is found.
@@ -133,7 +132,6 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
             ll_state,
             pickers: vec![],
             rng: StdRng::seed_from_u64(0),
-            guesses_made: 0,
             solution_found: None,
             root_knowledge: None,
         }
@@ -155,7 +153,6 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
             pickers: vec![],                                 // guesses will be made manually
             rng: self.rng.clone(),
             ll_state: self.ll_state.clone(),
-            guesses_made: self.guesses_made,
             solution_found: None, // irrelevant
             root_knowledge: None, // irrelevant
         };
@@ -174,12 +171,12 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
             .ll_state
             .learn(self.ctx, cell_idx, /*is*/ true, color)?;
         if res {
-            self.guesses_made += 1;
             self.guesses_in_trail.push((self.trail.len(), color));
             // TODO: fold the `trail` update in `.learn_new` ... if this wins out over `bt_solve`
             self.trail.push(TrailStep {
                 cell_idx,
                 old_value: old_cell,
+                level: self.guesses_in_trail.len(),
                 reason: TrailReason::Guess,
             });
         }
@@ -326,6 +323,7 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
                         self.trail.push(TrailStep {
                             cell_idx,
                             old_value: before,
+                            level: self.guesses_in_trail.len(),
                             reason: TrailReason::Nogood(nogood_idx),
                         });
                     }
@@ -425,6 +423,33 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         }
     }
 
+    /// Given that `probe` is contradictory, change as many entries as possible to `root` while keeping it contradictory.
+    /// Returns indices that had to be kept because they were load-bearing.
+    fn minimize_line_contradiction(probe: &mut [Cell], root: &[Cell], clues: &[C]) -> Vec<usize> {
+        let contradicts = |lane: &[Cell]| exhaust_line(clues, &mut lane.to_vec()).is_err();
+
+        // Try putting each cell back to its root value...
+        for pos in 0..probe.len() {
+            if probe[pos] == root[pos] {
+                continue;
+            }
+            let prob_orig = probe[pos];
+            probe[pos] = root[pos];
+            if !contradicts(&probe) {
+                // ...oops; that was needed to get the contradiction!
+                probe[pos] = prob_orig;
+            }
+        }
+
+        let kept: Vec<usize> = (0..probe.len())
+            .filter(|&pos| probe[pos] != root[pos])
+            .collect();
+        // The root lane was consistent when we left it, so something must have survived.
+        debug_assert!(!kept.is_empty(), "{root:?} contradicts at the root");
+
+        kept
+    }
+
     /// Turn a contradiction derived at `lane_idx` into a nogood. (Or `None` if partial knowledge
     /// in a color puzzle makes it hard.)
     /// Also returns the backjump destination implied by the nogood (Or `None`)
@@ -439,10 +464,11 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         let mut now = vec![];
         // TODO: we `pub`ed `gather_into` and `.clue` just for this function; can we be less ad-hoc?
         gather_into(self.ctx.lane_map(), lane_idx, &self.ll_state.grid, &mut now);
-        if !contradicts(&now) {
-            debug_assert!(false, "{lane_idx:?} was blamed, but it's satisfiable");
-            return None;
-        }
+
+        debug_assert!(
+            contradicts(&now),
+            "{lane_idx:?} was blamed, but it's satisfiable"
+        );
 
         let mut probe = now.clone();
 
@@ -487,38 +513,23 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
             return None;
         }
 
-        // Try putting each cell back to its root value...
-        for pos in 0..probe.len() {
-            if probe[pos] == root[pos] {
-                continue;
-            }
-            let prob_orig = probe[pos];
-            probe[pos] = root[pos];
-            if !contradicts(&probe) {
-                // ...oops; that was needed to get the contradiction!
-                probe[pos] = prob_orig;
-            }
-        }
-
-        let kept: Vec<usize> = (0..probe.len())
-            .filter(|&pos| probe[pos] != root[pos])
-            .collect();
-        // The root lane was consistent when we left it, so something must have survived.
-        debug_assert!(!kept.is_empty(), "{lane_idx:?} contradicts at the root");
+        let kept = Self::minimize_line_contradiction(&mut probe, &root, clues);
 
         // A literal's level is how many guesses came at or before the entry that settled it.
-        let mut levels: Vec<usize> = kept
+        let mut levels: Vec<(usize, usize)> = kept
             .iter()
-            .map(|&pos| {
-                self.guesses_in_trail
-                    .partition_point(|&(guess_at, _)| guess_at <= settled_at[pos])
-            })
+            .map(|&pos| (pos, self.trail[settled_at[pos]].level))
             .collect();
-        levels.sort_unstable();
-        let asserting_at = match levels.as_slice() {
-            [.., second_deepest, deepest] if second_deepest < deepest => Some(*second_deepest),
-            [_] => Some(0),
-            _ => None,
+        levels.sort_unstable_by_key(|(_lit, level)| *level);
+        let asserting_at = loop {
+            // In practice, this never succeeds the first time:
+            match levels.as_slice() {
+                [.., previous, last] if previous.1 < last.1 => break Some(previous.1),
+                [_] => break Some(0),
+                _ => {}
+            }
+
+            break None; // TODO
         };
 
         let not_all_true: HashSet<(CellIdx, Color)> = kept
@@ -726,6 +737,7 @@ mod tests {
         state.trail.push(TrailStep {
             cell_idx: cell,
             old_value: state.ll_state.grid[cell],
+            level: state.guesses_in_trail.len(), // it should be updated first!
             reason,
         });
         assert!(
