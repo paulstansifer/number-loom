@@ -1,4 +1,3 @@
-pub mod bt_solve;
 pub mod conprop;
 pub mod conprop_picker;
 pub mod grid_solve;

@@ -21,16 +21,11 @@ use crate::{
 pub struct SolveOptions {
     /// Trace each line-logic step (a lane attempted, what it learned).
     pub trace_solve: bool,
-    /// Trace the backtracking search (guesses, their consequences, and backing out of a bad one).
+    /// Trace the search (guesses, their consequences, and backing out of a bad one).
     pub trace_backtrack: bool,
     pub display_cli_progress: bool,
     pub only_solve_color: Option<Color>,
     pub max_effort: SolveMode,
-    /// How `bt_solve` decides where to guess, and in what rotation. Ignored by line logic,
-    /// which never guesses.
-    pub guess_picker: crate::solve::bt_solve::PickerMix,
-    /// How `bt_solve` orders its queue of hypotheses. Ignored by line logic, which has no queue.
-    pub node_scorer: crate::solve::bt_solve::ScorerPair,
     /// Stop as soon as any complete grid turns up, instead of going on to prove it is the only
     /// one. The answer is then only "a solution", not "the solution" -- an ambiguous puzzle
     /// reports whichever it happened to reach first, and says nothing about the others. For
@@ -46,8 +41,6 @@ impl Default for SolveOptions {
             display_cli_progress: false,
             only_solve_color: None,
             max_effort: SolveMode::Scrub,
-            guess_picker: crate::solve::bt_solve::PickerMix::default(),
-            node_scorer: crate::solve::bt_solve::ScorerPair::default(),
             stop_at_first_solution: false,
         }
     }
@@ -562,38 +555,6 @@ impl<'p, C: Clue> SolveState<'p, C> {
             grid,
             lanes,
             queues,
-            solve_counts: ModeMap::new_uniform(0),
-            allowed_failures: INITIAL_ALLOWED_FAILURES,
-        }
-    }
-
-    /// Rebuild a `SolveState` around a grid that's already fully quiesced.
-    /// `.run` won't do anything until something is invalidated.
-    pub fn resume<K: GridKind>(
-        ctx: &mut SolveContext<'p, '_, C, K>,
-        grid: PartialSolution,
-    ) -> SolveState<'p, C> {
-        let puzzle = ctx.puzzle;
-        let lane_map = ctx.lane_map();
-        let scratch = &mut ctx.scratch;
-
-        let mut lanes: TiVec<LaneIdx, LaneState<C>> = TiVec::new();
-        for family in lane_map.families() {
-            for (index_in_family, lane) in lane_map.family(family).enumerate() {
-                gather_into(lane_map, lane, &grid, &mut scratch.seed);
-                let clues = &puzzle.lines[lane];
-                let mut lane_state =
-                    LaneState::new(clues, lane_map, lane, index_in_family, &scratch.seed);
-                lane_state.queued = ModeMap::new_uniform(false);
-                lanes.push(lane_state);
-            }
-        }
-
-        SolveState {
-            cells_left: grid.iter().filter(|c| !c.is_known()).count(),
-            grid,
-            lanes,
-            queues: ModeMap::new_uniform(std::collections::VecDeque::new()),
             solve_counts: ModeMap::new_uniform(0),
             allowed_failures: INITIAL_ALLOWED_FAILURES,
         }

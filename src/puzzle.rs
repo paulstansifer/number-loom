@@ -564,7 +564,7 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
         backtrack: bool,
         options: &SolveOptions,
     ) -> anyhow::Result<crate::solve::grid_solve::Report> {
-        // TODO: there's no reason for `bt_solve` and `grid_solve` to have different interfaces like this
+        // TODO: there's no reason for `conprop` and `grid_solve` to have different interfaces like this
         if !backtrack {
             let mut partial: PartialSolution =
                 vec![

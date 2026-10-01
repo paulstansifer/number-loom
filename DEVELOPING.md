@@ -29,9 +29,8 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     solve/ - the automatic solver (as opposed to gui/solver.rs, the interactive solving view)
       line_solve.rs - quick ("skim") and exhaustive ("scrub") line-logic implementation
       grid_solve.rs - uses repeated line-logic to solve a puzzle
-      bt_solve.rs - backtracking search
-      bt_picking.rs - how to decide where to guess
-      bt_scoring.rs - how to decide which hypothesis to work on next
+      conprop.rs - backtracking search based on constraint propagation
+      conprop_picker.rs - how to decide where to guess
     geometry.rs - puzzle shapes: what cells exist, what lines they form, where they sit
     layout.rs - abstract drawing geometry (cell shapes, positions, grid lines, clue gutters)
     puzzle.rs - data structures
@@ -62,19 +61,9 @@ pointed at exactly the same puzzles. Build `pbnsolve` from source, then:
 cargo run --release --features bench-pbnsolve --bin bench-pbnsolve -- --pbnsolve /path/to/pbnsolve
 ```
 
-`--mode conprop` runs `solve/conprop.rs` -- one trail plus learned nogoods -- in place of the
-backtracker, against the same pbnsolve baseline, so its rows line up with `--mode backtrack`'s.
-
-`--mode backtrack` adds two knobs for the search itself: `--picker` (where to guess within a
-node; see `solve/bt_picking.rs`) and `--scorer` (which node to work on next; see
-`solve/bt_scoring.rs`). Both default to what `SolveOptions` ships, so leaving them off measures
-the solver as users get it.
-
-Both knobs take more than a single name. `--picker` takes a rotation — `disagreement:3,random:1`
-guesses three times one way and once the other, over and over. `--scorer` takes a *phase pair*,
-because the search has two jobs: until it holds a solution it is hunting for one, and after that
-it is proving no second one exists, and those don't want the same ordering. `progress/bfs` hunts
-with `Progress` and confirms with `Bfs`; a bare `--scorer baseline` uses one scorer for both.
+`--mode backtrack` benchmarks the search (`solve/conprop.rs`) instead of line logic, with both
+solvers proving the solution unique; `--mode first-solution` has both stop at the first solution
+they find.
 
 
 # The `WOVEN` format

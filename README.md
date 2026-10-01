@@ -68,7 +68,7 @@ Adding the `--backtrack` argument in the CLI or pressing the "Solve (backtrackin
 
 Nonogram solving is [NP-complete](https://en.wikipedia.org/wiki/NP-completeness): this means that it is possible to create not-too-huge puzzles that are nonetheless impractical to solve. Such puzzles are pretty rare, but be prepared to click "Stop" rather than waiting forever.
 
-Internally, Number Loom's backtracking solver works by alternatively making guesses and running the line-logic solver, keeping track of what guesses had what resulting grids; a guess that makes the puzzle impossible is a proof that the cell must be something else.
+Number Loom's backtracking solver is based on "constraint propagation": it alternates between making guesses and running the line-logic solver. When a contradiction is reached, it looks back to determine why that particular guess was impossible, gradually learning more "top-level" facts and building a library of known impossible combinations. Once one solution is found, it searches for a different solution; if this fails, it proves that the puzzle has one unique solution.
 
 ## GUI
 

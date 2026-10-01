@@ -1,6 +1,8 @@
 ## Changelog
 
 ## Future
+### Changed
+ - The tree-search backtracking solver has been replaced with a faster one based on constraint propagation.
 
 ## 0.6.0 - 2026-09-14
 ### Added

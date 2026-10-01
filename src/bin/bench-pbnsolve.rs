@@ -15,13 +15,9 @@
 //! to prove it unique: no `-u` for pbnsolve, `stop_at_first_solution` for ours. Comparing it
 //! against `--mode backtrack` says how much of a search is the hunt and how much the proof.
 //!
-//! `--mode conprop` swaps our side for `conprop_solve`, which searches one trail with a growing
-//! pile of nogoods instead of `backtrack_solve`'s tree of hypotheses. Both sides prove uniqueness,
-//! exactly as in `--mode backtrack`, so the two modes' rows are directly comparable.
-//!
 //! `--mode backtrack` benchmarks a smaller set than `--mode line` does: puzzles line logic
-//! finishes by itself never reach the backtracker's guessing, and the handful in `TOO_DIFFICULT`
-//! only ever spend `--loom-timeout` and report that they did. See `for_backtracking`.
+//! finishes by itself never reach the backtracker's guessing, the ones in `TOO_DIFFICULT`
+//! are skipped. See `for_backtracking`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,7 +27,6 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use number_loom::formats::webpbn::as_webpbn;
 use number_loom::puzzle::{DynPuzzle, PuzzleDynOps};
-use number_loom::solve::bt_solve::{PickerMix, ScorerPair, backtrack_solve};
 use number_loom::solve::conprop::conprop_solve;
 use number_loom::solve::grid_solve::SolveOptions;
 use number_loom::{import, with_puzzle};
@@ -40,21 +35,16 @@ use number_loom::{import, with_puzzle};
 enum Mode {
     /// `number-loom`'s line logic head-to-head against `pbnsolve`'s.
     Line,
-    /// `pbnsolve`'s search, on its own, as a baseline for the backtracker to beat. Both sides
-    /// prove the solution unique here (see `run_pbnsolve`'s `check_unique`).
+    /// `conprop_solve`'s search head-to-head against `pbnsolve`'s. Both sides prove the solution
+    /// unique here (see `run_pbnsolve`'s `check_unique`). (`conprop` is its old name.)
+    #[value(alias = "conprop")]
     Backtrack,
     /// `Backtrack`, but both sides stop at the first solution they find rather than proving it
     /// the only one. An ambiguous puzzle is fair game here -- whichever solution comes up first
     /// is an answer -- so the two modes' times aren't comparable puzzle-for-puzzle so much as in
     /// aggregate: what the proof half of the work costs.
+    #[value(alias = "conprop-first-solution")]
     FirstSolution,
-    /// `Backtrack`, but ours is `conprop_solve` -- one trail and a pile of nogoods -- instead of
-    /// `backtrack_solve`'s tree of hypotheses. Both sides prove the solution unique, so the
-    /// numbers line up column-for-column with `Backtrack`'s.
-    Conprop,
-    /// `Conprop` without the uniqueness proof, the way `FirstSolution` is `Backtrack` without it:
-    /// no `-u` for pbnsolve, `stop_at_first_solution` for ours.
-    ConpropFirstSolution,
 }
 
 impl Mode {
@@ -63,20 +53,15 @@ impl Mode {
         !matches!(self, Mode::Line)
     }
 
-    /// Whether our side is `conprop_solve` rather than `backtrack_solve`.
-    fn is_conprop(self) -> bool {
-        matches!(self, Mode::Conprop | Mode::ConpropFirstSolution)
-    }
-
     /// Whether our side stops at the first complete grid instead of proving it the only one.
     fn stops_early(self) -> bool {
-        matches!(self, Mode::FirstSolution | Mode::ConpropFirstSolution)
+        matches!(self, Mode::FirstSolution)
     }
 
     /// Whether both sides go on to prove the solution unique. `pbnsolve` needs `-u` to do that,
     /// and it has to be asked for exactly when our side is doing the same work.
     fn proves_unique(self) -> bool {
-        matches!(self, Mode::Backtrack | Mode::Conprop)
+        matches!(self, Mode::Backtrack)
     }
 }
 
@@ -117,34 +102,19 @@ struct Args {
     #[arg(long)]
     csv: Option<PathBuf>,
 
-    /// Seconds of wall clock to allow our own backtracker per puzzle, in backtrack mode. Unlike
-    /// pbnsolve's `-x`, this isn't a budget the solver honors: `backtrack_solve` has no deadline
+    /// Seconds of wall clock to allow our own search per puzzle, in backtrack mode. Unlike
+    /// pbnsolve's `-x`, this isn't a budget the solver honors: `conprop_solve` has no deadline
     /// or guess limit to hand it, so the only way to stop one is to kill the process running it.
-    /// That is also why it runs out-of-process (see `run_loom_backtrack`), and why this default
-    /// is much shorter than `--timeout`: a search that doesn't terminate allocates a fresh copy
-    /// of the grid per node the whole time it runs.
+    /// That is also why it runs out-of-process (see `run_loom_backtrack`).
     #[arg(long, default_value_t = 10)]
     loom_timeout: u64,
-
-    /// Which guessing heuristic our backtracker uses, in backtrack mode. Takes a rotation as
-    /// well as a single name: `disagreement:3,random:1` guesses three times one way and once the
-    /// other, over and over. Defaults to whatever `SolveOptions` does, so that the benchmark
-    /// measures the solver as shipped.
-    #[arg(long)]
-    picker: Option<PickerMix>,
 
     /// In backtrack mode, benchmark the puzzles in `TOO_DIFFICULT` as well. Off by default: each
     /// of them costs a full `--loom-timeout` and reports nothing but that it ran out.
     #[arg(long)]
     include_difficult: bool,
 
-    /// Which node-scoring function orders our backtracker's queue, in backtrack mode. Takes a
-    /// phase pair as well as a single name: `progress/bfs` hunts for a solution one way and
-    /// proves it unique the other. Defaults to whatever `SolveOptions` does.
-    #[arg(long)]
-    scorer: Option<ScorerPair>,
-
-    /// Not for humans: solve one puzzle with `backtrack_solve` and print a line of counters. The
+    /// Not for humans: solve one puzzle with `conprop_solve` and print a line of counters. The
     /// benchmark re-runs itself this way to bound a search it can't otherwise interrupt.
     #[arg(long, hide = true)]
     solve_backtrack: Option<PathBuf>,
@@ -153,11 +123,6 @@ struct Args {
     /// once it has a grid instead of going on to prove it unique.
     #[arg(long, hide = true)]
     first_solution: bool,
-
-    /// Not for humans: what `--mode conprop` hands its child, so the child runs `conprop_solve`
-    /// rather than `backtrack_solve`.
-    #[arg(long, hide = true)]
-    conprop: bool,
 }
 
 impl Args {
@@ -484,7 +449,7 @@ fn run_number_loom(puzzle: &DynPuzzle, reps: u32) -> anyhow::Result<LoomRun> {
 
 /// What our own backtracker did with one puzzle.
 struct LoomBt {
-    /// Wall clock around the `backtrack_solve` call in the child, parsing excluded — the same
+    /// Wall clock around the `conprop_solve` call in the child, parsing excluded — the same
     /// thing `pbnsolve`'s `Processing Time` measures.
     seconds: f64,
     /// `unique`, `multiple`, or `contradiction`.
@@ -494,41 +459,18 @@ struct LoomBt {
     scrubs: usize,
 }
 
-/// The `--solve-backtrack` half of the binary: one puzzle, one `backtrack_solve`, one line of
+/// The `--solve-backtrack` half of the binary: one puzzle, one `conprop_solve`, one line of
 /// counters on stdout for the parent to read back. Nothing here touches `pbnsolve`.
-fn solve_backtrack_child(
-    path: &Path,
-    picker: PickerMix,
-    scorer: ScorerPair,
-    first_solution: bool,
-    conprop: bool,
-) -> anyhow::Result<()> {
+fn solve_backtrack_child(path: &Path, first_solution: bool) -> anyhow::Result<()> {
     let mut document = import::load_path(&path.to_path_buf(), None)
         .with_context(|| format!("couldn't load {}", path.display()))?;
     let options = SolveOptions {
-        guess_picker: picker,
-        node_scorer: scorer,
         stop_at_first_solution: first_solution,
         ..SolveOptions::default()
     };
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
     let start = Instant::now();
-    let outcome = if conprop {
-        with_puzzle!(document.puzzle(), |p| conprop_solve(p, &options))
-    } else {
-        with_puzzle!(document.puzzle(), |p| {
-            rt.block_on(backtrack_solve(
-                p,
-                &options,
-                std::sync::mpsc::channel().0,
-                std::sync::mpsc::channel().1,
-            ))
-        })
-    };
+    let outcome = with_puzzle!(document.puzzle(), |p| conprop_solve(p, &options));
     let seconds = start.elapsed().as_secs_f64();
 
     // `LOOM` prefixed so a stray line from anywhere else can't be mistaken for the report.
@@ -576,22 +518,18 @@ fn parse_loom_backtrack(stdout: &str) -> anyhow::Result<LoomBt> {
     })
 }
 
-/// Runs `backtrack_solve` on one puzzle in a child copy of this binary, killed if it overruns
+/// Runs `conprop_solve` on one puzzle in a child copy of this binary, killed if it overruns
 /// `--loom-timeout`.
 ///
 /// Out-of-process because there is no other way to stop it. `pbnsolve` polices itself with `-x`;
-/// `backtrack_solve` takes no deadline and exposes no guess budget, and this call blocks the one
+/// `conprop_solve` takes no deadline and exposes no guess budget, and this call blocks the one
 /// thread driving it rather than polling it alongside a timer, so an in-process call that doesn't
-/// converge takes the whole sweep down with it — and it allocates a clone of the solve state per
-/// search node while it does, so a thread abandoned to run in the background would exhaust memory
-/// rather than merely waste a core. A child can just be killed.
+/// converge takes the whole sweep down with it, and a thread abandoned to run in the background
+/// would go on eating a core and piling up nogoods. A child can just be killed.
 fn run_loom_backtrack(
     puzzle: &Path,
-    picker: &PickerMix,
-    scorer: ScorerPair,
     timeout: u64,
     first_solution: bool,
-    conprop: bool,
 ) -> Result<LoomBt, PbnFailure> {
     let exe = std::env::current_exe().map_err(|e| PbnFailure::Crashed(e.to_string()))?;
 
@@ -601,17 +539,10 @@ fn run_loom_backtrack(
     command
         .arg("--pbnsolve")
         .arg(std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/")))
-        .arg("--picker")
-        .arg(picker.to_string())
-        .arg("--scorer")
-        .arg(scorer.to_string())
         .arg("--solve-backtrack")
         .arg(puzzle);
     if first_solution {
         command.arg("--first-solution");
-    }
-    if conprop {
-        command.arg("--conprop");
     }
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -832,13 +763,7 @@ fn main() -> anyhow::Result<()> {
 
     // The child half of `run_loom_backtrack`: solve one puzzle and say nothing else.
     if let Some(puzzle) = &args.solve_backtrack {
-        return solve_backtrack_child(
-            puzzle,
-            args.picker.clone().unwrap_or_default(),
-            args.scorer.unwrap_or_default(),
-            args.first_solution,
-            args.conprop,
-        );
+        return solve_backtrack_child(puzzle, args.first_solution);
     }
 
     if !args.pbnsolve.is_file() {
@@ -954,15 +879,8 @@ fn bench_one(
             pbn,
             // `path`, not `xml`: our own loader reads every format, and converting first would
             // hand the backtracker a puzzle that had made a round trip through webpbn.
-            loom: run_loom_backtrack(
-                path,
-                &args.picker.clone().unwrap_or_default(),
-                args.scorer.unwrap_or_default(),
-                args.loom_timeout,
-                args.mode.stops_early(),
-                args.mode.is_conprop(),
-            )
-            .map_err(|f| f.label()),
+            loom: run_loom_backtrack(path, args.loom_timeout, args.mode.stops_early())
+                .map_err(|f| f.label()),
         }),
     }
 }
@@ -1091,7 +1009,7 @@ fn print_backtrack_table(rows: &[Row]) {
         .unwrap_or(20)
         .max(8);
 
-    // `backtrack_solve` counts no guesses or backtracks of its own yet, so pbnsolve's two search
+    // `conprop_solve` counts no guesses or backtracks of its own yet, so pbnsolve's two search
     // counters have no column to sit beside; what it does report is skims and scrubs, the same
     // pair line mode shows.
     //

@@ -1,12 +1,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::mpsc;
 
 use typed_index_collections::TiVec;
 
 use anyhow::bail;
 use rand::{SeedableRng, rngs::StdRng};
+use web_time::{Duration, Instant};
 
 use crate::{
     geometry::{CellIdx, GridKind, LaneIdx, LanePos},
+    gui,
     puzzle::{Clue, Color, PartialSolution, Puzzle},
     solve::{
         conprop_picker::Picker,
@@ -172,7 +175,7 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
             .learn(self.ctx, cell_idx, /*is*/ true, color)?;
         if res {
             self.guesses_in_trail.push((self.trail.len(), color));
-            // TODO: fold the `trail` update in `.learn_new` ... if this wins out over `bt_solve`
+            // TODO: fold the `trail` update in `.learn_new`
             self.trail.push(TrailStep {
                 cell_idx,
                 old_value: old_cell,
@@ -334,14 +337,17 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         Ok(self.ll_state.cells_left == 0)
     }
 
-    fn propagate_and_learn(&mut self) -> Option<Report> {
+    /// `Ok(Some(_))` if the search is over, `Err(_)` if there's no solution.
+    fn propagate_and_learn(&mut self) -> anyhow::Result<Option<Report>> {
         let puzzle = self.ctx.puzzle;
         let mut run_res = self.propagate();
         while let Err(conflict) = run_res {
             if self.guesses_in_trail.is_empty() {
-                // We would create an empty nogood (which isn't supported),
-                // indicating an unsolvable puzzle.
-                return Some(self.no_guesses_left());
+                // Root is contradictory!
+                if self.solution_found.is_some() {
+                    return Ok(Some(self.no_guesses_left())); // ...so the first solution is unique
+                }
+                bail!("puzzle has no solutions"); // ...so there's no solution at all
             }
 
             let nogood_and_dest = match conflict {
@@ -378,38 +384,35 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
                 );
 
                 // Multiple valid solutions: report our snapshot of the cells we proved.
-                let (grid, cells_left) = self
-                    .root_knowledge
-                    .as_ref()
-                    .expect("a first solution always leaves its root behind");
-                return Some(Report::from_grid(
+                let (grid, cells_left) = self.root_knowledge.as_ref().unwrap();
+                return Ok(Some(Report::from_grid(
                     puzzle,
                     grid,
                     *cells_left,
                     self.ll_state.solve_counts,
-                ));
+                )));
             }
             // Record first solution:
             self.solution_found = Some(self.ll_state.grid.clone());
 
             if self.ctx.options.stop_at_first_solution {
                 // `cells_left` is a bit of a lie, since we don't know the solution is unique
-                return Some(Report::from_grid(
+                return Ok(Some(Report::from_grid(
                     puzzle,
                     &self.ll_state.grid,
                     /*cells_left=*/ 0,
                     self.ll_state.solve_counts,
-                ));
+                )));
             }
 
             if self.guesses_in_trail.is_empty() {
                 // Nice, no guesses outstanding. We know it's unique.
-                return Some(Report::from_grid(
+                return Ok(Some(Report::from_grid(
                     puzzle,
                     &self.ll_state.grid,
                     /*cells_left=*/ 0,
                     self.ll_state.solve_counts,
-                ));
+                )));
             }
 
             // Move the goalposts: now try to find a second solution.
@@ -423,7 +426,7 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
 
             return self.propagate_and_learn();
         } else {
-            return None; // No solution, no error.
+            return Ok(None); // No solution, no error.
         }
     }
 
@@ -695,6 +698,38 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         panic!("Should've re-found that contradiction");
     }
 
+    /// Make one guess and then do `propagate_and_learn`.
+    fn guess_once(&mut self) -> anyhow::Result<Option<Report>> {
+        let puzzle = self.ctx.puzzle;
+        // Lazily make new pickers so we can do it *after* propagation:
+        if self.pickers.len() <= self.guesses_in_trail.len() {
+            assert_eq!(
+                self.pickers.len(),
+                self.guesses_in_trail.len(),
+                "We should only ever be one picker short!"
+            );
+            let new_picker =
+                Picker::from_situation(puzzle, &self.ll_state.grid, &self.vsids, &mut self.rng);
+            self.pickers.push(new_picker);
+        }
+
+        let picker = self.pickers.last_mut().unwrap();
+        let Some((cell_idx, color)) = picker.pick(puzzle, &self.ll_state.grid, &self.vsids) else {
+            assert!(self.guesses_in_trail.is_empty());
+            return Ok(Some(self.no_guesses_left()));
+        };
+
+        if self.ctx.options.trace_backtrack {
+            println!("Making guess ({cell_idx:?}, {color:?})");
+        }
+
+        if !self.make_guess((cell_idx, color)).is_ok_and(|b| b) {
+            return Ok(None); // Skip impossible or already-known picks
+        }
+
+        self.propagate_and_learn()
+    }
+
     /// We have tried everything.
     /// (The trail isn't necessarily empty when this is called: a root-level nogood deduction is
     /// on it too, and it stays there when the last guess comes off.)
@@ -723,6 +758,19 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
 
 // TODO: we should really fix the grid solver to use the cache when trying to skim. Might help performance!
 
+/// Get the state after line logic is done.
+fn initial_state<'p, C: Clue, K: GridKind>(
+    ctx: &mut SolveContext<'p, '_, C, K>,
+) -> anyhow::Result<SolveState<'p, C>> {
+    let puzzle = ctx.puzzle;
+    let mut linear_state = SolveState::new(
+        ctx,
+        vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into(),
+    );
+    linear_state.run_and_check(ctx)?;
+    Ok(linear_state)
+}
+
 pub fn conprop_solve<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     options: &SolveOptions,
@@ -735,49 +783,81 @@ pub fn conprop_solve<C: Clue, K: GridKind>(
     };
 
     let mut linear_ctx = SolveContext::new(puzzle, &mut line_cache, &options);
-    let mut linear_state = SolveState::new(
-        &mut linear_ctx,
-        vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into(),
-    );
-    linear_state.run_and_check(&mut linear_ctx)?; // `?` because contradictions here are "real"
-
+    let linear_state = initial_state(&mut linear_ctx)?;
     if linear_state.cells_left == 0 {
-        // let _ = ctx.progress.send(1.0);
         return Ok(linear_state.report(puzzle)); // No fancy stuff required!
     }
 
     let mut state = ConpropState::new(&mut linear_ctx, linear_state);
-
     loop {
-        // Lazily make new pickers so we can do it *after* propagation:
-        if state.pickers.len() <= state.guesses_in_trail.len() {
-            assert_eq!(
-                state.pickers.len(),
-                state.guesses_in_trail.len(),
-                "We should only ever be one picker short!"
-            );
-            let new_picker =
-                Picker::from_situation(puzzle, &state.ll_state.grid, &state.vsids, &mut state.rng);
-            state.pickers.push(new_picker);
-        }
-
-        let picker = state.pickers.last_mut().unwrap();
-        let Some((cell_idx, color)) = picker.pick(puzzle, &state.ll_state.grid, &state.vsids)
-        else {
-            assert!(state.guesses_in_trail.is_empty());
-            return Ok(state.no_guesses_left());
-        };
-
-        if state.ctx.options.trace_backtrack {
-            println!("Making guess ({cell_idx:?}, {color:?})");
-        }
-
-        if !state.make_guess((cell_idx, color)).is_ok_and(|b| b) {
-            continue; // Skip impossible or already-known picks
-        }
-
-        if let Some(report) = state.propagate_and_learn() {
+        if let Some(report) = state.guess_once()? {
             return Ok(report);
+        }
+    }
+}
+
+/// `conprop_solve`, for running in the background in a GUI. It reports progress and yeilds occasionally.
+pub async fn conprop_solve_in_background<C: Clue, K: GridKind>(
+    puzzle: &Puzzle<C, K>,
+    options: &SolveOptions,
+    progress: mpsc::Sender<f32>,
+    terminate: mpsc::Receiver<()>,
+) -> anyhow::Result<Report> {
+    const TIME_BETWEEN_YIELDS: Duration = Duration::from_millis(20);
+
+    let mut line_cache: Option<LineCache<C>> = Some(LineCache::new());
+
+    let options = SolveOptions {
+        display_cli_progress: false,
+        ..options.clone()
+    };
+
+    let total_cells = puzzle.geometry.cell_count();
+    // Never exactly 0.0: the GUI takes that to mean nothing is running. (TODO?)
+    let report_progress = |cells_left: usize| {
+        let done = (total_cells - cells_left) as f32 / total_cells as f32;
+        let _ = progress.send(done.max(0.01));
+    };
+
+    // Any finish, even an error, has to say so, or the GUI will think it's still running (TODO).
+    let finished = || {
+        let _ = progress.send(1.0);
+    };
+
+    let mut linear_ctx = SolveContext::new(puzzle, &mut line_cache, &options);
+    let linear_state = initial_state(&mut linear_ctx).inspect_err(|_| finished())?;
+    if linear_state.cells_left == 0 {
+        finished();
+        return Ok(linear_state.report(puzzle));
+    }
+
+    let mut root_cells_left = linear_state.cells_left;
+    report_progress(root_cells_left);
+
+    let mut state = ConpropState::new(&mut linear_ctx, linear_state);
+    let mut last_yield = Instant::now();
+    loop {
+        // Only what's known with no guesses outstanding is progress: anything else might still be
+        // unwound. And once a first solution is in, even the root assumes it's the wrong one.
+        if state.guesses_in_trail.is_empty()
+            && state.solution_found.is_none()
+            && state.ll_state.cells_left < root_cells_left
+        {
+            root_cells_left = state.ll_state.cells_left;
+            report_progress(root_cells_left);
+        }
+
+        if last_yield.elapsed() > TIME_BETWEEN_YIELDS {
+            gui::yield_now().await;
+            if terminate.try_recv().is_ok() {
+                anyhow::bail!("search cancelled");
+            }
+            last_yield = Instant::now();
+        }
+
+        if let Some(outcome) = state.guess_once().transpose() {
+            finished();
+            return outcome;
         }
     }
 }
@@ -788,8 +868,9 @@ mod tests {
 
     use std::collections::HashMap;
 
-    use crate::geometry::Square;
-    use crate::puzzle::{BACKGROUND, ColorInfo, Nono};
+    use crate::geometry::{Geometry, Outline, Rect, Square, Tri};
+    use crate::import::{bw_palette, solution_to_puzzle, solution_to_tri_puzzle};
+    use crate::puzzle::{BACKGROUND, ClueStyle, ColorInfo, Nono, Solution};
 
     /// Three colors and no clues at all, so nothing narrows a cell except what a test says to.
     fn scratch_puzzle() -> Puzzle<Nono, Square> {
@@ -1269,5 +1350,271 @@ mod tests {
             Some(0),
             "back to the root, where it rules out `g`"
         );
+    }
+
+    // End-to-end tests: whole puzzles through `conprop_solve`.
+
+    /// A picture, written a row at a time: `.` is the background, and every other character is a
+    /// foreground color, numbered in the order the characters first appear. The palette is built
+    /// to match, so a two-character picture is black and white and a three-character one isn't.
+    /// `Solution`'s cells are row-major, so the rows go in exactly as written.
+    fn picture(rows: &[&str]) -> Solution<Square> {
+        let width = rows[0].len();
+        assert!(rows.iter().all(|r| r.len() == width), "ragged picture");
+
+        let mut palette = HashMap::from([(BACKGROUND, ColorInfo::default_bg())]);
+        let mut seen: Vec<char> = vec![];
+        let cells = rows
+            .iter()
+            .flat_map(|row| row.chars())
+            .map(|ch| {
+                if ch == '.' {
+                    return BACKGROUND;
+                }
+                let which = seen.iter().position(|c| *c == ch).unwrap_or_else(|| {
+                    seen.push(ch);
+                    seen.len() - 1
+                });
+                let color = Color(which as u8 + 1);
+                palette.entry(color).or_insert(ColorInfo::default_fg(color));
+                color
+            })
+            .collect();
+
+        Solution::new(
+            ClueStyle::Nono,
+            palette,
+            Geometry::new(Rect {
+                width,
+                height: rows.len(),
+            }),
+            cells,
+        )
+    }
+
+    /// The 16-cell triddler from `webpbn_tridder.md`, in rows of 5, 6, and 5 — written the way
+    /// `picture` writes a square one, since a triddler's cells are dense in row order too and so
+    /// the rows simply concatenate. Black and white only; the point here is the shape.
+    fn tri_picture(rows: &[&str; 3]) -> Solution<Tri> {
+        let geometry = Geometry::<Tri>::new(Outline {
+            a: (0, 2),
+            b: (1, 3),
+            c: (-1, 2),
+        });
+        let cells: Vec<Color> = rows
+            .iter()
+            .flat_map(|row| row.chars())
+            .map(|ch| if ch == '.' { BACKGROUND } else { Color(1) })
+            .collect();
+        assert_eq!(
+            cells.len(),
+            geometry.cell_count(),
+            "wrong number of cells for this outline"
+        );
+        Solution::new(ClueStyle::Nono, bw_palette(), geometry, cells.into())
+    }
+
+    /// One lane's worth of `Nono` clues, all in `Color(1)`, for the tests that write clues out
+    /// directly instead of deriving them from a picture.
+    fn runs(counts: &[u16]) -> Vec<Nono> {
+        counts
+            .iter()
+            .map(|count| Nono {
+                color: Color(1),
+                count: *count,
+            })
+            .collect()
+    }
+
+    /// The picture a solved report describes, rendered the way `picture` reads one — so a solved
+    /// report can be compared straight against the rows that built the puzzle.
+    fn rendered(report: &Report, width: usize) -> Vec<String> {
+        report
+            .solution
+            .cells()
+            .chunks(width)
+            .map(|row| {
+                row.iter()
+                    .map(|c| ".#o".chars().nth(c.0 as usize).expect("too many colors"))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// How many cells line logic alone leaves unknown, so a test can check it really needs the
+    /// search. If line logic gets smarter, these stop testing the search.
+    fn line_logic_cells_left<C: Clue, K: GridKind>(puzzle: &Puzzle<C, K>) -> usize {
+        let mut grid: PartialSolution =
+            vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
+        crate::solve::grid_solve::line_logic_solve(
+            puzzle,
+            &mut None,
+            &SolveOptions::default(),
+            &mut grid,
+        )
+        .unwrap()
+        .cells_left
+    }
+
+    /// A hollow box: line logic alone finishes it, so the search should never start.
+    #[test]
+    fn a_line_solvable_puzzle_needs_no_search() {
+        let want = ["#####", "#...#", "#...#", "#...#", "#####"];
+        let puzzle = solution_to_puzzle(&picture(&want));
+
+        let report = conprop_solve(&puzzle, &SolveOptions::default()).unwrap();
+        assert_eq!(report.cells_left, 0, "this puzzle has exactly one solution");
+        assert_eq!(rendered(&report, 5), want);
+    }
+
+    /// Line logic stalls on this one with 18 of its 25 cells unknown. One guess in the
+    /// upper-left-hand corner is sufficient to solve it.
+    #[test]
+    fn a_puzzle_that_needs_a_guess() {
+        let want = ["..###", "..#.#", "##...", "....#", ".##.."];
+        let puzzle = solution_to_puzzle(&picture(&want));
+        assert_eq!(line_logic_cells_left(&puzzle), 18);
+
+        let report = conprop_solve(&puzzle, &SolveOptions::default()).unwrap();
+        assert_eq!(report.cells_left, 0, "this puzzle has exactly one solution");
+        assert_eq!(rendered(&report, 5), want);
+    }
+
+    /// Bigger, and stalled harder: line logic gets 17 of 49 cells and the rest have to be
+    /// guessed, so the search has to go several levels deep and back out again rather than
+    /// getting there on one lucky assumption.
+    #[test]
+    fn a_puzzle_that_needs_several_guesses() {
+        let want = [
+            "...##..", ".#.#...", "##..##.", "..##.##", "##.....", "#..#..#", ".##.#.#",
+        ];
+        let puzzle = solution_to_puzzle(&picture(&want));
+        assert_eq!(line_logic_cells_left(&puzzle), 32);
+
+        let report = conprop_solve(&puzzle, &SolveOptions::default()).unwrap();
+        assert_eq!(report.cells_left, 0, "this puzzle has exactly one solution");
+        assert_eq!(rendered(&report, 7), want);
+    }
+
+    /// Three colors, so ruling a cell out doesn't settle it: a nogood's deduction has to leave two
+    /// possibilities standing where a black-and-white puzzle would be left with one.
+    #[test]
+    fn a_multicolor_puzzle_that_needs_a_guess() {
+        let want = [".##..", "oo.#.", "o..#o", "o...o", "##..#"];
+        let puzzle = solution_to_puzzle(&picture(&want));
+        assert_eq!(
+            puzzle.palette.len(),
+            3,
+            "background and two foreground colors"
+        );
+
+        let report = conprop_solve(&puzzle, &SolveOptions::default()).unwrap();
+        assert_eq!(report.cells_left, 0, "this puzzle has exactly one solution");
+        assert_eq!(rendered(&report, 5), want);
+    }
+
+    /// Clues with no picture behind them at all — but every lane is satisfiable on its own, and
+    /// the row and column totals even agree, so line logic runs out of things to say with 16
+    /// cells still unknown rather than reporting a contradiction. Only the search can find out.
+    #[test]
+    fn a_puzzle_with_no_solution_is_an_error() {
+        let puzzle = Puzzle::square(
+            bw_palette(),
+            vec![runs(&[]), runs(&[1]), runs(&[2]), runs(&[2]), runs(&[2])],
+            vec![
+                runs(&[2]),
+                runs(&[1, 1]),
+                runs(&[1, 1]),
+                runs(&[1]),
+                runs(&[]),
+            ],
+        );
+        assert_eq!(line_logic_cells_left(&puzzle), 16);
+
+        assert!(conprop_solve(&puzzle, &SolveOptions::default()).is_err());
+    }
+
+    /// The search is generic over the grid shape, and a triddler is the part of that generality a
+    /// square puzzle can't reach: three clue directions instead of two, and lanes of differing
+    /// lengths that meet in places no row-and-column shortcut would predict. Line logic gets 6 of
+    /// these 16 cells and stops.
+    #[test]
+    fn a_triddler_that_needs_a_guess() {
+        let want = [".#..#", "..##..", "....."];
+        let puzzle = solution_to_tri_puzzle(&tri_picture(&want));
+        assert_eq!(line_logic_cells_left(&puzzle), 10);
+
+        let report = conprop_solve(&puzzle, &SolveOptions::default()).unwrap();
+        assert_eq!(report.cells_left, 0, "this puzzle has exactly one solution");
+        // The lanes are ragged, so `rendered`'s fixed-width rows don't apply; compare against the
+        // picture the clues came from instead.
+        assert_eq!(report.solution.cells(), tri_picture(&want).cells);
+    }
+
+    /// Column 0 wants one filled cell and gets none. What makes this worth its own test is
+    /// where the mistake comes from: line logic fills all four cells from the rows, sees
+    /// `cells_left` reach zero, and reports success without ever looking at the columns — so the
+    /// contradiction is one only the check on the way out can catch.
+    #[test]
+    fn a_grid_that_only_looks_solved_is_an_error() {
+        let puzzle = Puzzle::square(
+            bw_palette(),
+            vec![runs(&[1]), runs(&[1])],
+            vec![runs(&[1]), runs(&[2])],
+        );
+
+        assert!(conprop_solve(&puzzle, &SolveOptions::default()).is_err());
+    }
+
+    /// One filled cell per row and per column of a 2x2 grid: the two diagonals both fit.
+    #[test]
+    fn an_ambiguous_puzzle_reports_multiple_solutions() {
+        let puzzle = solution_to_puzzle(&picture(&["#.", ".#"]));
+
+        let report = conprop_solve(&puzzle, &SolveOptions::default()).unwrap();
+        assert!(report.cells_left > 0, "both diagonals fit these clues");
+    }
+
+    /// A run that doesn't fit in the lane it's a clue for. Line logic sees the contradiction on
+    /// its first pass, before the search ever starts, so it has to arrive as an error rather than
+    /// as a report of a puzzle with no solutions.
+    #[test]
+    fn impossible_clues_are_an_error() {
+        // Two columns, so the first row's run of three has nowhere to go.
+        let puzzle = Puzzle::square(
+            bw_palette(),
+            vec![runs(&[3]), runs(&[1])],
+            vec![runs(&[1]), runs(&[1])],
+        );
+
+        assert!(conprop_solve(&puzzle, &SolveOptions::default()).is_err());
+    }
+
+    /// The GUI's way in: same answer, delivered through the async wrapper, with the progress
+    /// channel finishing at 1.0.
+    #[test]
+    fn the_background_solve_finishes_with_full_progress() {
+        let want = [
+            "...##..", ".#.#...", "##..##.", "..##.##", "##.....", "#..#..#", ".##.#.#",
+        ];
+        let puzzle = solution_to_puzzle(&picture(&want));
+
+        let (progress_s, progress_r) = mpsc::channel();
+        let report = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(conprop_solve_in_background(
+                &puzzle,
+                &SolveOptions::default(),
+                progress_s,
+                mpsc::channel().1,
+            ))
+            .unwrap();
+        assert_eq!(rendered(&report, 7), want);
+
+        let reported: Vec<f32> = progress_r.try_iter().collect();
+        assert!(reported.iter().all(|p| *p > 0.0), "{reported:?}");
+        assert_eq!(reported.last(), Some(&1.0));
     }
 }

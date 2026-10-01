@@ -114,7 +114,7 @@ use crate::{
         BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynSolution, Palette, PuzzleDynOps,
         Solution, UNSOLVED,
     },
-    solve::bt_solve,
+    solve::conprop,
     solve::grid_solve::{self, DisambigResult, SolveOptions, disambig_candidates},
     user_settings::{UserSettings, consts},
 };
@@ -1272,9 +1272,9 @@ impl Disambiguator {
     }
 }
 
-/// Drives `bt_solve::backtrack_solve` from a button: same shape as `Disambiguator` (a spawned
-/// async task reporting back over channels, so the search can run in the background and be
-/// stopped without freezing the GUI).
+/// Drives `conprop::conprop_solve_in_background` from a button: same shape as `Disambiguator` (a
+/// spawned async task reporting back over channels, so the search can run in the background and
+/// be stopped without freezing the GUI).
 pub struct BacktrackSolver {
     /// The search's outcome, already formatted for display.
     report: Option<String>,
@@ -1348,7 +1348,8 @@ impl BacktrackSolver {
             spawn_async(async move {
                 let puzzle = picture.to_puzzle();
                 let outcome = crate::with_puzzle!(&puzzle, |p| {
-                    bt_solve::backtrack_solve(p, &SolveOptions::default(), p_s, t_r).await
+                    conprop::conprop_solve_in_background(p, &SolveOptions::default(), p_s, t_r)
+                        .await
                 });
                 let (report, mask) = match outcome {
                     Ok(report) => (

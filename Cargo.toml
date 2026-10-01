@@ -53,7 +53,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 base64 = "0.22.1"
 brotli = "8.0.2"
 web-time = "1.1.0"
-priority-queue = "2.7.0"
 typed-index-collections = { version = "3.5.0", features = ["serde", "std"] }
 rand = "0.8.5"
 
