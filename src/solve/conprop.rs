@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use typed_index_collections::TiVec;
 
@@ -335,46 +335,50 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
     }
 
     fn propagate_and_learn(&mut self) -> Option<Report> {
-        let state = self;
-        let puzzle = state.ctx.puzzle;
-        let mut run_res = state.propagate();
+        let puzzle = self.ctx.puzzle;
+        let mut run_res = self.propagate();
         while let Err(conflict) = run_res {
-            if state.guesses_in_trail.is_empty() {
+            if self.guesses_in_trail.is_empty() {
                 // We would create an empty nogood (which isn't supported),
                 // indicating an unsolvable puzzle.
-                return Some(state.no_guesses_left());
+                return Some(self.no_guesses_left());
             }
-            // We get a nogood from the guesses...
-            let (guess_nogood, mut backjump_dest) = state.guess_is_nogood();
-            state.add_nogood(guess_nogood);
 
-            let lane_nogood = match conflict {
-                // ...and maybe another one from the line where the conflict happened:
-                Conflict::Lane(lane_idx) => state.line_is_nogood(lane_idx),
+            let nogood_and_dest = match conflict {
+                // Get a nogood from the line where the conflict happened:
+                Conflict::Lane(lane_idx) => self.line_is_nogood(lane_idx),
                 Conflict::Nogood(_) => None,
-            };
-
-            if let Some((lane_nogood, asserting_at)) = lane_nogood {
-                state.add_nogood(lane_nogood);
-                if let Some(asserting_at) = asserting_at {
-                    // Both backjumps are valid; take the more aggressive one:
-                    backjump_dest = backjump_dest.min(asserting_at);
-                }
             }
-            state.backjump(backjump_dest);
+            .map(|(nogood, maybe_dest)| {
+                (
+                    nogood,
+                    maybe_dest.unwrap_or_else(|| {
+                        // If it doesn't know where to backjump to, ask the guess nogood:
+                        self.guess_is_nogood().1
+                    }),
+                )
+            })
+            .unwrap_or_else(|| {
+                // We can instead make a nogood from the guesses:
+                self.guess_is_nogood()
+            });
 
-            run_res = state.propagate()
+            let (lane_nogood, asserting_at) = nogood_and_dest;
+            self.add_nogood(lane_nogood);
+            self.backjump(asserting_at);
+
+            run_res = self.propagate()
         }
         if run_res.unwrap() {
             // We found a valid solution!
-            if let Some(existing_solution) = &state.solution_found {
+            if let Some(existing_solution) = &self.solution_found {
                 assert!(
-                    *existing_solution != state.ll_state.grid,
+                    *existing_solution != self.ll_state.grid,
                     "TODO: I thought we couldn't reach the same solution multiple times"
                 );
 
                 // Multiple valid solutions: report our snapshot of the cells we proved.
-                let (grid, cells_left) = state
+                let (grid, cells_left) = self
                     .root_knowledge
                     .as_ref()
                     .expect("a first solution always leaves its root behind");
@@ -382,55 +386,61 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
                     puzzle,
                     grid,
                     *cells_left,
-                    state.ll_state.solve_counts,
+                    self.ll_state.solve_counts,
                 ));
             }
             // Record first solution:
-            state.solution_found = Some(state.ll_state.grid.clone());
+            self.solution_found = Some(self.ll_state.grid.clone());
 
-            if state.ctx.options.stop_at_first_solution {
+            if self.ctx.options.stop_at_first_solution {
                 // `cells_left` is a bit of a lie, since we don't know the solution is unique
                 return Some(Report::from_grid(
                     puzzle,
-                    &state.ll_state.grid,
+                    &self.ll_state.grid,
                     /*cells_left=*/ 0,
-                    state.ll_state.solve_counts,
+                    self.ll_state.solve_counts,
                 ));
             }
 
-            if state.guesses_in_trail.is_empty() {
+            if self.guesses_in_trail.is_empty() {
                 // Nice, no guesses outstanding. We know it's unique.
                 return Some(Report::from_grid(
                     puzzle,
-                    &state.ll_state.grid,
+                    &self.ll_state.grid,
                     /*cells_left=*/ 0,
-                    state.ll_state.solve_counts,
+                    self.ll_state.solve_counts,
                 ));
             }
 
             // Move the goalposts: now try to find a second solution.
-            let first_solution_is_nogood = state.solution_nogood();
-            state.add_nogood(first_solution_is_nogood);
+            let first_solution_is_nogood = self.solution_nogood();
+            self.add_nogood(first_solution_is_nogood);
 
             // Now go back and try again!
-            state.backjump(0);
+            self.backjump(0);
             // Record what we know without any assumptions (and before using the fake nogood)
-            state.root_knowledge = Some((state.ll_state.grid.clone(), state.ll_state.cells_left));
+            self.root_knowledge = Some((self.ll_state.grid.clone(), self.ll_state.cells_left));
 
-            return state.propagate_and_learn();
+            return self.propagate_and_learn();
         } else {
             return None; // No solution, no error.
         }
     }
 
-    /// Given that `probe` is contradictory, change as many entries as possible to `root` while keeping it contradictory.
-    /// Returns indices that had to be kept because they were load-bearing.
-    fn minimize_line_contradiction(probe: &mut [Cell], root: &[Cell], clues: &[C]) -> Vec<usize> {
+    /// Given that `probe` is contradictory, change as many entries as possible to `root` while
+    /// keeping it contradictory. The entry at `pinned` (if any) is never changed.
+    /// Returns indices that had to be kept because they were load-bearing (`pinned` among them).
+    fn minimize_line_contradiction(
+        probe: &mut [Cell],
+        root: &[Cell],
+        clues: &[C],
+        pinned: Option<usize>,
+    ) -> Vec<usize> {
         let contradicts = |lane: &[Cell]| exhaust_line(clues, &mut lane.to_vec()).is_err();
 
         // Try putting each cell back to its root value...
         for pos in 0..probe.len() {
-            if probe[pos] == root[pos] {
+            if probe[pos] == root[pos] || Some(pos) == pinned {
                 continue;
             }
             let prob_orig = probe[pos];
@@ -442,7 +452,7 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         }
 
         let kept: Vec<usize> = (0..probe.len())
-            .filter(|&pos| probe[pos] != root[pos])
+            .filter(|&pos| probe[pos] != root[pos] || Some(pos) == pinned)
             .collect();
         // The root lane was consistent when we left it, so something must have survived.
         debug_assert!(!kept.is_empty(), "{root:?} contradicts at the root");
@@ -450,31 +460,25 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         kept
     }
 
-    /// Turn a contradiction derived at `lane_idx` into a nogood. (Or `None` if partial knowledge
-    /// in a color puzzle makes it hard.)
-    /// Also returns the backjump destination implied by the nogood (Or `None`)
+    /// Why can't `lane_idx` be satisfied, as it stood just before trail entry `before`?
+    /// (`self.trail.len()` is also valid for the whole thing.) The answer is a minimal set of
+    /// literals.
     ///
-    /// This should be called with the contradiction still in the grid.
-    fn line_is_nogood(&self, lane_idx: LaneIdx) -> Option<(Nogood, Option<usize>)> {
+    /// With `pinned: Some((cell_idx, color))`, it instead explains why `cell_idx` must be
+    /// `color`. The pinned cell is omitted from the result.
+    ///
+    /// `None` if partial knowledge from any cell was required, because a single nogood can't
+    /// express that right now.
+    fn lane_reason(
+        &self,
+        lane_idx: LaneIdx,
+        before: usize,
+        pinned: Option<(CellIdx, Color)>,
+    ) -> Option<Vec<(CellIdx, Color)>> {
         let lane_cells = &self.ctx.lane_map().lanes[lane_idx].cells;
         let clues = self.ll_state.lanes[lane_idx].clues;
 
         let contradicts = |lane: &[Cell]| exhaust_line(clues, &mut lane.to_vec()).is_err();
-
-        let mut now = vec![];
-        // TODO: we `pub`ed `gather_into` and `.clue` just for this function; can we be less ad-hoc?
-        gather_into(self.ctx.lane_map(), lane_idx, &self.ll_state.grid, &mut now);
-
-        debug_assert!(
-            contradicts(&now),
-            "{lane_idx:?} was blamed, but it's satisfiable"
-        );
-
-        let mut probe = now.clone();
-
-        // We want to know the "root" state (unconditional knowledge); scan the trail to find what
-        // has changed since then.
-        // We also want to know what level (how many guesses) a literal is settled at.
 
         // TODO: why isn't `first_guess_at` always 0?
         let first_guess_at = self.guesses_in_trail.first()?.0;
@@ -483,61 +487,167 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
             .enumerate()
             .map(|(pos, &cell_idx)| (cell_idx, pos))
             .collect();
-        let mut root = now.clone();
-        let mut settled_at: Vec<usize> = vec![0; now.len()];
-        for (
-            trail_idx,
-            &TrailStep {
-                cell_idx,
-                old_value,
-                ..
-            },
-        ) in self.trail.iter().enumerate().skip(first_guess_at)
-        {
-            if let Some(&pos) = lane_pos_of.get(&cell_idx) {
-                if settled_at[pos] == 0 {
-                    // First place it got set: the root value was stored
-                    root[pos] = old_value;
-                }
-                settled_at[pos] = trail_idx;
 
-                // We can't express partial knowledge in nogoods, so erase partial knowledge...
-                if !probe[pos].is_known() {
-                    probe[pos] = root[pos];
+        // Rewind time using the trail: `probe` stops at `before`, and `root` goes all the way
+        // back to the first guess.
+        let mut probe = vec![];
+        // TODO: we `pub`ed `gather_into` and `.clue` just for this function; can we be less ad-hoc?
+        gather_into(
+            self.ctx.lane_map(),
+            lane_idx,
+            &self.ll_state.grid,
+            &mut probe,
+        );
+        let mut root = probe.clone();
+        for trail_idx in (first_guess_at..self.trail.len()).rev() {
+            let step = &self.trail[trail_idx];
+            if let Some(&pos) = lane_pos_of.get(&step.cell_idx) {
+                root[pos] = step.old_value;
+                if trail_idx >= before {
+                    probe[pos] = step.old_value;
                 }
             }
         }
 
+        let pinned_pos = match pinned {
+            None => None,
+            Some((cell_idx, color)) => {
+                let pos = lane_pos_of[&cell_idx];
+                let mut anything_but = root[pos];
+                // An error would mean the root already knew it was `color`, so it wouldn't be
+                // on the trail to explain.
+                anything_but
+                    .learn_that_not(color)
+                    .expect("Shouldn't have been on trail");
+                probe[pos] = anything_but;
+                Some(pos)
+            }
+        };
+
+        debug_assert!(
+            contradicts(&probe),
+            "{lane_idx:?} was blamed (for {pinned:?}), but it's satisfiable"
+        );
+
+        // We can't (currently) express partial knowledge in nogoods, so erase partial knowledge...
+        for pos in 0..probe.len() {
+            if Some(pos) != pinned_pos && !probe[pos].is_known() {
+                probe[pos] = root[pos];
+            }
+        }
         // ...but if the partial knowledge was important, then we gotta give up:
         if !contradicts(&probe) {
             return None;
         }
 
-        let kept = Self::minimize_line_contradiction(&mut probe, &root, clues);
+        let kept = Self::minimize_line_contradiction(&mut probe, &root, clues, pinned_pos);
+        Some(
+            kept.into_iter()
+                .filter(|&pos| Some(pos) != pinned_pos)
+                .map(|pos| (lane_cells[LanePos::from(pos)], probe[pos].unwrap_color()))
+                .collect(),
+        )
+    }
 
-        // A literal's level is how many guesses came at or before the entry that settled it.
-        let mut levels: Vec<(usize, usize)> = kept
+    /// We have a contradiction we can make into a nogood, but we'd like it to be *asserting*;
+    /// we need exactly one of its literals to be after the most recent guess, so we can backjump
+    /// past it, proving the guess false.
+    ///
+    /// So, until that's the case, pull off the most recent literal and replace it with the things
+    /// that implied it.
+    ///
+    /// Returns the resulting clause and the level to backjump to, or `None` if we don't succeed
+    /// (because we were depending on partial information we can't currently represent in a literal)
+    fn resolve_to_uip(
+        &self,
+        clause: &[(CellIdx, Color)],
+    ) -> Option<(HashSet<(CellIdx, Color)>, usize)> {
+        let first_guess_at = self.guesses_in_trail.first()?.0;
+        // For each cell narrowed since the root, the first and last trail entries that did it.
+        let mut entries: HashMap<CellIdx, (usize, usize)> = HashMap::new();
+        for trail_idx in first_guess_at..self.trail.len() {
+            entries
+                .entry(self.trail[trail_idx].cell_idx)
+                .and_modify(|(_first, last)| *last = trail_idx)
+                .or_insert((trail_idx, trail_idx));
+        }
+
+        // Keyed by the trail entry that settled each literal (.1 is `last`, above), oldest-first.
+        // A literal that isn't on the trail was settled at the root, and is true in every branch.
+        let mut literals: BTreeMap<usize, (CellIdx, Color)> = clause
             .iter()
-            .map(|&pos| (pos, self.trail[settled_at[pos]].level))
+            .filter_map(|&(cell_idx, color)| Some((entries.get(&cell_idx)?.1, (cell_idx, color))))
             .collect();
-        levels.sort_unstable_by_key(|(_lit, level)| *level);
-        let asserting_at = loop {
-            // In practice, this never succeeds the first time:
-            match levels.as_slice() {
-                [.., previous, last] if previous.1 < last.1 => break Some(previous.1),
-                [_] => break Some(0),
+
+        let backjump_to = loop {
+            let mut deepest_first = literals.iter().rev();
+            let (&last_idx, &(cell_idx, color)) = deepest_first.next()?;
+            let deepest = self.trail[last_idx].level;
+            // Is the deepest literal alone on its level? If so, we're done!
+            match deepest_first.next() {
+                None => break 0,
+                Some((&prev_idx, _)) if self.trail[prev_idx].level < deepest => {
+                    break self.trail[prev_idx].level;
+                }
                 _ => {}
             }
 
-            break None; // TODO
+            // Replace the newest literal with things that imply it.
+            literals.remove(&last_idx);
+            let reason = match self.trail[last_idx].reason {
+                TrailReason::Guess => {
+                    unreachable!("a guess is the oldest entry at its level, so it's alone there")
+                }
+                TrailReason::Nogood(nogood_idx) => {
+                    // Nogoods rule out only one color. If multiple narrowings are part of the reason,
+                    // we can't represent that as a single nogood, so we have to bail out.
+                    if entries[&cell_idx].0 != last_idx {
+                        return None;
+                    }
+                    self.nogoods[nogood_idx]
+                        .not_all_true
+                        .iter()
+                        .copied()
+                        .filter(|&(other_cell, _)| other_cell != cell_idx)
+                        .collect()
+                }
+                TrailReason::Lane(lane_idx) => {
+                    self.lane_reason(lane_idx, last_idx, Some((cell_idx, color)))?
+                }
+            };
+
+            for (cell_idx, color) in reason {
+                let Some(&(_first, settled)) = entries.get(&cell_idx) else {
+                    continue; // Settled at the root
+                };
+                if settled >= last_idx {
+                    panic!("Time-travel logic; we're in a loop!"); // But returning `None` would be safe.
+                }
+                literals.insert(settled, (cell_idx, color));
+            }
         };
 
-        let not_all_true: HashSet<(CellIdx, Color)> = kept
-            .iter()
-            .map(|&pos| (lane_cells[LanePos::from(pos)], probe[pos].unwrap_color()))
-            .collect();
+        Some((literals.into_values().collect(), backjump_to))
+    }
+
+    /// Turn a contradiction derived at `lane_idx` into a nogood. (Or `None` if partial knowledge
+    /// in a color puzzle makes it hard.)
+    /// Also returns the backjump destination implied by the nogood (Or `None`.)
+    ///
+    /// This should be called with the contradiction still in the grid.
+    fn line_is_nogood(&self, lane_idx: LaneIdx) -> Option<(Nogood, Option<usize>)> {
+        let clause = self.lane_reason(lane_idx, self.trail.len(), None)?;
+
+        // Now we know what the literals are. Time for 1UIP! If it can't finish, the bare lane
+        // clause is still worth learning. It just doesn't assert (or 1UIP would have stopped
+        // before it had to look up a single reason).
+        let (not_all_true, asserting_at) = match self.resolve_to_uip(&clause) {
+            Some((resolved, level)) => (resolved, Some(level)),
+            None => (clause.into_iter().collect(), None),
+        };
+
         let nogood = Nogood {
-            current_false_count: not_all_true.len(),
+            current_false_count: not_all_true.len(), // every one of them holds right now
             not_all_true,
             active: false,
         };
@@ -1084,5 +1194,80 @@ mod tests {
         state.update_nogood_counters(state.trail.len());
 
         assert!(state.line_is_nogood(LaneIdx(0)).is_none());
+    }
+
+    /// Two rows by three columns, every lane but the last column clued `1`:
+    ///
+    /// ```text
+    ///       1 1 -
+    ///    1  a b .
+    ///    1  c d g
+    /// ```
+    ///
+    /// Guess `g`. Row 1 then rules out `c` and `d`, the first two columns fill `a` and `b`, and
+    /// row 0 can't hold both. Every literal of that contradiction comes from the one guess, so
+    /// the bare lane clause ("not both `a` and `b`") doesn't assert. Resolving it walks back
+    /// through the columns (to `c`, `d`) and then row 1, until only the guess is left.
+    ///
+    /// (The trail is built by hand, so the root never runs line logic; the empty column would
+    /// otherwise have ruled `g` out before anyone could guess it.)
+    #[test]
+    fn resolution_walks_a_lane_clause_back_to_the_guess() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+        let one = || {
+            vec![Nono {
+                color: Color(1),
+                count: 1,
+            }]
+        };
+        let puzzle = Puzzle::square(palette, vec![one(), one()], vec![one(), one(), vec![]]);
+
+        let options = SolveOptions::default();
+        let mut line_cache = None;
+        let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
+        let (row_0, row_1) = (LaneIdx(0), LaneIdx(1));
+        let (col_0, col_1) = (LaneIdx(2), LaneIdx(3));
+        let at = |lane: LaneIdx, pos: usize| ctx.lane_map().lanes[lane].cells[LanePos::from(pos)];
+        let (a, b, c, d, g) = (
+            at(row_0, 0),
+            at(row_0, 1),
+            at(row_1, 0),
+            at(row_1, 1),
+            at(row_1, 2),
+        );
+        let mut state = scratch_state(&puzzle, &mut ctx, &[]);
+
+        guess_onto_trail(&mut state, g, Color(1));
+        let mut derive = |cell, color, lane| {
+            learn_onto_trail_because(
+                &mut state,
+                cell,
+                /*is=*/ true,
+                color,
+                TrailReason::Lane(lane),
+            )
+        };
+        derive(c, BACKGROUND, row_1);
+        derive(d, BACKGROUND, row_1);
+        derive(a, Color(1), col_0);
+        derive(b, Color(1), col_1);
+        state.update_nogood_counters(state.trail.len());
+
+        assert_eq!(
+            state.lane_reason(row_0, state.trail.len(), None).unwrap(),
+            vec![(a, Color(1)), (b, Color(1))],
+            "the bare clause has two literals at level 1, so it can't assert"
+        );
+
+        let (nogood, asserting_at) = state.line_is_nogood(row_0).unwrap();
+        assert_eq!(nogood.not_all_true, HashSet::from([(g, Color(1))]));
+        assert_eq!(nogood.current_false_count, 1);
+        assert_eq!(
+            asserting_at,
+            Some(0),
+            "back to the root, where it rules out `g`"
+        );
     }
 }
