@@ -816,14 +816,25 @@ impl<'p, C: Clue> SolveState<'p, C> {
         is: bool,
         color: Color,
     ) -> anyhow::Result<bool> {
+        let within = if is {
+            Cell::from_color(color)
+        } else {
+            Cell::new_anything().without(Cell::from_color(color))
+        };
+        self.learn_within(ctx, cell, within)
+    }
+
+    /// `learn`, but narrowing `cell` to (some of) `within` rather than settling one color.
+    pub fn learn_within<K: GridKind>(
+        &mut self,
+        ctx: &mut SolveContext<'p, '_, C, K>,
+        cell: CellIdx,
+        within: Cell,
+    ) -> anyhow::Result<bool> {
         let lane_map = ctx.lane_map();
 
         let previous = self.grid[cell];
-        let new_info = if is {
-            self.grid[cell].learn(color)?
-        } else {
-            self.grid[cell].learn_that_not(color)?
-        };
+        let new_info = self.grid[cell].learn_intersect(within)?;
         if !new_info {
             return Ok(false);
         }

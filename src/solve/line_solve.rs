@@ -160,6 +160,20 @@ impl Cell {
         self.can_be(color) && !self.is_known_to_be(color)
     }
 
+    /// Everything this could be, `other` could be, too.
+    #[must_use]
+    pub fn is_within(&self, other: Cell) -> bool {
+        self.possible_color_mask & !other.possible_color_mask == 0
+    }
+
+    /// The possibilities here that aren't possibilities in `other`.
+    #[must_use]
+    pub fn without(&self, other: Cell) -> Cell {
+        Cell {
+            possible_color_mask: self.possible_color_mask & !other.possible_color_mask,
+        }
+    }
+
     #[must_use]
     pub fn can_be_iter(&self) -> impl Iterator<Item = Color> + use<> {
         let mut mask = self.possible_color_mask;
