@@ -50,11 +50,11 @@ impl Nogood {
             return Ok(None);
         }
         if remaining == 0 {
-            debug_assert!(
+            assert!(
                 self.not_all_true
                     .iter()
                     .all(|(&cell_idx, &within)| ll_state.grid[cell_idx].is_within(within)),
-                "Claude was right to be worried about this"
+                "Claude was right to be worried about this: `current_false_count` is too high"
             );
             bail!("Nogood contradicted")
         }
@@ -66,7 +66,7 @@ impl Nogood {
                 return Ok((rest != cell).then_some((cell_idx, rest)));
             }
         }
-        bail!("Nogood contradicted, and `current_false_count` was stale");
+        panic!("Nogood contradicted, and `current_false_count` was too low");
     }
 
     /// Between the two ends of a range of the trail, `cell_idx` went from `low` to `high`.
@@ -126,30 +126,6 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
             solution_found: None,
             root_knowledge: None,
         }
-    }
-
-    /// A copy to experiment on. Because it borrows `ctx`, the original is unusable while this remains.
-    /// This clears `pickers`, since the experiment will control the picking.
-    fn fork_to_root(&mut self) -> ConpropState<'p, '_, 'x, C, K> {
-        let mut new_state = ConpropState {
-            ctx: &mut *self.ctx,
-            nogoods: self.nogoods.clone(),
-            nogoods_by_cell: self.nogoods_by_cell.clone(),
-            vsids: HashMap::default(), // vsids only matters for pickers
-            vsids_decay: 0,
-            // TODO: make `update_nogood_counters` read `self`'s trail; skip cloning it:
-            trail: self.trail.clone(),
-            nogoods_updated_to: self.nogoods_updated_to,
-            guesses_in_trail: self.guesses_in_trail.clone(), // (and this one)
-            pickers: vec![],                                 // guesses will be made manually
-            rng: self.rng.clone(),
-            ll_state: self.ll_state.clone(),
-            solution_found: None, // irrelevant
-            root_knowledge: None, // irrelevant
-        };
-
-        new_state.backjump(0);
-        new_state
     }
 
     // Typically, you'll call `propagate{,_and_learn}` after this.
@@ -336,8 +312,15 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
             let (nogood, asserting_at) = match conflict {
                 // Get a nogood from the line where the conflict happened:
                 Conflict::Lane(lane_idx) => self.line_is_nogood(lane_idx),
-                // We can instead make a nogood from the guesses:
-                Conflict::Nogood(_) => self.guess_is_nogood(),
+                // We can reprocess the nogood to figure out a backjump:
+                Conflict::Nogood(nogood_idx) => {
+                    let not_all_true: Vec<_> = self.nogoods[nogood_idx]
+                        .not_all_true
+                        .iter()
+                        .map(|(&c, &w)| (c, w))
+                        .collect();
+                    self.resolve_to_uip(&not_all_true)
+                }
             };
 
             self.add_nogood(nogood);
@@ -522,7 +505,7 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
     /// that implied it.
     ///
     /// Returns the resulting clause and the level to backjump to.
-    fn resolve_to_uip(&self, clause: &[(CellIdx, Cell)]) -> (HashMap<CellIdx, Cell>, usize) {
+    fn resolve_to_uip(&self, clause: &[(CellIdx, Cell)]) -> (Nogood, usize) {
         // For each cell narrowed since the root, the trail entries that did it, oldest-first.
         let mut entries: HashMap<CellIdx, Vec<usize>> = HashMap::new();
         for trail_idx in self.first_guess_at()..self.trail.len() {
@@ -629,7 +612,10 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         };
 
         (
-            literals.into_values().collect::<HashMap<CellIdx, Cell>>(),
+            Nogood {
+                current_false_count: literals.len(),
+                not_all_true: literals.into_values().collect::<HashMap<CellIdx, Cell>>(),
+            },
             backjump_to,
         )
     }
@@ -642,53 +628,7 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         let clause = self.lane_reason(lane_idx, self.trail.len(), None);
 
         // Now we know what the literals are. Time for 1UIP!
-        let (not_all_true, asserting_at) = self.resolve_to_uip(&clause);
-
-        let nogood = Nogood {
-            current_false_count: not_all_true.len(), // every one of them holds right now
-            not_all_true,
-        };
-        (nogood, asserting_at)
-    }
-
-    /// Minimizes the tail of the `Nogood`, and returns an index (to `guesses_in_trail`) to backjump past,
-    /// or `None` if all the guesses should be cleared.
-    fn guess_is_nogood(&mut self) -> (Nogood, usize) {
-        let mut res = Nogood {
-            not_all_true: HashMap::new(),
-            current_false_count: 0,
-        };
-
-        let Some((last_guess, pfx_guesses)) = self.guesses_in_trail.split_last() else {
-            return (res, 0); // No guesses, so the puzzle is contradictory.
-        };
-        // Last guess first, then the rest in order.
-        let replay: Vec<(CellIdx, Color)> = std::iter::once(last_guess)
-            .chain(pfx_guesses.iter())
-            .map(|&(guess_idx_in_trail, color)| (self.trail[guess_idx_in_trail].cell_idx, color))
-            .collect();
-
-        // TODO: the fork is expensive: we might want to try reusing `self` (and restoring it after)
-        let mut exp_state = self.fork_to_root();
-        exp_state.backjump(0); // Back to the root, to try a different order
-
-        for (after_guess_idx, (cell_idx, color)) in replay.into_iter().enumerate() {
-            if exp_state.ll_state.grid[cell_idx].is_known_to_be(color) {
-                continue; // no need to guess what we already know
-            }
-            // if it's known to be another color, we will get a useful contradiction in `.make_guess`
-
-            res.not_all_true.insert(cell_idx, Cell::from_color(color));
-            res.current_false_count += 1;
-
-            let guess_ok =
-                exp_state.make_guess((cell_idx, color)).is_ok() && exp_state.propagate().is_ok();
-
-            if !guess_ok {
-                return (res, after_guess_idx);
-            }
-        }
-        panic!("Should've re-found that contradiction");
+        self.resolve_to_uip(&clause)
     }
 
     /// Make one guess and then do `propagate_and_learn`.
@@ -1163,11 +1103,11 @@ mod tests {
         assert_eq!(state.nogoods[0].current_false_count, 0);
     }
 
-    /// A nogood naming *one* cell — what `guess_is_nogood` hands back whenever a guess is wrong on
-    /// its own — has no other literal whose rewinding could tell it to speak up again. Its
-    /// deduction says that cell *isn't* a color, which leaves the cell unknown. So once that
-    /// deduction is unwound, the nogood has to notice by itself that it's no longer satisfied, or
-    /// the picker is free to walk back into the value it ruled out.
+    /// A nogood naming *one* cell — what we get when a guess is wrong on its own — has no other
+    /// literal whose rewinding could tell it to speak up again. Its deduction says that cell
+    /// *isn't* a color, which leaves the cell unknown. So once that deduction is unwound, the
+    /// nogood has to notice by itself that it's no longer satisfied, or the picker is free to
+    /// walk back into the value it ruled out.
     #[test]
     fn a_one_cell_nogood_comes_back_on_after_its_deduction_is_unwound() {
         let puzzle = scratch_puzzle();
@@ -1175,7 +1115,7 @@ mod tests {
         let mut line_cache = None;
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
 
-        // "cell 0 is not Color(1)" — what `guess_is_nogood` hands back for a guess that's wrong alone.
+        // "cell 0 is not Color(1)" — we made a single wrong guess.
         let literals = [(CellIdx(0), Color(1))];
         let mut state = scratch_state(&puzzle, &mut ctx, &literals);
         let anything_but_1 = Cell::new(&puzzle.palette).without(Cell::from_color(Color(1)));

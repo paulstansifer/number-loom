@@ -249,7 +249,7 @@ Now make the clause asserting, which is what buys the deep backjump.
 Change the trail element to carry `Decision | Lane(LaneIdx) | Nogood(usize)`. Line logic sets
 `Lane`, guesses set `Decision`, nogood deductions set `Nogood`. About 15 edit sites.
 
-### [ ] 4.2 The resolution loop
+### [x] 4.2 The resolution loop
 
 Start from the minimized reason for the contradiction. While more than one literal sits at the
 deepest level: take the **most recently assigned** of them, look up the reason it was assigned, and
