@@ -29,7 +29,10 @@ Here's what it does:
    must be, and finds each number from the ink, then recognizes it on its own. (Measured on the
    ink, the gap between two numbers is reliably wider than between two digits of one number, even
    where "1 11" and "1 1 1" look alike to OCR.) Where that fails for a lane, step 2's reading
-   stands. `--no-reread` skips this step, for comparison. (`--compare-digits` adds a check of
+   stands. `--no-reread` skips this step, for comparison. When the grid was found from its
+   lines (so the clues likely sit in boxes), a lane that doesn't read cleanly is read slot by
+   slot instead: the clues of every lane sit at the same, regular spacing. A slot with ink that
+   doesn't read as a number (say, a crossed-out clue) becomes a "blotted" clue, shown as `?`. (`--compare-digits` adds a check of
    each digit against the others recognized as the same digit, in `templates.rs`; it hasn't
    helped on the pictures we have.)
 4. If the clues solve (even partly), `cells.rs` reads the state of the grid: which cells the

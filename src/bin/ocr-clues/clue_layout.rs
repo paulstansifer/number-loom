@@ -83,6 +83,18 @@ impl Edge {
     }
 }
 
+/// A clue that's there, but couldn't be read (say, because it's been crossed out).
+pub const BLOTTED: u16 = u16::MAX;
+
+/// A clue as text: the number, or "?" if it's blotted.
+pub fn clue_text(n: u16) -> String {
+    if n == BLOTTED {
+        "?".to_string()
+    } else {
+        n.to_string()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ClueLayout {
     pub rows: Vec<Vec<u16>>,
@@ -649,7 +661,8 @@ pub fn arrange(
 /// 3
 /// ```
 ///
-/// One line per lane, `0` for an empty one. Blank lines and `#` comments are ignored.
+/// One line per lane, `0` for an empty one, and `?` for a clue that can't be read. Blank lines
+/// and `#` comments are ignored.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Expected {
     pub cols: Vec<Vec<u16>>,
@@ -675,7 +688,7 @@ impl Expected {
                 if lane.is_empty() {
                     text.push('0');
                 } else {
-                    let numbers: Vec<String> = lane.iter().map(|n| n.to_string()).collect();
+                    let numbers: Vec<String> = lane.iter().map(|&n| clue_text(n)).collect();
                     text.push_str(&numbers.join(" "));
                 }
                 text.push('\n');
@@ -710,7 +723,13 @@ impl Expected {
                     };
                     let lane = line
                         .split_whitespace()
-                        .map(|n| n.parse::<u16>())
+                        .map(|n| {
+                            if n == "?" {
+                                Ok(BLOTTED)
+                            } else {
+                                n.parse::<u16>()
+                            }
+                        })
                         .collect::<Result<Vec<u16>, _>>()
                         .with_context(|| format!("line {}: expected numbers", i + 1))?;
                     lanes.push(lane.into_iter().filter(|&n| n != 0).collect());
@@ -746,7 +765,7 @@ impl Expected {
                 } else {
                     score.numbers_wrong += edit_distance(want, got);
                     let show = |lane: &[u16]| {
-                        let numbers: Vec<String> = lane.iter().map(|n| n.to_string()).collect();
+                        let numbers: Vec<String> = lane.iter().map(|&n| clue_text(n)).collect();
                         if numbers.is_empty() {
                             "(empty)".to_string()
                         } else {

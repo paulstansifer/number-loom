@@ -7,7 +7,7 @@
 //! the space between the digits of one, which OCR's character boxes are too rough to show.) Each
 //! number is then recognized as a crop of its own.
 
-use crate::clue_layout::{ClueLayout, split_threshold};
+use crate::clue_layout::{BLOTTED, ClueLayout, split_threshold};
 use image::RgbImage;
 use ocrs::{OcrEngine, OcrInput};
 use rten_imageproc::{RectF, RotatedRect};
@@ -33,6 +33,8 @@ pub struct Reread {
     pub fallbacks: usize,
     /// Numbers changed by comparing digits (see `templates`).
     pub corrections: usize,
+    /// Clues that are there, but couldn't be read.
+    pub blots: usize,
     pub found: Vec<Found>,
 }
 
@@ -138,34 +140,130 @@ fn runs(profile: &[bool], gap: f32) -> Vec<(usize, usize)> {
 /// A lane's clues, before recognition: each number's area. `None` if it doesn't look like clues.
 type Lane = Option<Vec<Area>>;
 
+/// The strip of the picture where one lane's clues are: above a column, or left of a row.
+/// Positions in it are `(step, across)`: `step` counts outward from the grid, and `across` is
+/// the image coordinate across the lane.
+struct LaneStrip<'a> {
+    luma: &'a Luma,
+    strip: Strip,
+    vertical: bool,
+    /// The image coordinate of step 0.
+    base: i64,
+    steps: usize,
+    /// The lane's extent across, inclusive.
+    across: (i64, i64),
+}
+
+impl LaneStrip<'_> {
+    /// The strip above the column centered at `center`.
+    fn column<'a>(luma: &'a Luma, layout: &ClueLayout, center: f32) -> LaneStrip<'a> {
+        let h = layout.glyph_height;
+        let half = 0.45 * layout.col_pitch;
+        let across = ((center - half) as i64, (center + half) as i64);
+        let base = (layout.grid_top.at(center) + 0.25 * h) as i64;
+        let steps = (base as f32).min(12.0 * h) as usize + 1;
+        LaneStrip::new(luma, true, base, steps, across, h)
+    }
+
+    /// The strip left of the row centered at `center`.
+    fn row<'a>(luma: &'a Luma, layout: &ClueLayout, center: f32) -> LaneStrip<'a> {
+        let h = layout.glyph_height;
+        let half = 0.42 * layout.row_pitch;
+        let across = ((center - half) as i64, (center + half) as i64);
+        let base = (layout.grid_left.at(center) + 0.25 * h) as i64;
+        let steps = (base as f32).min(25.0 * h) as usize + 1;
+        LaneStrip::new(luma, false, base, steps, across, h)
+    }
+
+    fn new(
+        luma: &Luma,
+        vertical: bool,
+        base: i64,
+        steps: usize,
+        across: (i64, i64),
+        h: f32,
+    ) -> LaneStrip<'_> {
+        let point = |i: usize, a: i64| {
+            if vertical {
+                (a, base - i as i64)
+            } else {
+                (base - i as i64, a)
+            }
+        };
+        let strip = Strip::new(
+            steps,
+            |i| {
+                (across.0..=across.1)
+                    .filter_map(|a| {
+                        let (x, y) = point(i, a);
+                        luma.at(x, y)
+                    })
+                    .collect()
+            },
+            (1.2 * h) as usize,
+        );
+        LaneStrip {
+            luma,
+            strip,
+            vertical,
+            base,
+            steps,
+            across,
+        }
+    }
+
+    fn point(&self, step: usize, across: i64) -> (i64, i64) {
+        if self.vertical {
+            (across, self.base - step as i64)
+        } else {
+            (self.base - step as i64, across)
+        }
+    }
+
+    fn is_ink(&self, step: usize, across: i64) -> bool {
+        let (x, y) = self.point(step, across);
+        self.strip.is_ink(step, self.luma.at(x, y))
+    }
+
+    /// How much ink there is at each step, leaving out rules across the whole lane (the borders
+    /// of boxes, and the like).
+    fn ink(&self) -> Vec<usize> {
+        let width = (self.across.1 - self.across.0 + 1) as f32;
+        (0..self.steps)
+            .map(|i| {
+                let count = (self.across.0..=self.across.1)
+                    .filter(|&a| self.is_ink(i, a))
+                    .count();
+                if count as f32 >= 0.85 * width {
+                    0
+                } else {
+                    count
+                }
+            })
+            .collect()
+    }
+
+    /// Where across the lane there's ink, between steps `from` and `to`.
+    fn across_ink(&self, from: usize, to: usize) -> Vec<bool> {
+        (self.across.0..=self.across.1)
+            .map(|a| (from..=to).any(|i| self.is_ink(i, a)))
+            .collect()
+    }
+
+    /// The image area of steps `from..=to`, and `across` (relative to the lane's start) from
+    /// `a0..=a1`.
+    fn area(&self, from: usize, to: usize, (a0, a1): (usize, usize)) -> Area {
+        let (x0, y0) = self.point(to, self.across.0 + a0 as i64);
+        let (x1, y1) = self.point(from, self.across.0 + a1 as i64);
+        (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
+    }
+}
+
 /// The clues of the column centered at `center`, from the top.
 fn column(luma: &Luma, layout: &ClueLayout, center: f32) -> Lane {
     let h = layout.glyph_height;
-    let pitch = layout.col_pitch;
-    let (left, right) = (
-        (center - 0.45 * pitch) as i64,
-        (center + 0.45 * pitch) as i64,
-    );
-    let bottom = (layout.grid_top.at(center) + 0.25 * h) as i64;
-    let top = (bottom as f32 - 12.0 * h).max(0.0) as i64;
-    // Steps go up from the grid.
-    let y = |i: usize| bottom - i as i64;
-    let steps = (bottom - top + 1) as usize;
-    let strip = Strip::new(
-        steps,
-        |i| (left..=right).filter_map(|x| luma.at(x, y(i))).collect(),
-        (1.2 * h) as usize,
-    );
-    let is_ink = |x: i64, i: usize| strip.is_ink(i, luma.at(x, y(i)));
-
-    // A step has ink if any pixel across it does, unless it's a rule across the whole column.
-    let width = (right - left + 1) as f32;
-    let profile: Vec<bool> = (0..steps)
-        .map(|i| {
-            let count = (left..=right).filter(|&x| is_ink(x, i)).count() as f32;
-            count >= 1.0 && count < 0.85 * width
-        })
-        .collect();
+    let strip = LaneStrip::column(luma, layout, center);
+    let profile: Vec<bool> = strip.ink().iter().map(|&c| c > 0).collect();
     let mut areas = vec![];
     let mut last_end = 0;
     for (start, end) in runs(&profile, 0.1 * h) {
@@ -182,11 +280,8 @@ fn column(luma: &Luma, layout: &ClueLayout, center: f32) -> Lane {
         }
         // Across the line, the ink nearest the middle, plus anything close enough to be another
         // digit of the same number. (Not ink at the edges, from a neighbor's two-digit number.)
-        let across: Vec<bool> = (left..=right)
-            .map(|x| (start..=end).any(|i| is_ink(x, i)))
-            .collect();
-        let mid = (center - left as f32) as usize;
-        let mut pieces = runs(&across, 0.4 * h);
+        let mid = (center - strip.across.0 as f32) as usize;
+        let mut pieces = runs(&strip.across_ink(start, end), 0.4 * h);
         pieces.sort_by_key(|&(a, b)| {
             if a <= mid && mid <= b {
                 0
@@ -194,8 +289,7 @@ fn column(luma: &Luma, layout: &ClueLayout, center: f32) -> Lane {
                 a.abs_diff(mid).min(b.abs_diff(mid))
             }
         });
-        let (x0, x1) = *pieces.first()?;
-        areas.push((left + x0 as i64, y(end), left + x1 as i64, y(start)));
+        areas.push(strip.area(start, end, *pieces.first()?));
         last_end = end;
     }
     areas.reverse();
@@ -206,30 +300,8 @@ fn column(luma: &Luma, layout: &ClueLayout, center: f32) -> Lane {
 /// marks), from the left.
 fn row_marks(luma: &Luma, layout: &ClueLayout, center: f32) -> Lane {
     let h = layout.glyph_height;
-    let pitch = layout.row_pitch;
-    let (top, bottom) = (
-        (center - 0.42 * pitch) as i64,
-        (center + 0.42 * pitch) as i64,
-    );
-    let right = (layout.grid_left.at(center) + 0.25 * h) as i64;
-    let left = (right as f32 - 25.0 * h).max(0.0) as i64;
-    // Steps go left from the grid.
-    let x = |i: usize| right - i as i64;
-    let steps = (right - left + 1) as usize;
-    let strip = Strip::new(
-        steps,
-        |i| (top..=bottom).filter_map(|y| luma.at(x(i), y)).collect(),
-        (1.2 * h) as usize,
-    );
-    let is_ink = |i: usize, y: i64| strip.is_ink(i, luma.at(x(i), y));
-
-    let height = (bottom - top + 1) as f32;
-    let profile: Vec<bool> = (0..steps)
-        .map(|i| {
-            let count = (top..=bottom).filter(|&y| is_ink(i, y)).count() as f32;
-            count >= 1.0 && count < 0.85 * height
-        })
-        .collect();
+    let strip = LaneStrip::row(luma, layout, center);
+    let profile: Vec<bool> = strip.ink().iter().map(|&c| c > 0).collect();
     let mut marks = vec![];
     let mut last_end = 0;
     for (start, end) in runs(&profile, 0.1 * h) {
@@ -242,18 +314,101 @@ fn row_marks(luma: &Luma, layout: &ClueLayout, center: f32) -> Lane {
         if (end - start + 1) as f32 > 1.5 * h {
             return None; // too wide to be a digit
         }
-        let ys: Vec<i64> = (top..=bottom)
-            .filter(|&y| (start..=end).any(|i| is_ink(i, y)))
-            .collect();
-        let (y0, y1) = (*ys.first()?, *ys.last()?);
-        if ((y1 - y0 + 1) as f32) < 0.3 * h {
+        let across = strip.across_ink(start, end);
+        let (Some(a0), Some(a1)) = (
+            across.iter().position(|&a| a),
+            across.iter().rposition(|&a| a),
+        ) else {
+            continue;
+        };
+        if ((a1 - a0 + 1) as f32) < 0.3 * h {
             continue; // a speck, or a strikethrough's stray end
         }
-        marks.push((x(end), y0, x(start), y1));
+        marks.push(strip.area(start, end, (a0, a1)));
         last_end = end;
     }
     marks.reverse();
     Some(marks)
+}
+
+/// Where the clues sit along the lanes, if they're on a regular spacing (each in its own box, or
+/// in slots), as `(first, spacing)` in steps from the grid. The clues of every lane are at the
+/// same places, so this is from all of them at once.
+fn slots(strips: &[LaneStrip], h: f32) -> Option<(f32, f32)> {
+    let steps = strips.iter().map(|s| s.steps).min()?;
+    let mut total = vec![0.0; steps];
+    for strip in strips {
+        for (t, c) in total.iter_mut().zip(strip.ink()) {
+            *t += c as f32;
+        }
+    }
+    let mean = total.iter().sum::<f32>() / steps as f32;
+    let centered: Vec<f32> = total.iter().map(|t| t - mean).collect();
+    let score = |lag: usize| -> f32 {
+        centered
+            .iter()
+            .zip(&centered[lag.min(steps)..])
+            .map(|(a, b)| a * b)
+            .sum()
+    };
+    let zero = score(0).max(f32::MIN_POSITIVE);
+    let (lo, hi) = ((0.8 * h) as usize, ((3.0 * h) as usize).min(steps / 2));
+    let lags: Vec<(usize, f32)> = (lo.max(1)..=hi)
+        .map(|lag| (lag, score(lag) / zero))
+        .collect();
+    let peaks: Vec<(usize, f32)> = (1..lags.len().saturating_sub(1))
+        .filter(|&i| lags[i].1 > lags[i - 1].1 && lags[i].1 >= lags[i + 1].1)
+        .map(|i| lags[i])
+        .collect();
+    let &(spacing, strength) = peaks.iter().max_by(|a, b| a.1.total_cmp(&b.1))?;
+    // Not regular enough to go by.
+    if strength < 0.3 {
+        return None;
+    }
+    let spacing = spacing as f32;
+    // The first slot: where a comb of that spacing catches the most ink.
+    let first = (0..spacing as usize).max_by(|&a, &b| {
+        let comb = |o: usize| -> f32 {
+            (0..)
+                .map(|k| o as f32 + k as f32 * spacing)
+                .take_while(|&i| (i as usize) < steps)
+                .map(|i| total[i as usize])
+                .sum()
+        };
+        comb(a).total_cmp(&comb(b))
+    })? as f32;
+    Some((first, spacing))
+}
+
+/// A lane's clues by slot: the ink in each slot from the grid out, until an empty one.
+fn by_slot(strip: &LaneStrip, (first, spacing): (f32, f32), h: f32) -> Vec<Area> {
+    let ink = strip.ink();
+    let mut areas = vec![];
+    for k in 0.. {
+        let center = first + k as f32 * spacing;
+        let from = (center - 0.45 * spacing).max(0.0) as usize;
+        let to = (center + 0.45 * spacing) as usize;
+        if to >= strip.steps {
+            break;
+        }
+        // Enough ink to be a digit, not a speck.
+        let amount: usize = ink[from..=to].iter().sum();
+        if (amount as f32) < 0.5 * h {
+            break;
+        }
+        let across = strip.across_ink(from, to);
+        let (Some(a0), Some(a1)) = (
+            across.iter().position(|&a| a),
+            across.iter().rposition(|&a| a),
+        ) else {
+            break;
+        };
+        let steps: Vec<usize> = (from..=to).filter(|&i| ink[i] > 0).collect();
+        let (s0, s1) = (steps[0], steps[steps.len() - 1]);
+        areas.push(strip.area(s0, s1, (a0, a1)));
+    }
+    areas.reverse();
+    areas
 }
 
 fn union(a: Area, b: Area) -> Area {
@@ -291,6 +446,7 @@ pub fn reread(
     image: &RgbImage,
     layout: &ClueLayout,
     compare_digits: bool,
+    by_slots: bool,
 ) -> anyhow::Result<Reread> {
     let luma = Luma::new(image);
     let h = layout.glyph_height;
@@ -331,10 +487,36 @@ pub fn reread(
         })
         .collect();
 
-    // Recognize every number at once.
+    // Where a lane's clues can't all be read as ink runs (they're crossed out, or run together),
+    // try going by slots instead, if the clues are on a regular spacing. (Only where the caller
+    // says they might be: in a picture whose clues aren't so neatly arranged, the background
+    // can look like slots full of ink.)
+    let col_strips: Vec<LaneStrip> = (0..width)
+        .map(|c| LaneStrip::column(&luma, layout, col_center(c)))
+        .collect();
+    let row_strips: Vec<LaneStrip> = (0..height)
+        .map(|r| LaneStrip::row(&luma, layout, row_center(r)))
+        .collect();
+    let (col_slots, row_slots) = if by_slots {
+        (slots(&col_strips, h), slots(&row_strips, h))
+    } else {
+        (None, None)
+    };
+    let slotted = |strips: &[LaneStrip], slots: Option<(f32, f32)>| -> Vec<Option<Vec<Area>>> {
+        strips
+            .iter()
+            .map(|strip| slots.map(|slots| by_slot(strip, slots, h)))
+            .collect()
+    };
+    let col_slotted = slotted(&col_strips, col_slots);
+    let row_slotted = slotted(&row_strips, row_slots);
+
+    // Recognize every number, both ways, at once.
     let areas: Vec<Area> = cols
         .iter()
         .chain(&rows)
+        .chain(&col_slotted)
+        .chain(&row_slotted)
         .flatten()
         .flatten()
         .copied()
@@ -353,9 +535,29 @@ pub fn reread(
             corrections += 1;
         }
     }
-    let mut readings = readings.into_iter().zip(recognized);
+    // Each area's reading, in the same order as `areas`.
+    let mut next = readings
+        .into_iter()
+        .zip(recognized)
+        .zip(areas.iter().copied());
+    let mut take = |lane: &Option<Vec<Area>>| -> Option<Vec<(Area, Option<u16>, Option<u16>)>> {
+        lane.as_ref().map(|lane| {
+            lane.iter()
+                .map(|_| {
+                    let ((number, recognized), area) = next.next().unwrap();
+                    (area, number, recognized)
+                })
+                .collect()
+        })
+    };
+    let col_runs: Vec<_> = cols.iter().map(&mut take).collect();
+    let row_runs: Vec<_> = rows.iter().map(&mut take).collect();
+    let col_slot_readings: Vec<_> = col_slotted.iter().map(&mut take).collect();
+    let row_slot_readings: Vec<_> = row_slotted.iter().map(&mut take).collect();
+
     let mut found = vec![];
     let mut fallbacks = 0;
+    let mut blots = 0;
     // The extra lane past the end needs more evidence than just reading as numbers (the edge of
     // a button can look like a "1"): they must be the size the others are, and in the middle of
     // the lane.
@@ -378,42 +580,61 @@ pub fn reread(
     let col_fits = |areas: &[Area]| fits(areas, col_center(width), true, layout.col_pitch);
     let row_fits = |areas: &[Area]| fits(areas, row_center(height), false, layout.row_pitch);
 
-    let mut read = |lanes: Vec<Lane>,
+    type Readings = Option<Vec<(Area, Option<u16>, Option<u16>)>>;
+    let mut read = |runs: Vec<Readings>,
+                    slots: Vec<Readings>,
                     before: &[Vec<u16>],
                     plausible: &dyn Fn(&[Area]) -> bool|
      -> Vec<Vec<u16>> {
         let mut result = vec![];
-        for (i, lane) in lanes.into_iter().enumerate() {
-            let plausible = lane.as_deref().is_some_and(plausible);
-            // Each number, or `None` if it wasn't one.
-            let numbers: Option<Vec<Option<u16>>> = lane.map(|areas| {
-                areas
-                    .into_iter()
-                    .map(|area| {
-                        let (number, recognized) = readings.next().unwrap_or_default();
+        for (i, lane) in runs.into_iter().enumerate() {
+            let all_read = |lane: &[(Area, Option<u16>, Option<u16>)]| {
+                lane.iter().all(|(_, number, _)| number.is_some())
+            };
+            let Some(before) = before.get(i) else {
+                // The extra lane past the end: keep it only if it's clearly clues.
+                if let Some(lane) = lane {
+                    let areas: Vec<Area> = lane.iter().map(|r| r.0).collect();
+                    if !lane.is_empty() && all_read(&lane) && plausible(&areas) {
+                        result.push(lane.iter().map(|r| r.1.unwrap()).collect());
+                    }
+                }
+                break;
+            };
+            // As ink runs, if that read cleanly (but finding nothing where phase one found
+            // something is more likely a miss); or by slot, if that did. Otherwise, what the first
+            // pass said, if it said anything; or failing that, by slot, with whatever doesn't
+            // read left blotted.
+            let slot = slots.get(i).cloned().flatten().filter(|s| !s.is_empty());
+            let chosen = match (lane, slot) {
+                (Some(lane), _) if all_read(&lane) && !(lane.is_empty() && !before.is_empty()) => {
+                    Some(lane)
+                }
+                (_, Some(slot)) if all_read(&slot) => Some(slot),
+                _ if !before.is_empty() => None,
+                (_, slot) => slot,
+            };
+            match chosen {
+                Some(lane) => {
+                    let mut numbers = vec![];
+                    for (area, number, recognized) in lane {
                         found.push(Found {
                             area,
                             number,
                             recognized,
                         });
-                        number
-                    })
-                    .collect()
-            });
-            let numbers: Option<Vec<u16>> = numbers.and_then(|n| n.into_iter().collect());
-            let Some(before) = before.get(i) else {
-                // The extra lane past the end: keep it only if it's clearly clues.
-                if let Some(numbers) = numbers.filter(|n| !n.is_empty() && plausible) {
+                        match number {
+                            Some(0) => {}
+                            Some(n) => numbers.push(n),
+                            None => {
+                                blots += 1;
+                                numbers.push(BLOTTED);
+                            }
+                        }
+                    }
                     result.push(numbers);
                 }
-                break;
-            };
-            match numbers {
-                // Finding nothing where phase one found something is more likely a miss.
-                Some(numbers) if !(numbers.is_empty() && !before.is_empty()) => {
-                    result.push(numbers.into_iter().filter(|&n| n != 0).collect())
-                }
-                _ => {
+                None => {
                     fallbacks += 1;
                     result.push(before.clone());
                 }
@@ -421,13 +642,14 @@ pub fn reread(
         }
         result
     };
-    let new_cols = read(cols, &layout.cols, &col_fits);
-    let new_rows = read(rows, &layout.rows, &row_fits);
+    let new_cols = read(col_runs, col_slot_readings, &layout.cols, &col_fits);
+    let new_rows = read(row_runs, row_slot_readings, &layout.rows, &row_fits);
     Ok(Reread {
         cols: new_cols,
         rows: new_rows,
         fallbacks,
         corrections,
+        blots,
         found,
     })
 }

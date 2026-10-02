@@ -435,7 +435,7 @@ fn show(clues: &[Vec<u16>]) -> String {
         .iter()
         .map(|c| {
             c.iter()
-                .map(|n| n.to_string())
+                .map(|&n| clue_layout::clue_text(n))
                 .collect::<Vec<_>>()
                 .join(" ")
         })
@@ -462,6 +462,7 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
     let (glyphs, rejected) = find_glyphs(engine, &input, args.threshold, args.min_area)?;
     let grid = grid::find(&image);
     let mut layout = arrange(&glyphs, args.width, args.height);
+    let mut from_lines = false;
     // Where the grid's lines can be found, they're a surer guide to its shape than the clues.
     // The grid can also be found from its lines, but that's less reliable than the clues, if
     // the clues can be read (it can mistake boxes around clues for the edge of the grid). So it's
@@ -493,13 +494,22 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
                 .warnings
                 .push("the clues didn't make sense, so the grid was found from its lines".into());
             layout = Ok(from_grid);
+            from_lines = true;
         }
     }
     let mut reread = None;
     if let Ok(layout) = &mut layout
         && !args.no_reread
     {
-        let again = reread::reread(engine, &input, &image, layout, args.compare_digits)?;
+        let again = reread::reread(
+            engine,
+            &input,
+            &image,
+            layout,
+            args.compare_digits,
+            // A grid found from its lines likely has boxes for its clues, too.
+            from_lines,
+        )?;
         layout.cols = again.cols.clone();
         layout.rows = again.rows.clone();
         reread = Some(again);
@@ -557,9 +567,9 @@ fn main() -> anyhow::Result<()> {
     };
     if let Some(reread) = &reading.reread {
         eprintln!(
-            "(The second pass fell back on the first for {} lanes, and corrected {} numbers \
-             by comparing digits.)",
-            reread.fallbacks, reread.corrections
+            "(The second pass fell back on the first for {} lanes, couldn't read {} clues, and \
+             corrected {} numbers by comparing digits.)",
+            reread.fallbacks, reread.blots, reread.corrections
         );
     }
     eprintln!("{} columns: {}", layout.cols.len(), show(&layout.cols));
@@ -586,6 +596,20 @@ fn main() -> anyhow::Result<()> {
         as_nonos(&layout.rows),
         as_nonos(&layout.cols),
     );
+    let blotted = layout
+        .cols
+        .iter()
+        .chain(&layout.rows)
+        .flatten()
+        .filter(|&&n| n == clue_layout::BLOTTED)
+        .count();
+    if blotted > 0 {
+        save_debug_image(None)?;
+        anyhow::bail!(
+            "{blotted} clues couldn't be read (shown as \"?\"), so there's no puzzle to write; \
+             see --debug-image"
+        );
+    }
     let report = puzzle.plain_solve();
     match &report {
         Ok(report) if report.cells_left == 0 => eprintln!("Solvable with line logic."),
