@@ -26,6 +26,7 @@ use rten_tensor::prelude::*;
 
 mod cells;
 mod clue_layout;
+mod grid;
 mod reread;
 mod templates;
 
@@ -449,6 +450,8 @@ struct Reading {
     rejected: Vec<Rejected>,
     /// With the clues from the second pass, if there was one.
     layout: anyhow::Result<ClueLayout>,
+    /// The grid, as found from its lines.
+    grid: Option<grid::Grid>,
     reread: Option<reread::Reread>,
 }
 
@@ -457,7 +460,41 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
     let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())?;
     let input = engine.prepare_input(source)?;
     let (glyphs, rejected) = find_glyphs(engine, &input, args.threshold, args.min_area)?;
+    let grid = grid::find(&image);
     let mut layout = arrange(&glyphs, args.width, args.height);
+    // Where the grid's lines can be found, they're a surer guide to its shape than the clues.
+    // The grid can also be found from its lines, but that's less reliable than the clues, if
+    // the clues can be read (it can mistake boxes around clues for the edge of the grid). So it's
+    // only for when the clues gave nothing sensible: no grid, or cells far from square.
+    if let Some(grid) = &grid {
+        let use_grid = grid.width() >= 5
+            && grid.height() >= 5
+            && match &layout {
+                Err(_) => true,
+                Ok(found) => {
+                    let (a, b) = (found.col_pitch, found.row_pitch);
+                    (a - b).abs() > 0.25 * a.max(b)
+                }
+            };
+        if use_grid {
+            let height = match &layout {
+                Ok(found) => found.glyph_height,
+                Err(_) => {
+                    let mut heights: Vec<f32> = glyphs.iter().map(|g| g.height).collect();
+                    heights.sort_by(f32::total_cmp);
+                    heights
+                        .get(heights.len() / 2)
+                        .copied()
+                        .unwrap_or(0.6 * grid.horizontal.pitch)
+                }
+            };
+            let mut from_grid = grid.layout(height, glyphs.len());
+            from_grid
+                .warnings
+                .push("the clues didn't make sense, so the grid was found from its lines".into());
+            layout = Ok(from_grid);
+        }
+    }
     let mut reread = None;
     if let Ok(layout) = &mut layout
         && !args.no_reread
@@ -472,6 +509,7 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
         glyphs,
         rejected,
         layout,
+        grid,
         reread,
     })
 }
@@ -731,6 +769,24 @@ fn debug_image(reading: &Reading, states: Option<&[Vec<cells::State>]>) -> image
         let (top, left) = (layout.grid_top, layout.grid_left);
         draw::line(&mut debug, (0.0, top.at(0.0)), (w, top.at(w)), green);
         draw::line(&mut debug, (left.at(0.0), 0.0), (left.at(h), h), green);
+    }
+    // The lines found, in purple, with the grid's bounds thicker.
+    if let Some(grid) = &reading.grid {
+        let purple = Rgb([160, 0, 220]);
+        for (i, _) in grid.horizontal.intercepts.iter().enumerate() {
+            let at = |x: f32| grid.horizontal.at(i, x);
+            draw::line(&mut debug, (0.0, at(0.0)), (w, at(w)), purple);
+            if i == grid.rows.0 || i == grid.rows.1 {
+                draw::line(&mut debug, (0.0, at(0.0) + 2.0), (w, at(w) + 2.0), purple);
+            }
+        }
+        for (i, _) in grid.vertical.intercepts.iter().enumerate() {
+            let at = |y: f32| grid.vertical.at(i, y);
+            draw::line(&mut debug, (at(0.0), 0.0), (at(h), h), purple);
+            if i == grid.cols.0 || i == grid.cols.1 {
+                draw::line(&mut debug, (at(0.0) + 2.0, 0.0), (at(h) + 2.0, h), purple);
+            }
+        }
     }
     // The cells' states: filled in green, crossed out in red, undecided in gray.
     if let (Some(states), Some(layout)) = (states, layout) {

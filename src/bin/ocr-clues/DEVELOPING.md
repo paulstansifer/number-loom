@@ -21,6 +21,10 @@ Here's what it does:
 2. `clue_layout.rs` decides which of those digits are clues, and from that, where the grid
    and each of its columns and rows are. (It doesn't use `ocrs` itself, but its tests, being the
    binary's, need `cargo test --features ocr`.)
+   `grid.rs` can also find the grid from its lines (evenly spaced peaks of thin-line pixels),
+   but it's less reliable at telling where the grid ends and clue boxes begin, so it's only
+   used when the clues gave nothing sensible. It draws the lines it found in purple on the debug
+   image, with the grid's bounds doubled.
 3. `reread.rs` goes back to the pixels, now knowing where each lane's clues
    must be, and finds each number from the ink, then recognizes it on its own. (Measured on the
    ink, the gap between two numbers is reliably wider than between two digits of one number, even
