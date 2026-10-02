@@ -31,6 +31,13 @@ mod reread;
 mod templates;
 mod warp;
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum Dewarp {
+    Auto,
+    Always,
+    Never,
+}
+
 #[derive(clap::Parser, Debug)]
 #[command(about = "Read nonogram clues out of a picture")]
 struct Args {
@@ -73,12 +80,13 @@ struct Args {
     #[arg(long)]
     compare_digits: bool,
 
-    /// Straighten out the grid's lines first, for photos of paper that isn't flat (experimental)
-    #[arg(long)]
-    dewarp: bool,
+    /// Straighten out the grid's lines first, for photos of paper that isn't flat. ("auto" does
+    /// it when the picture as it is doesn't make sense, and straightening it helps.)
+    #[arg(long, value_enum, default_value = "auto")]
+    dewarp: Dewarp,
 
-    /// With --dewarp, draw the lines it traced on a copy of the original picture
-    #[arg(long, requires = "dewarp")]
+    /// When straightening, draw the lines it traced on a copy of the original picture
+    #[arg(long)]
     debug_lines: Option<PathBuf>,
 
     /// Print the digits OCR found (digit, center x, center y, width, height), and stop
@@ -472,45 +480,127 @@ struct Reading {
     layout: anyhow::Result<ClueLayout>,
     /// The grid, as found from its lines.
     grid: Option<grid::Grid>,
+    /// Whether the picture was straightened out first (and `image` is the straightened one).
+    flattened: bool,
     reread: Option<reread::Reread>,
 }
 
-fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading> {
-    let mut image = open_image(path, args.scale)?;
-    let mut flattened = false;
-    if args.dewarp {
-        let (w, h) = (image.width() as f32, image.height() as f32);
-        match warp::trace(&image).and_then(|traced| Some((warp::Mesh::new(&traced, w, h)?, traced)))
-        {
-            Some((mesh, traced)) => {
-                if let Some(lines_path) = &args.debug_lines {
-                    // As traced in red and blue, and as smoothed in green.
-                    let mut debug = image.clone();
-                    for (lines, color) in [
-                        (&traced.horizontal, image::Rgb([230, 0, 0])),
-                        (&traced.vertical, image::Rgb([0, 60, 255])),
-                    ] {
-                        for (_, curve) in lines {
-                            for w in curve.windows(2) {
-                                draw::line(&mut debug, w[0], w[1], color);
-                            }
-                        }
-                    }
-                    for curve in mesh.lines(w, h) {
-                        for w in curve.windows(2) {
-                            draw::line(&mut debug, w[0], w[1], image::Rgb([0, 180, 0]));
-                        }
-                    }
-                    debug
-                        .save(lines_path)
-                        .with_context(|| format!("writing {lines_path:?}"))?;
+/// The picture, straightened out (see `warp`), if its lines can be traced.
+fn straighten(image: &image::RgbImage, args: &Args) -> anyhow::Result<Option<image::RgbImage>> {
+    let (w, h) = (image.width() as f32, image.height() as f32);
+    let Some((mesh, traced)) =
+        warp::trace(image).and_then(|traced| Some((warp::Mesh::new(&traced, w, h)?, traced)))
+    else {
+        return Ok(None);
+    };
+    if let Some(lines_path) = &args.debug_lines {
+        // As traced in red and blue, and as smoothed in green.
+        let mut debug = image.clone();
+        for (lines, color) in [
+            (&traced.horizontal, image::Rgb([230, 0, 0])),
+            (&traced.vertical, image::Rgb([0, 60, 255])),
+        ] {
+            for (_, curve) in lines {
+                for w in curve.windows(2) {
+                    draw::line(&mut debug, w[0], w[1], color);
                 }
-                image = warp::flatten(&image, &mesh, traced.pitch.round().max(8.0));
-                flattened = true;
             }
-            None => eprintln!("Warning: couldn't trace the grid's lines to straighten them"),
+        }
+        for curve in mesh.lines(w, h) {
+            for w in curve.windows(2) {
+                draw::line(&mut debug, w[0], w[1], image::Rgb([0, 180, 0]));
+            }
+        }
+        debug
+            .save(lines_path)
+            .with_context(|| format!("writing {lines_path:?}"))?;
+    }
+    Ok(Some(warp::flatten(
+        image,
+        &mesh,
+        traced.pitch.round().max(8.0),
+    )))
+}
+
+/// How much sense a reading makes, from 0 (none) to 1 (it's consistent: the rows and columns
+/// fill the same number of cells, every clue fits, and none is blotted).
+fn sense(layout: &anyhow::Result<ClueLayout>) -> f32 {
+    let Ok(layout) = layout else {
+        return 0.0;
+    };
+    let (width, height) = (layout.cols.len(), layout.rows.len());
+    let lanes = width + height;
+    if lanes == 0 {
+        return 0.0;
+    }
+    let clues = |lanes: &[Vec<u16>]| -> Vec<u16> {
+        lanes
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&n| n != clue_layout::BLOTTED)
+            .collect()
+    };
+    let (cols, rows) = (clues(&layout.cols), clues(&layout.rows));
+    let total = |c: &[u16]| c.iter().map(|&n| n as f32).sum::<f32>();
+    let (sc, sr) = (total(&cols), total(&rows));
+    if sc + sr == 0.0 {
+        return 0.0;
+    }
+    let agreement = 1.0 - (sc - sr).abs() / sc.max(sr);
+    let fits = |lanes: &[Vec<u16>], len: usize| {
+        lanes
+            .iter()
+            .filter(|lane| {
+                lane.iter().map(|&n| n as usize).sum::<usize>() + lane.len().saturating_sub(1)
+                    <= len
+            })
+            .count()
+    };
+    let fitting = (fits(&layout.cols, height) + fits(&layout.rows, width)) as f32 / lanes as f32;
+    let numbers = layout.cols.iter().chain(&layout.rows).flatten().count();
+    let read = (cols.len() + rows.len()) as f32 / numbers.max(1) as f32;
+    agreement * fitting * read
+}
+
+fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading> {
+    let image = open_image(path, args.scale)?;
+    match args.dewarp {
+        Dewarp::Never => read_image(engine, image, false, args),
+        Dewarp::Always => match straighten(&image, args)? {
+            Some(flat) => read_image(engine, flat, true, args),
+            None => {
+                eprintln!("Warning: couldn't trace the grid's lines to straighten them");
+                read_image(engine, image, false, args)
+            }
+        },
+        // Straightening a picture that doesn't need it only loses detail, so try without first.
+        Dewarp::Auto => {
+            let plain = read_image(engine, image.clone(), false, args)?;
+            let plain_sense = sense(&plain.layout);
+            if plain_sense >= 1.0 {
+                return Ok(plain);
+            }
+            let Some(flat) = straighten(&image, args)? else {
+                return Ok(plain);
+            };
+            let flattened = read_image(engine, flat, true, args)?;
+            // (A clear improvement, not just a different set of mistakes.)
+            Ok(if sense(&flattened.layout) > plain_sense + 0.1 {
+                flattened
+            } else {
+                plain
+            })
         }
     }
+}
+
+fn read_image(
+    engine: &OcrEngine,
+    image: image::RgbImage,
+    flattened: bool,
+    args: &Args,
+) -> anyhow::Result<Reading> {
     let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())?;
     let input = engine.prepare_input(source)?;
     let (glyphs, rejected) = find_glyphs(engine, &input, args.threshold, args.min_area, flattened)?;
@@ -585,6 +675,7 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
         rejected,
         layout,
         grid,
+        flattened,
         reread,
     })
 }
@@ -630,6 +721,9 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("{e:#}");
         }
     };
+    if reading.flattened {
+        eprintln!("(Straightened out the picture's lines first.)");
+    }
     if let Some(reread) = &reading.reread {
         eprintln!(
             "(The second pass fell back on the first for {} lanes, couldn't read {} clues, and \
