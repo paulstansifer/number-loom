@@ -12,7 +12,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use clap::Parser;
 use clue_layout::{ClueLayout, Expected, Glyph, Role, Score, arrange};
-use number_loom::puzzle::{Color, Document, DynPuzzle, Nono, NonogramFormat, Puzzle, PuzzleDynOps};
+use number_loom::puzzle::{
+    BACKGROUND, Color, Document, DynPuzzle, DynSolution, Nono, NonogramFormat, Puzzle,
+    PuzzleDynOps, UNSOLVED,
+};
+use number_loom::solve::grid_solve::Report;
 use number_loom::{export, import};
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams, OcrInput, TextItem};
 use rten::Model;
@@ -20,6 +24,7 @@ use rten_imageproc::{RectF, RetrievalMode, RotatedRect, find_contours};
 use rten_tensor::NdTensorView;
 use rten_tensor::prelude::*;
 
+mod cells;
 mod clue_layout;
 mod reread;
 mod templates;
@@ -497,11 +502,21 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    if let Some(path) = &args.debug_image {
-        debug_image(&reading)
-            .save(path)
-            .with_context(|| format!("writing {path:?}"))?;
-    }
+    let save_debug_image = |states: Option<&[Vec<cells::State>]>| -> anyhow::Result<()> {
+        if let Some(path) = &args.debug_image {
+            debug_image(&reading, states)
+                .save(path)
+                .with_context(|| format!("writing {path:?}"))?;
+        }
+        Ok(())
+    };
+    let layout = match &reading.layout {
+        Ok(layout) => layout,
+        Err(e) => {
+            save_debug_image(None)?;
+            anyhow::bail!("{e:#}");
+        }
+    };
     if let Some(reread) = &reading.reread {
         eprintln!(
             "(The second pass fell back on the first for {} lanes, and corrected {} numbers \
@@ -509,8 +524,6 @@ fn main() -> anyhow::Result<()> {
             reread.fallbacks, reread.corrections
         );
     }
-    let layout = reading.layout?;
-
     eprintln!("{} columns: {}", layout.cols.len(), show(&layout.cols));
     eprintln!("{} rows: {}", layout.rows.len(), show(&layout.rows));
     for warning in &layout.warnings {
@@ -535,11 +548,50 @@ fn main() -> anyhow::Result<()> {
         as_nonos(&layout.rows),
         as_nonos(&layout.cols),
     );
-    match puzzle.plain_solve() {
+    let report = puzzle.plain_solve();
+    match &report {
         Ok(report) if report.cells_left == 0 => eprintln!("Solvable with line logic."),
         Ok(report) => eprintln!("Line logic leaves {} cells unsolved.", report.cells_left),
         Err(_) => eprintln!("Warning: these clues contradict each other."),
     }
+
+    // With (some of) the answer, the grid's cells can be read, too.
+    let (width, height) = (layout.cols.len(), layout.rows.len());
+    let mut states = None;
+    if let Ok(Report {
+        solution: DynSolution::Square(answer),
+        cells_left,
+        ..
+    }) = &report
+        && *cells_left < width * height
+    {
+        let answer: Vec<Vec<Option<bool>>> = (0..height)
+            .map(|r| {
+                (0..width)
+                    .map(|c| match answer.get((c, r)) {
+                        Some(color) if color == UNSOLVED => None,
+                        Some(color) => Some(color != BACKGROUND),
+                        None => None,
+                    })
+                    .collect()
+            })
+            .collect();
+        let read = cells::read(&reading.image, layout, &answer);
+        eprintln!("The grid (# filled in, x crossed out, . undecided):");
+        for row in &read {
+            let line: String = row
+                .iter()
+                .map(|state| match state {
+                    cells::State::Filled => '#',
+                    cells::State::Crossed => 'x',
+                    cells::State::Undecided => '.',
+                })
+                .collect();
+            eprintln!("    {line}");
+        }
+        states = Some(read);
+    }
+    save_debug_image(states.as_deref())?;
 
     let output = args.output.unwrap_or_else(|| PathBuf::from("-"));
     let format = args
@@ -586,7 +638,7 @@ fn score(engine: &OcrEngine, dir: &Path, args: &Args) -> anyhow::Result<()> {
         let reading = read(engine, picture, args)?;
         if let Some(dir) = &args.debug_dir {
             let path = dir.join(picture.with_extension("png").file_name().unwrap());
-            debug_image(&reading)
+            debug_image(&reading, None)
                 .save(&path)
                 .with_context(|| format!("writing {path:?}"))?;
         }
@@ -657,7 +709,7 @@ fn score(engine: &OcrEngine, dir: &Path, args: &Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn debug_image(reading: &Reading) -> image::RgbImage {
+fn debug_image(reading: &Reading, states: Option<&[Vec<cells::State>]>) -> image::RgbImage {
     use image::Rgb;
     let (image, glyphs, rejected) = (&reading.image, &reading.glyphs, &reading.rejected);
     let layout = reading.layout.as_ref().ok();
@@ -679,6 +731,29 @@ fn debug_image(reading: &Reading) -> image::RgbImage {
         let (top, left) = (layout.grid_top, layout.grid_left);
         draw::line(&mut debug, (0.0, top.at(0.0)), (w, top.at(w)), green);
         draw::line(&mut debug, (left.at(0.0), 0.0), (left.at(h), h), green);
+    }
+    // The cells' states: filled in green, crossed out in red, undecided in gray.
+    if let (Some(states), Some(layout)) = (states, layout) {
+        let r = 0.2 * layout.col_pitch.min(layout.row_pitch);
+        for (row, &y) in states.iter().zip(&layout.row_centers) {
+            for (state, &x) in row.iter().zip(&layout.col_centers) {
+                match state {
+                    cells::State::Filled => {
+                        draw::rect(&mut debug, (x - r, y - r, x + r, y + r), Rgb([0, 200, 0]))
+                    }
+                    cells::State::Crossed => {
+                        let red = Rgb([230, 0, 0]);
+                        draw::line(&mut debug, (x - r, y - r), (x + r, y + r), red);
+                        draw::line(&mut debug, (x - r, y + r), (x + r, y - r), red);
+                    }
+                    cells::State::Undecided => draw::rect(
+                        &mut debug,
+                        (x - 2.0, y - 2.0, x + 2.0, y + 2.0),
+                        Rgb([150, 150, 150]),
+                    ),
+                }
+            }
+        }
     }
     // The second pass's numbers (to the right of the first's, so they don't overlap).
     for found in reading.reread.iter().flat_map(|r| &r.found) {

@@ -25,12 +25,20 @@ Here's what it does:
    must be, and finds each number from the ink, then recognizes it on its own. (Measured on the
    ink, the gap between two numbers is reliably wider than between two digits of one number, even
    where "1 11" and "1 1 1" look alike to OCR.) Where that fails for a lane, step 2's reading
-   stands. `--no-reread` skips this step, for comparison.
+   stands. `--no-reread` skips this step, for comparison. (`--compare-digits` adds a check of
+   each digit against the others recognized as the same digit, in `templates.rs`; it hasn't
+   helped on the pictures we have.)
+4. If the clues solve (even partly), `cells.rs` reads the state of the grid: which cells the
+   person has filled in, crossed out, or left undecided. It sorts the cells into groups that look
+   alike, and the answer says what each group means: one that's all filled in the answer is the
+   filled cells, and so on. (A picture with only one crossed-out cell gives nothing to compare
+   it to, so it's left undecided.)
 
 `--debug-image` is the tool for figuring out what went wrong: step 2's column clues are outlined
 in blue, its row clues in red, digits it ignored in gray, and text that wasn't digits in orange.
 The green lines are where it thinks the grid's top and left edges are. Step 3's numbers are in
-teal, labeled with what they read as, or in magenta if they didn't read as a number.
+teal, labeled with what they read as, or in magenta if they didn't read as a number. Step 4's
+cells are marked with a green square (filled), a red X (crossed out), or a gray dot (undecided).
 `--dump-glyphs` prints what OCR found in step 1.
 
 To measure accuracy, keep pictures in a directory with a hand-checked `NAME.clues` beside each
