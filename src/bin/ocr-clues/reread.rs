@@ -448,6 +448,9 @@ pub fn reread(
     compare_digits: bool,
     by_slots: bool,
 ) -> anyhow::Result<Reread> {
+    if layout.col_centers.is_empty() || layout.row_centers.is_empty() {
+        anyhow::bail!("the grid has no cells");
+    }
     let luma = Luma::new(image);
     let h = layout.glyph_height;
 

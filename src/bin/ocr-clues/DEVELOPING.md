@@ -16,6 +16,13 @@ curl https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.onnx -o ~/
 
 Here's what it does:
 
+0. With `--dewarp` (experimental), `warp.rs` first straightens out a photo of paper that isn't
+   flat or isn't square-on. Each grid line is followed as a curve, snapping at each step to the
+   lattice of lines measured in the patch around it, and stopping where the lines stop being
+   solid (the grid has ended, or it's a column of digits, which lines up like a line but has
+   gaps). Then one smooth surface is fitted to all of them (which also extends the lines past
+   the grid, over the clues), and each cell is mapped to a square. `--debug-lines` draws what it
+   traced (red and blue) and the fitted lines (green). Small print may need `--scale 2` too.
 1. `main.rs` finds digits, with some help for what `ocrs` is bad at: lone
    "1"s, faded clues, and tightly-stacked column clues that detection sees as one blob.
 2. `clue_layout.rs` decides which of those digits are clues, and from that, where the grid

@@ -29,6 +29,7 @@ mod clue_layout;
 mod grid;
 mod reread;
 mod templates;
+mod warp;
 
 #[derive(clap::Parser, Debug)]
 #[command(about = "Read nonogram clues out of a picture")]
@@ -71,6 +72,14 @@ struct Args {
     /// it hasn't helped yet, on the pictures we have)
     #[arg(long)]
     compare_digits: bool,
+
+    /// Straighten out the grid's lines first, for photos of paper that isn't flat (experimental)
+    #[arg(long)]
+    dewarp: bool,
+
+    /// With --dewarp, draw the lines it traced on a copy of the original picture
+    #[arg(long, requires = "dewarp")]
+    debug_lines: Option<PathBuf>,
 
     /// Print the digits OCR found (digit, center x, center y, width, height), and stop
     #[arg(long)]
@@ -294,8 +303,19 @@ fn find_glyphs(
     input: &OcrInput,
     threshold: f32,
     min_area: f32,
+    flattened: bool,
 ) -> anyhow::Result<(Vec<Glyph>, Vec<Rejected>)> {
     let probs = engine.detect_text_pixels(input)?;
+    // In a flattened picture, detection gives everything a fair chance of being text, so the
+    // threshold has to clear that. (Not otherwise: in some pictures, faint clues are only just
+    // above the background.)
+    let threshold = if flattened {
+        let mut sample: Vec<f32> = probs.iter().step_by(97).copied().collect();
+        sample.sort_by(f32::total_cmp);
+        threshold.max(sample.get(sample.len() / 2).copied().unwrap_or(0.0) + 0.05)
+    } else {
+        threshold
+    };
     let mask = probs.map(|p| *p > threshold);
     let blobs = find_blobs(mask.view(), min_area);
     let (mut glyphs, mut rejected) = recognize(engine, input, &blobs)?;
@@ -456,10 +476,44 @@ struct Reading {
 }
 
 fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading> {
-    let image = open_image(path, args.scale)?;
+    let mut image = open_image(path, args.scale)?;
+    let mut flattened = false;
+    if args.dewarp {
+        let (w, h) = (image.width() as f32, image.height() as f32);
+        match warp::trace(&image).and_then(|traced| Some((warp::Mesh::new(&traced, w, h)?, traced)))
+        {
+            Some((mesh, traced)) => {
+                if let Some(lines_path) = &args.debug_lines {
+                    // As traced in red and blue, and as smoothed in green.
+                    let mut debug = image.clone();
+                    for (lines, color) in [
+                        (&traced.horizontal, image::Rgb([230, 0, 0])),
+                        (&traced.vertical, image::Rgb([0, 60, 255])),
+                    ] {
+                        for (_, curve) in lines {
+                            for w in curve.windows(2) {
+                                draw::line(&mut debug, w[0], w[1], color);
+                            }
+                        }
+                    }
+                    for curve in mesh.lines(w, h) {
+                        for w in curve.windows(2) {
+                            draw::line(&mut debug, w[0], w[1], image::Rgb([0, 180, 0]));
+                        }
+                    }
+                    debug
+                        .save(lines_path)
+                        .with_context(|| format!("writing {lines_path:?}"))?;
+                }
+                image = warp::flatten(&image, &mesh, traced.pitch.round().max(8.0));
+                flattened = true;
+            }
+            None => eprintln!("Warning: couldn't trace the grid's lines to straighten them"),
+        }
+    }
     let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())?;
     let input = engine.prepare_input(source)?;
-    let (glyphs, rejected) = find_glyphs(engine, &input, args.threshold, args.min_area)?;
+    let (glyphs, rejected) = find_glyphs(engine, &input, args.threshold, args.min_area, flattened)?;
     let grid = grid::find(&image);
     let mut layout = arrange(&glyphs, args.width, args.height);
     let mut from_lines = false;
@@ -474,7 +528,9 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
                 Err(_) => true,
                 Ok(found) => {
                     let (a, b) = (found.col_pitch, found.row_pitch);
-                    (a - b).abs() > 0.25 * a.max(b)
+                    found.cols.is_empty()
+                        || found.rows.is_empty()
+                        || (a - b).abs() > 0.25 * a.max(b)
                 }
             };
         if use_grid {
@@ -498,10 +554,11 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
         }
     }
     let mut reread = None;
+    let mut failed = None;
     if let Ok(layout) = &mut layout
         && !args.no_reread
     {
-        let again = reread::reread(
+        match reread::reread(
             engine,
             &input,
             &image,
@@ -509,10 +566,18 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
             args.compare_digits,
             // A grid found from its lines likely has boxes for its clues, too.
             from_lines,
-        )?;
-        layout.cols = again.cols.clone();
-        layout.rows = again.rows.clone();
-        reread = Some(again);
+        ) {
+            Ok(again) => {
+                layout.cols = again.cols.clone();
+                layout.rows = again.rows.clone();
+                reread = Some(again);
+            }
+            // (A layout so broken there's nothing to re-read is no layout at all.)
+            Err(e) => failed = Some(e),
+        }
+    }
+    if let Some(e) = failed {
+        layout = Err(e);
     }
     Ok(Reading {
         image,

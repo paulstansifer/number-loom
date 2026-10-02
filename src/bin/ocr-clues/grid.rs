@@ -18,14 +18,14 @@ use crate::clue_layout::{ClueLayout, Edge, Role};
 
 /// How much each pixel looks like part of a thin horizontal line (in `response[0]`) or vertical
 /// one (in `response[1]`).
-struct Response {
-    width: usize,
-    height: usize,
+pub struct Response {
+    pub width: usize,
+    pub height: usize,
     lines: [Vec<f32>; 2],
 }
 
 impl Response {
-    fn new(image: &RgbImage) -> Response {
+    pub fn new(image: &RgbImage) -> Response {
         let (width, height) = (image.width() as usize, image.height() as usize);
         let luma: Vec<f32> = image
             .pixels()
@@ -61,7 +61,7 @@ impl Response {
 
     /// The response for lines along `axis` (0: horizontal, 1: vertical), at a point given as
     /// `(along, across)`.
-    fn at(&self, axis: usize, along: f32, across: f32) -> f32 {
+    pub fn at(&self, axis: usize, along: f32, across: f32) -> f32 {
         let (x, y) = if axis == 0 {
             (along, across)
         } else {
@@ -331,10 +331,21 @@ pub struct Grid {
     pub cols: (usize, usize),
 }
 
+/// The size of a cell, roughly (and whatever tilt makes the lines sharpest, in each direction).
+fn rough_cell_size(response: &Response) -> Option<(usize, (f32, Vec<f32>), (f32, Vec<f32>))> {
+    let (h_tilt, v_tilt) = (tilt(response, 0), tilt(response, 1));
+    let pitch = cell_size([&autocorrelation(&h_tilt.1), &autocorrelation(&v_tilt.1)])?;
+    Some((pitch, h_tilt, v_tilt))
+}
+
+/// The size of a cell, roughly, as found from the lines.
+pub fn rough_pitch(response: &Response) -> Option<f32> {
+    rough_cell_size(response).map(|(pitch, _, _)| pitch as f32)
+}
+
 pub fn find(image: &RgbImage) -> Option<Grid> {
     let response = Response::new(image);
-    let (h_tilt, v_tilt) = (tilt(&response, 0), tilt(&response, 1));
-    let pitch = cell_size([&autocorrelation(&h_tilt.1), &autocorrelation(&v_tilt.1)])?;
+    let (pitch, h_tilt, v_tilt) = rough_cell_size(&response)?;
     let horizontal = find_lines(&response, 0, h_tilt, pitch)?;
     let vertical = find_lines(&response, 1, v_tilt, pitch)?;
 
