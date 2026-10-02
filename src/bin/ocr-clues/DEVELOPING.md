@@ -44,11 +44,11 @@ Here's what it does:
    doesn't read as a number (say, a crossed-out clue) becomes a "blotted" clue, shown as `?`. (`--compare-digits` adds a check of
    each digit against the others recognized as the same digit, in `templates.rs`; it hasn't
    helped on the pictures we have.)
-4. If the clues solve (even partly), `cells.rs` reads the state of the grid: which cells the
-   person has filled in, crossed out, or left undecided. It sorts the cells into groups that look
-   alike, and the answer says what each group means: one that's all filled in the answer is the
-   filled cells, and so on. (A picture with only one crossed-out cell gives nothing to compare
-   it to, so it's left undecided.)
+4. `cells.rs` reads the state of the grid: which cells the person has filled in, crossed out,
+   or left undecided. It sorts the cells into groups that look alike; a group with a mark drawn
+   in it is crossed out, and a plain group clearly darker than the rest is filled. (So it doesn't
+   need the clues, many of which are crossed out in a well-solved puzzle.) If the clues solve,
+   any cells that disagree with the answer are reported.
 
 `--debug-image` is the tool for figuring out what went wrong: step 2's column clues are outlined
 in blue, its row clues in red, digits it ignored in gray, and text that wasn't digits in orange.

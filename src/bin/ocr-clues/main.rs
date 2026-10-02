@@ -755,6 +755,21 @@ fn main() -> anyhow::Result<()> {
         as_nonos(&layout.rows),
         as_nonos(&layout.cols),
     );
+    // The state of the grid: what's been filled in and crossed out so far.
+    let states = cells::read(&reading.image, layout);
+    eprintln!("The grid (# filled in, x crossed out, . undecided):");
+    for row in &states {
+        let line: String = row
+            .iter()
+            .map(|state| match state {
+                cells::State::Filled => '#',
+                cells::State::Crossed => 'x',
+                cells::State::Undecided => '.',
+            })
+            .collect();
+        eprintln!("    {line}");
+    }
+
     let blotted = layout
         .cols
         .iter()
@@ -763,7 +778,7 @@ fn main() -> anyhow::Result<()> {
         .filter(|&&n| n == clue_layout::BLOTTED)
         .count();
     if blotted > 0 {
-        save_debug_image(None)?;
+        save_debug_image(Some(&states))?;
         anyhow::bail!(
             "{blotted} clues couldn't be read (shown as \"?\"), so there's no puzzle to write; \
              see --debug-image"
@@ -775,44 +790,32 @@ fn main() -> anyhow::Result<()> {
         Ok(report) => eprintln!("Line logic leaves {} cells unsolved.", report.cells_left),
         Err(_) => eprintln!("Warning: these clues contradict each other."),
     }
-
-    // With (some of) the answer, the grid's cells can be read, too.
-    let (width, height) = (layout.cols.len(), layout.rows.len());
-    let mut states = None;
+    // Where the grid disagrees with the answer, either the person made a mistake, or something
+    // was misread.
     if let Ok(Report {
         solution: DynSolution::Square(answer),
-        cells_left,
         ..
     }) = &report
-        && *cells_left < width * height
     {
-        let answer: Vec<Vec<Option<bool>>> = (0..height)
-            .map(|r| {
-                (0..width)
-                    .map(|c| match answer.get((c, r)) {
-                        Some(color) if color == UNSOLVED => None,
-                        Some(color) => Some(color != BACKGROUND),
-                        None => None,
-                    })
-                    .collect()
-            })
-            .collect();
-        let read = cells::read(&reading.image, layout, &answer);
-        eprintln!("The grid (# filled in, x crossed out, . undecided):");
-        for row in &read {
-            let line: String = row
-                .iter()
-                .map(|state| match state {
-                    cells::State::Filled => '#',
-                    cells::State::Crossed => 'x',
-                    cells::State::Undecided => '.',
-                })
-                .collect();
-            eprintln!("    {line}");
+        let mut wrong = 0;
+        for (r, row) in states.iter().enumerate() {
+            for (c, state) in row.iter().enumerate() {
+                match (state, answer.get((c, r))) {
+                    (cells::State::Filled, Some(color)) if color == BACKGROUND => wrong += 1,
+                    (cells::State::Crossed, Some(color))
+                        if color != BACKGROUND && color != UNSOLVED =>
+                    {
+                        wrong += 1
+                    }
+                    _ => {}
+                }
+            }
         }
-        states = Some(read);
+        if wrong > 0 {
+            eprintln!("Warning: {wrong} cells of the grid disagree with the answer.");
+        }
     }
-    save_debug_image(states.as_deref())?;
+    save_debug_image(Some(&states))?;
 
     let output = args.output.unwrap_or_else(|| PathBuf::from("-"));
     let format = args

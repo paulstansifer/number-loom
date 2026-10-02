@@ -2,12 +2,11 @@
 //! out, or not decided yet.
 //!
 //! How an app draws each of those differs from app to app, but within one picture, every filled
-//! cell looks like every other, and so on. So the cells are sorted into groups that look alike.
-//! What each group *means* comes from the puzzle's answer, if the clues were read well enough to
-//! solve it: a group of cells that are all filled in the answer is the player's filled cells; a
-//! group that are all empty in the answer is their crossed-out ones; and a group that's a mix is
-//! the cells they haven't decided yet. (So the groups' averages are templates for this app's way
-//! of drawing cells, which could be used to read pictures whose clues can't be.)
+//! cell looks like every other, and so on. So the cells are sorted into groups that look alike,
+//! and what each group means comes from how it looks: a group with something drawn in it (an X,
+//! or a dot) is crossed-out cells, and a plain group that's clearly darker than the rest is
+//! filled cells. This doesn't need the clues, which matters because the more of a puzzle is
+//! solved, the more of its clues are likely to be crossed out.
 
 use image::RgbImage;
 
@@ -103,14 +102,8 @@ fn groups(points: &[Vec<f32>], k: usize) -> Vec<usize> {
     assignment
 }
 
-/// The state of each cell, `[row][column]`, given whether it's filled in the answer (where that's
-/// known).
-pub fn read(
-    image: &RgbImage,
-    layout: &ClueLayout,
-    answer: &[Vec<Option<bool>>],
-) -> Vec<Vec<State>> {
-    let (width, height) = (layout.col_centers.len(), layout.row_centers.len());
+/// Each cell's look, `[row * width + column]`, and which group of look-alikes it's in.
+fn grouped(image: &RgbImage, layout: &ClueLayout) -> Option<(Vec<Vec<f32>>, Vec<usize>)> {
     // Stay clear of the grid lines.
     let half = 0.3 * layout.col_pitch.min(layout.row_pitch);
     let mut looks = vec![];
@@ -119,40 +112,35 @@ pub fn read(
             looks.push(look(image, x, y, half));
         }
     }
-    let mut states = vec![vec![State::Undecided; width]; height];
     if looks.len() < 8 {
-        return states;
+        return None;
     }
     let assignment = groups(&looks, 6.min(looks.len() / 4));
+    Some((looks, assignment))
+}
 
-    // Which state each group is: always filled in the answer, never, or both.
+/// Brightness, from 0 to 1, of each pixel of a look.
+fn brightness(look: &[f32]) -> Vec<f32> {
+    look.chunks(3)
+        .map(|p| 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2])
+        .collect()
+}
+
+/// The state of each cell, `[row][column]`, from how the groups of
+/// look-alike cells look. A group with something drawn in it (an X, or a dot) is crossed-out
+/// cells, and the color behind the mark is what an undecided cell looks like. A plain group
+/// that's clearly darker than that is filled cells. (Darker is filled in every black-and-white
+/// puzzle we've seen, dark-mode apps included; a colored puzzle on a dark background can break
+/// that.)
+pub fn read(image: &RgbImage, layout: &ClueLayout) -> Vec<Vec<State>> {
+    let (width, height) = (layout.col_centers.len(), layout.row_centers.len());
+    let mut states = vec![vec![State::Undecided; width]; height];
+    let Some((looks, assignment)) = grouped(image, layout) else {
+        return states;
+    };
     let k = assignment.iter().max().unwrap() + 1;
-    let mut filled = vec![0usize; k];
-    let mut empty = vec![0usize; k];
-    for (cell, &group) in assignment.iter().enumerate() {
-        match answer[cell / width][cell % width] {
-            Some(true) => filled[group] += 1,
-            Some(false) => empty[group] += 1,
-            None => {}
-        }
-    }
-    let meaning: Vec<State> = (0..k)
-        .map(|g| {
-            let known = filled[g] + empty[g];
-            if known < 3 {
-                State::Undecided
-            } else if filled[g] as f32 >= 0.95 * known as f32 {
-                State::Filled
-            } else if empty[g] as f32 >= 0.95 * known as f32 {
-                State::Crossed
-            } else {
-                State::Undecided
-            }
-        })
-        .collect();
-    // Too few of a group's cells have a known answer to say what it is (a lone crossed-out cell
-    // can be a group of its own): go by which group its cells look most like, if any is close.
-    let centers: Vec<Vec<f32>> = (0..k)
+    // Each group's average look, its brightness, and how much variety there is within it.
+    let average: Vec<Vec<f32>> = (0..k)
         .map(|g| {
             let members: Vec<&Vec<f32>> = looks
                 .iter()
@@ -165,35 +153,61 @@ pub fn read(
                 .collect()
         })
         .collect();
-    let spread: Vec<f32> = (0..k)
-        .map(|g| {
-            let mut distances: Vec<f32> = looks
-                .iter()
-                .zip(&assignment)
-                .filter(|(_, a)| **a == g)
-                .map(|(l, _)| distance(l, &centers[g]))
-                .collect();
-            distances.sort_by(f32::total_cmp);
-            distances.get(distances.len() / 2).copied().unwrap_or(0.0)
+    // Each group's typical brightness, and how much it varies within a cell (a mark drawn in it
+    // makes it vary a lot; a plain cell, filled or not, hardly at all).
+    let looks_of: Vec<(f32, f32)> = average
+        .iter()
+        .map(|a| {
+            let b = brightness(a);
+            let mean = b.iter().sum::<f32>() / b.len() as f32;
+            let spread =
+                (b.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / b.len() as f32).sqrt();
+            let mut sorted = b;
+            sorted.sort_by(f32::total_cmp);
+            (sorted[sorted.len() / 2], spread)
         })
         .collect();
-    let unlabeled = |g: usize| filled[g] + empty[g] < 3;
-    for (cell, &group) in assignment.iter().enumerate() {
-        let mut state = meaning[group];
-        if unlabeled(group) {
-            let nearest = (0..k)
-                .filter(|&g| !unlabeled(g) && meaning[g] != State::Undecided)
-                .min_by(|&a, &b| {
-                    distance(&looks[cell], &centers[a])
-                        .total_cmp(&distance(&looks[cell], &centers[b]))
-                });
-            if let Some(g) = nearest
-                && distance(&looks[cell], &centers[g]) <= 3.0 * spread[g]
-            {
-                state = meaning[g];
+    let marked = |g: usize| looks_of[g].1 > 0.06;
+    let mut meaning = vec![State::Undecided; k];
+    for g in (0..k).filter(|&g| marked(g)) {
+        meaning[g] = State::Crossed;
+    }
+    // Behind the marks is what an undecided cell looks like.
+    let behind_marks: Vec<f32> = (0..k)
+        .filter(|&g| marked(g))
+        .map(|g| looks_of[g].0)
+        .collect();
+    let undecided_brightness = (!behind_marks.is_empty())
+        .then(|| behind_marks.iter().sum::<f32>() / behind_marks.len() as f32);
+    // The plain groups split at the biggest gap in brightness, if there's a clear one: darker
+    // is filled. (Uneven lighting can make undecided cells several groups of their own.)
+    let mut plain: Vec<usize> = (0..k).filter(|&g| !marked(g)).collect();
+    plain.sort_by(|&a, &b| looks_of[a].0.total_cmp(&looks_of[b].0));
+    let darker_than_undecided =
+        |g: usize| undecided_brightness.is_none_or(|u| looks_of[g].0 < u - 0.2);
+    if plain.len() >= 2 {
+        let (gap, at) = plain
+            .windows(2)
+            .enumerate()
+            .map(|(i, w)| (looks_of[w[1]].0 - looks_of[w[0]].0, i + 1))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap();
+        if gap >= 0.15 {
+            for &g in &plain[..at] {
+                if darker_than_undecided(g) {
+                    meaning[g] = State::Filled;
+                }
             }
         }
-        states[cell / width][cell % width] = state;
+    } else if let [g] = plain[..]
+        && undecided_brightness.is_some()
+        && darker_than_undecided(g)
+    {
+        // Only one kind of plain cell, and it's clearly not what's behind the marks.
+        meaning[g] = State::Filled;
+    }
+    for (cell, &group) in assignment.iter().enumerate() {
+        states[cell / width][cell % width] = meaning[group];
     }
     states
 }
