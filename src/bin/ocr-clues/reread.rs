@@ -12,7 +12,7 @@ use image::RgbImage;
 use ocrs::{OcrEngine, OcrInput};
 use rten_imageproc::{RectF, RotatedRect};
 
-use crate::as_digit;
+use crate::{as_digit, templates};
 
 /// A box in image pixels: `(left, top, right, bottom)`, inclusive.
 pub type Area = (i64, i64, i64, i64);
@@ -22,6 +22,8 @@ pub struct Found {
     pub area: Area,
     /// What it read as, or `None` if it wasn't a number.
     pub number: Option<u16>,
+    /// What recognition said, if comparing with the other digits changed it.
+    pub recognized: Option<u16>,
 }
 
 pub struct Reread {
@@ -29,11 +31,13 @@ pub struct Reread {
     pub rows: Vec<Vec<u16>>,
     /// Lanes where phase two failed, so phase one's reading stands.
     pub fallbacks: usize,
+    /// Numbers changed by comparing digits (see `templates`).
+    pub corrections: usize,
     pub found: Vec<Found>,
 }
 
 /// The image, in shades of gray.
-struct Luma {
+pub struct Luma {
     luma: Vec<f32>,
     width: i64,
     height: i64,
@@ -52,7 +56,7 @@ impl Luma {
         }
     }
 
-    fn at(&self, x: i64, y: i64) -> Option<f32> {
+    pub fn at(&self, x: i64, y: i64) -> Option<f32> {
         (x >= 0 && y >= 0 && x < self.width && y < self.height)
             .then(|| self.luma[(y * self.width + x) as usize])
     }
@@ -286,6 +290,7 @@ pub fn reread(
     input: &OcrInput,
     image: &RgbImage,
     layout: &ClueLayout,
+    compare_digits: bool,
 ) -> anyhow::Result<Reread> {
     let luma = Luma::new(image);
     let h = layout.glyph_height;
@@ -335,7 +340,20 @@ pub fn reread(
         .copied()
         .collect();
     let lines: Vec<Vec<RotatedRect>> = areas.iter().map(|&a| vec![crop(a)]).collect();
-    let mut texts = engine.recognize_text(input, &lines)?.into_iter();
+    let mut readings: Vec<Option<u16>> = engine
+        .recognize_text(input, &lines)?
+        .into_iter()
+        .map(|text| as_number(&text?.to_string()))
+        .collect();
+    let mut recognized: Vec<Option<u16>> = vec![None; areas.len()];
+    let mut corrections = 0;
+    if compare_digits {
+        for correction in templates::correct(&luma, &areas, &mut readings) {
+            recognized[correction.number] = Some(correction.was);
+            corrections += 1;
+        }
+    }
+    let mut readings = readings.into_iter().zip(recognized);
     let mut found = vec![];
     let mut fallbacks = 0;
     // The extra lane past the end needs more evidence than just reading as numbers (the edge of
@@ -372,9 +390,12 @@ pub fn reread(
                 areas
                     .into_iter()
                     .map(|area| {
-                        let text = texts.next().flatten().map(|t| t.to_string());
-                        let number = text.as_deref().and_then(as_number);
-                        found.push(Found { area, number });
+                        let (number, recognized) = readings.next().unwrap_or_default();
+                        found.push(Found {
+                            area,
+                            number,
+                            recognized,
+                        });
                         number
                     })
                     .collect()
@@ -406,6 +427,7 @@ pub fn reread(
         cols: new_cols,
         rows: new_rows,
         fallbacks,
+        corrections,
         found,
     })
 }

@@ -22,6 +22,7 @@ use rten_tensor::prelude::*;
 
 mod clue_layout;
 mod reread;
+mod templates;
 
 #[derive(clap::Parser, Debug)]
 #[command(about = "Read nonogram clues out of a picture")]
@@ -59,6 +60,11 @@ struct Args {
     /// Skip the second pass, which re-reads each lane where the first pass says it is
     #[arg(long)]
     no_reread: bool,
+
+    /// In the second pass, compare each digit to the others to catch misreadings (experimental:
+    /// it hasn't helped yet, on the pictures we have)
+    #[arg(long)]
+    compare_digits: bool,
 
     /// Print the digits OCR found (digit, center x, center y, width, height), and stop
     #[arg(long)]
@@ -451,7 +457,7 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
     if let Ok(layout) = &mut layout
         && !args.no_reread
     {
-        let again = reread::reread(engine, &input, &image, layout)?;
+        let again = reread::reread(engine, &input, &image, layout, args.compare_digits)?;
         layout.cols = again.cols.clone();
         layout.rows = again.rows.clone();
         reread = Some(again);
@@ -498,8 +504,9 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(reread) = &reading.reread {
         eprintln!(
-            "(The second pass fell back on the first for {} lanes.)",
-            reread.fallbacks
+            "(The second pass fell back on the first for {} lanes, and corrected {} numbers \
+             by comparing digits.)",
+            reread.fallbacks, reread.corrections
         );
     }
     let layout = reading.layout?;
@@ -677,9 +684,10 @@ fn debug_image(reading: &Reading) -> image::RgbImage {
     for found in reading.reread.iter().flat_map(|r| &r.found) {
         let (left, top, right, bottom) = found.area;
         let area = (left as f32, top as f32, right as f32, bottom as f32);
-        let (color, label) = match found.number {
-            Some(n) => (Rgb([0, 170, 170]), n.to_string()),
-            None => (Rgb([255, 0, 255]), "?".to_string()),
+        let (color, label) = match (found.number, found.recognized) {
+            (Some(n), Some(was)) => (Rgb([220, 160, 0]), format!("{was}>{n}")),
+            (Some(n), None) => (Rgb([0, 170, 170]), n.to_string()),
+            (None, _) => (Rgb([255, 0, 255]), "?".to_string()),
         };
         draw::rect(&mut debug, area, color);
         draw::text(&mut debug, (area.2 + 3.0, area.1), 11.0, &label, color);
