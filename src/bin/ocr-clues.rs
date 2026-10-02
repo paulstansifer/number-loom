@@ -1,0 +1,530 @@
+//! Reads the clues out of a picture of a nonogram (a screenshot, a scan, a photo).
+//!
+//! ```text
+//! cargo run --release --features ocr --bin ocr-clues -- puzzle.webp out.xml --debug-image debug.png
+//! ```
+//!
+//! OCR (the `ocrs` crate) finds the digits; `number_loom::clue_layout` works out which of them are
+//! clues and how they line up. The OCR models aren't bundled; see `DEVELOPING.md`.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, bail};
+use clap::Parser;
+use number_loom::clue_layout::{ClueLayout, Glyph, Role, arrange};
+use number_loom::puzzle::{Color, Document, DynPuzzle, Nono, NonogramFormat, Puzzle, PuzzleDynOps};
+use number_loom::{export, import};
+use ocrs::{ImageSource, OcrEngine, OcrEngineParams, TextItem};
+use rten::Model;
+use rten_imageproc::{RectF, RetrievalMode, RotatedRect, find_contours};
+use rten_tensor::NdTensorView;
+use rten_tensor::prelude::*;
+
+#[derive(clap::Parser, Debug)]
+#[command(about = "Read nonogram clues out of a picture")]
+struct Args {
+    /// The picture of the puzzle
+    image: PathBuf,
+
+    /// Where to write the puzzle; "-" (the default) for stdout
+    output: Option<PathBuf>,
+
+    /// Format to write the puzzle in (by default, guessed from the output's file name, or olsak
+    /// for stdout)
+    #[arg(short, long, value_enum)]
+    output_format: Option<NonogramFormat>,
+
+    /// The number of columns, for when there are empty columns at the right, which leave no clues
+    /// to find
+    #[arg(long)]
+    width: Option<usize>,
+
+    /// The number of rows, for when there are empty rows at the bottom
+    #[arg(long)]
+    height: Option<usize>,
+
+    /// Print the digits OCR found (digit, center x, center y, width, height), and stop
+    #[arg(long)]
+    dump_glyphs: bool,
+
+    /// The text-detection model. Defaults to `~/.cache/ocrs/text-detection.{rten,onnx}`
+    #[arg(long)]
+    detection_model: Option<PathBuf>,
+
+    /// The text-recognition model. Defaults to `~/.cache/ocrs/text-recognition.{rten,onnx}`
+    #[arg(long)]
+    recognition_model: Option<PathBuf>,
+
+    /// Write a copy of the picture marked up with what was found where
+    #[arg(long)]
+    debug_image: Option<PathBuf>,
+
+    /// How sure the OCR model must be that a pixel is part of some text
+    #[arg(long, default_value_t = 0.15)]
+    threshold: f32,
+
+    /// The smallest word OCR will consider, in square pixels
+    #[arg(long, default_value_t = 20.0)]
+    min_area: f32,
+
+    /// Enlarge the picture by this factor before OCR; helps when the digits are tiny
+    #[arg(long, default_value_t = 1.0)]
+    scale: f32,
+}
+
+const MODEL_URL: &str = "https://ocrs-models.s3-accelerate.amazonaws.com";
+
+/// Find a model in `~/.cache/ocrs/`, where `ocrs-cli` keeps them.
+fn default_model(name: &str) -> anyhow::Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("no $HOME to find models in")?;
+    let dir = Path::new(&home).join(".cache/ocrs");
+    for ext in ["rten", "onnx"] {
+        let path = dir.join(format!("{name}.{ext}"));
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    bail!(
+        "no {name} model in {dir:?}; download it with\n  \
+         curl {MODEL_URL}/{name}.onnx -o {}",
+        dir.join(format!("{name}.onnx")).display()
+    )
+}
+
+fn load_model(path: Option<PathBuf>, name: &str) -> anyhow::Result<Model> {
+    let path = match path {
+        Some(path) => path,
+        None => default_model(name)?,
+    };
+    Model::load_file(&path).with_context(|| format!("loading {path:?}"))
+}
+
+/// OCR misreads a lone digit as a similar-looking letter now and then.
+fn as_digit(c: char) -> Option<u8> {
+    match c {
+        '0'..='9' => Some(c as u8 - b'0'),
+        'l' | 'I' | '|' | 'i' | '!' => Some(1),
+        'O' | 'o' => Some(0),
+        _ => None,
+    }
+}
+
+/// Text OCR read that isn't made of digits (kept only to draw on the debug image).
+struct Rejected {
+    text: String,
+    rect: (f32, f32, f32, f32),
+}
+
+/// A blob of text found by detection: the box around the pixels the model marked.
+#[derive(Clone, Copy, Debug)]
+struct Blob {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+impl Blob {
+    fn height(&self) -> f32 {
+        (self.bottom - self.top) as f32 + 2.0 * EXPAND
+    }
+    fn width(&self) -> f32 {
+        (self.right - self.left) as f32 + 2.0 * EXPAND
+    }
+
+    /// The area to hand to recognition.
+    fn rect(&self) -> RotatedRect {
+        // The model marks a little less than the whole word, so pad it (as `ocrs` does). And a
+        // lone "1" is so thin that recognition, given only what was marked, reads it as junk.
+        let (top, bottom) = (self.top as f32 - EXPAND, self.bottom as f32 + EXPAND);
+        let half_width = (self.width() / 2.0).max(self.height() * 0.35);
+        let center = (self.left + self.right) as f32 / 2.0;
+        RotatedRect::from_rect(RectF::from_tlbr(
+            top,
+            center - half_width,
+            bottom,
+            center + half_width,
+        ))
+    }
+}
+
+const EXPAND: f32 = 3.0;
+
+/// Like `OcrEngine::detect_words`, but with an adjustable threshold and minimum size. Its
+/// defaults are tuned for prose, and miss a lone "1", or a clue grayed out to show it's done.
+fn find_blobs(mask: NdTensorView<bool, 2>, min_area: f32) -> Vec<Blob> {
+    let mut blobs = vec![];
+    for poly in find_contours(mask, RetrievalMode::External).iter() {
+        let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for p in poly.iter() {
+            (left, top) = (left.min(p.x), top.min(p.y));
+            (right, bottom) = (right.max(p.x), bottom.max(p.y));
+        }
+        let blob = Blob {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        if blob.width() * blob.height() >= min_area {
+            blobs.push(blob);
+        }
+    }
+    blobs
+}
+
+/// Column clues can be stacked so tightly that detection sees a tower of them as one blob.
+/// Cut it up where the model is least sure there's text, into pieces about `height` tall.
+fn split_tower(blob: &Blob, probs: NdTensorView<f32, 2>, height: f32) -> Vec<Blob> {
+    let glyph = height - 2.0 * EXPAND;
+    let tall = (blob.bottom - blob.top) as f32;
+    // Stacked digits have a little space between them.
+    let pieces = ((tall + 0.3 * glyph) / (1.3 * glyph)).round().max(2.0) as i32;
+    let profile = |y: i32| -> f32 {
+        (blob.left..=blob.right)
+            .map(|x| probs[[y as usize, x as usize]])
+            .sum()
+    };
+    let step = tall / pieces as f32;
+    let mut cuts = vec![blob.top];
+    for i in 1..pieces {
+        let ideal = blob.top as f32 + i as f32 * step;
+        let window = (ideal - 0.35 * step) as i32..=(ideal + 0.35 * step) as i32;
+        let cut = window
+            .min_by(|&a, &b| profile(a).total_cmp(&profile(b)))
+            .unwrap();
+        cuts.push(cut);
+    }
+    cuts.push(blob.bottom);
+    cuts.windows(2)
+        .map(|w| Blob {
+            top: w[0] + 1,
+            bottom: w[1] - 1,
+            ..*blob
+        })
+        .filter(|b| b.bottom > b.top)
+        .collect()
+}
+
+/// Recognize each blob as a line of its own: `find_text_lines` would string together
+/// neighboring clues, and even neighboring columns, which is exactly the decision we want to make
+/// ourselves. Returns the digits, tagged with the blob they're from, and the text that wasn't
+/// made of digits.
+fn recognize(
+    engine: &OcrEngine,
+    input: &ocrs::OcrInput,
+    blobs: &[Blob],
+) -> anyhow::Result<(Vec<(usize, Glyph)>, Vec<Rejected>)> {
+    let lines: Vec<_> = blobs.iter().map(|b| vec![b.rect()]).collect();
+    let mut glyphs = vec![];
+    let mut rejected = vec![];
+    for (blob, line) in engine
+        .recognize_text(input, &lines)?
+        .into_iter()
+        .enumerate()
+    {
+        for word in line.iter().flat_map(|l| l.words()) {
+            let Some(digits) = word
+                .chars()
+                .iter()
+                .map(|c| as_digit(c.char))
+                .collect::<Option<Vec<u8>>>()
+            else {
+                let r = word.bounding_rect();
+                rejected.push(Rejected {
+                    text: word.to_string(),
+                    rect: (
+                        r.left() as f32,
+                        r.top() as f32,
+                        r.right() as f32,
+                        r.bottom() as f32,
+                    ),
+                });
+                continue;
+            };
+            for (c, digit) in word.chars().iter().zip(digits) {
+                let r = c.rect;
+                let glyph = Glyph {
+                    digit,
+                    x: (r.left() + r.right()) as f32 / 2.0,
+                    y: (r.top() + r.bottom()) as f32 / 2.0,
+                    width: r.width() as f32,
+                    height: r.height() as f32,
+                };
+                glyphs.push((blob, glyph));
+            }
+        }
+    }
+    Ok((glyphs, rejected))
+}
+
+/// Every digit in the image. Words that aren't entirely digits are dropped: they're titles,
+/// buttons, and status bars, not clues.
+fn find_glyphs(
+    engine: &OcrEngine,
+    image: &image::RgbImage,
+    threshold: f32,
+    min_area: f32,
+) -> anyhow::Result<(Vec<Glyph>, Vec<Rejected>)> {
+    let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())?;
+    let input = engine.prepare_input(source)?;
+    let probs = engine.detect_text_pixels(&input)?;
+    let mask = probs.map(|p| *p > threshold);
+    let blobs = find_blobs(mask.view(), min_area);
+    let (mut glyphs, mut rejected) = recognize(engine, &input, &blobs)?;
+
+    let median_height = |glyphs: &[(usize, Glyph)]| {
+        let mut heights: Vec<f32> = glyphs.iter().map(|(_, g)| g.height).collect();
+        heights.sort_by(f32::total_cmp);
+        heights.get(heights.len() / 2).copied()
+    };
+    let Some(height) = median_height(&glyphs) else {
+        return Ok((vec![], rejected));
+    };
+
+    // Narrow blobs that are too tall are towers of column clues: split them and try again.
+    let is_tower = |b: &Blob| b.height() > 1.6 * height && b.width() < 3.0 * height;
+    let towers: Vec<Blob> = blobs.iter().filter(|b| is_tower(b)).copied().collect();
+    if !towers.is_empty() {
+        glyphs.retain(|(blob, _)| !is_tower(&blobs[*blob]));
+        let pieces: Vec<Blob> = towers
+            .iter()
+            .flat_map(|t| split_tower(t, probs.view(), height))
+            .collect();
+        let (more_glyphs, more_rejected) = recognize(engine, &input, &pieces)?;
+        glyphs.extend(more_glyphs);
+        rejected.extend(more_rejected);
+    }
+
+    // A low detection threshold picks up faint clues, but also the texture of the grid, which
+    // OCR sometimes reads as digits. Those come in the wrong sizes: specks, or big blobs.
+    let mut result = vec![];
+    for (_, g) in glyphs {
+        if (0.6..=1.6).contains(&(g.height / height)) {
+            result.push(g);
+        } else {
+            rejected.push(Rejected {
+                text: format!("{}?", g.digit),
+                rect: (
+                    g.x - g.width / 2.0,
+                    g.y - g.height / 2.0,
+                    g.x + g.width / 2.0,
+                    g.y + g.height / 2.0,
+                ),
+            });
+        }
+    }
+    Ok((result, rejected))
+}
+
+/// Drawing on the debug image.
+mod draw {
+    use ab_glyph::{Font as _, FontRef, PxScale, ScaleFont as _};
+    use image::{Rgb, RgbImage};
+    use std::sync::LazyLock;
+
+    static FONT: LazyLock<FontRef<'static>> = LazyLock::new(|| {
+        FontRef::try_from_slice(epaint_default_fonts::HACK_REGULAR).expect("bundled font")
+    });
+
+    fn blend(img: &mut RgbImage, x: i64, y: i64, color: Rgb<u8>, alpha: f32) {
+        if x < 0 || y < 0 || x >= img.width() as i64 || y >= img.height() as i64 {
+            return;
+        }
+        let px = img.get_pixel_mut(x as u32, y as u32);
+        for i in 0..3 {
+            px[i] = (px[i] as f32 * (1.0 - alpha) + color[i] as f32 * alpha) as u8;
+        }
+    }
+
+    pub fn rect(img: &mut RgbImage, (x0, y0, x1, y1): (f32, f32, f32, f32), color: Rgb<u8>) {
+        let (x0, y0, x1, y1) = (x0 as i64, y0 as i64, x1 as i64, y1 as i64);
+        for t in 0..2 {
+            for x in x0..=x1 {
+                blend(img, x, y0 - t, color, 1.0);
+                blend(img, x, y1 + t, color, 1.0);
+            }
+            for y in y0..=y1 {
+                blend(img, x0 - t, y, color, 1.0);
+                blend(img, x1 + t, y, color, 1.0);
+            }
+        }
+    }
+
+    pub fn line(img: &mut RgbImage, (x0, y0): (f32, f32), (x1, y1): (f32, f32), color: Rgb<u8>) {
+        let steps = (x1 - x0).abs().max((y1 - y0).abs()).ceil().max(1.0) as i64;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let (x, y) = (x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+            blend(img, x as i64, y as i64, color, 1.0);
+            blend(img, x as i64 + 1, y as i64, color, 1.0);
+        }
+    }
+
+    /// `text`, with its top-left corner at `(x, y)`.
+    pub fn text(img: &mut RgbImage, (x, y): (f32, f32), size: f32, text: &str, color: Rgb<u8>) {
+        let font = FONT.as_scaled(PxScale::from(size));
+        let mut caret = x;
+        for c in text.chars() {
+            let mut glyph = font.scaled_glyph(c);
+            let advance = font.h_advance(glyph.id);
+            glyph.position = ab_glyph::point(caret, y + font.ascent());
+            if let Some(outlined) = FONT.outline_glyph(glyph) {
+                let bounds = outlined.px_bounds();
+                outlined.draw(|gx, gy, coverage| {
+                    blend(
+                        img,
+                        bounds.min.x as i64 + gx as i64,
+                        bounds.min.y as i64 + gy as i64,
+                        color,
+                        coverage,
+                    )
+                });
+            }
+            caret += advance;
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    let engine = OcrEngine::new(OcrEngineParams {
+        detection_model: Some(load_model(args.detection_model, "text-detection")?),
+        recognition_model: Some(load_model(args.recognition_model, "text-recognition")?),
+        ..Default::default()
+    })?;
+
+    let mut image = image::open(&args.image)
+        .with_context(|| format!("reading {:?}", args.image))?
+        .into_rgb8();
+    if args.scale != 1.0 {
+        let (w, h) = image.dimensions();
+        image = image::imageops::resize(
+            &image,
+            (w as f32 * args.scale) as u32,
+            (h as f32 * args.scale) as u32,
+            image::imageops::FilterType::CatmullRom,
+        );
+    }
+
+    let (glyphs, rejected) = find_glyphs(&engine, &image, args.threshold, args.min_area)?;
+    if args.dump_glyphs {
+        for g in &glyphs {
+            println!("{} {} {} {} {}", g.digit, g.x, g.y, g.width, g.height);
+        }
+        return Ok(());
+    }
+
+    let layout = arrange(&glyphs, args.width, args.height);
+    if let Some(path) = &args.debug_image {
+        debug_image(&image, &glyphs, &rejected, layout.as_ref().ok())
+            .save(path)
+            .with_context(|| format!("writing {path:?}"))?;
+    }
+    let layout = layout?;
+
+    let show = |clues: &[Vec<u16>]| {
+        clues
+            .iter()
+            .map(|c| {
+                c.iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    eprintln!("{} columns: {}", layout.cols.len(), show(&layout.cols));
+    eprintln!("{} rows: {}", layout.rows.len(), show(&layout.rows));
+    for warning in &layout.warnings {
+        eprintln!("Warning: {warning}");
+    }
+
+    let as_nonos = |clues: &[Vec<u16>]| -> Vec<Vec<Nono>> {
+        clues
+            .iter()
+            .map(|c| {
+                c.iter()
+                    .map(|&count| Nono {
+                        color: Color(1),
+                        count,
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let puzzle = Puzzle::square(
+        import::bw_palette(),
+        as_nonos(&layout.rows),
+        as_nonos(&layout.cols),
+    );
+    match puzzle.plain_solve() {
+        Ok(report) if report.cells_left == 0 => eprintln!("Solvable with line logic."),
+        Ok(report) => eprintln!("Line logic leaves {} cells unsolved.", report.cells_left),
+        Err(_) => eprintln!("Warning: these clues contradict each other."),
+    }
+
+    let output = args.output.unwrap_or_else(|| PathBuf::from("-"));
+    let format = args
+        .output_format
+        .or_else(|| (output == Path::new("-")).then_some(NonogramFormat::Olsak));
+    let mut document = Document::new(
+        Some(DynPuzzle::SquareNono(puzzle)),
+        None,
+        output.display().to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    export::save(&mut document, &output, format)
+}
+
+fn debug_image(
+    image: &image::RgbImage,
+    glyphs: &[Glyph],
+    rejected: &[Rejected],
+    layout: Option<&ClueLayout>,
+) -> image::RgbImage {
+    use image::Rgb;
+    let mut debug = image.clone();
+    let (w, h) = (image.width() as f32, image.height() as f32);
+    let orange = Rgb([255, 140, 0]);
+    for r in rejected {
+        draw::rect(&mut debug, r.rect, orange);
+        draw::text(
+            &mut debug,
+            (r.rect.0, r.rect.3 + 2.0),
+            12.0,
+            &r.text,
+            orange,
+        );
+    }
+    if let Some(layout) = layout {
+        let green = Rgb([0, 180, 0]);
+        let (top, left) = (layout.grid_top, layout.grid_left);
+        draw::line(&mut debug, (0.0, top.at(0.0)), (w, top.at(w)), green);
+        draw::line(&mut debug, (left.at(0.0), 0.0), (left.at(h), h), green);
+    }
+    for (i, g) in glyphs.iter().enumerate() {
+        let role = layout.map_or(Role::Ignored, |l| l.roles[i]);
+        let (color, label) = match role {
+            Role::Ignored => (Rgb([150, 150, 150]), String::new()),
+            Role::Col(c) => (Rgb([0, 60, 255]), format!("c{}", c + 1)),
+            Role::Row(r) => (Rgb([230, 0, 0]), format!("r{}", r + 1)),
+        };
+        let (hw, hh) = (g.width / 2.0, g.height / 2.0);
+        draw::rect(&mut debug, (g.x - hw, g.y - hh, g.x + hw, g.y + hh), color);
+        draw::text(
+            &mut debug,
+            (g.x - hw, g.y + hh + 1.0),
+            11.0,
+            &format!("{}{label}", g.digit),
+            color,
+        );
+    }
+    debug
+}

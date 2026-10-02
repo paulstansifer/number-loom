@@ -1,3 +1,4 @@
+pub mod clue_layout;
 pub mod export;
 pub mod formats;
 pub mod geometry;
