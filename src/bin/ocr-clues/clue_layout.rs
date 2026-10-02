@@ -91,6 +91,14 @@ pub struct ClueLayout {
     pub roles: Vec<Role>,
     pub grid_top: Edge,
     pub grid_left: Edge,
+    /// Where the middle of each column is (x), and each row (y).
+    pub col_centers: Vec<f32>,
+    pub row_centers: Vec<f32>,
+    /// The size of a cell.
+    pub col_pitch: f32,
+    pub row_pitch: f32,
+    /// How tall a digit is.
+    pub glyph_height: f32,
     /// Things that look wrong, for a human to check.
     pub warnings: Vec<String>,
 }
@@ -368,13 +376,12 @@ fn read_numbers(digits: &[Glyph], same_number: impl Fn(&Glyph, &Glyph) -> bool) 
 }
 
 /// The threshold that separates "next digit of the same number" from "next number", given the
-/// distances between neighboring digits. The digits of one number are set tight, never as much
-/// as a glyph height apart; within that, look for a clear jump. If there's none, every digit is
-/// its own number.
-fn split_threshold(mut distances: Vec<f32>, h: f32) -> f32 {
-    let limit = 0.85 * h;
+/// distances between neighboring digits. The digits of one number are set tight, never as far
+/// apart as `limit`; within that, look for a clear jump. If there's none, every digit is its own
+/// number. `min_jump` is how much bigger the next-number distances must be.
+pub fn split_threshold(mut distances: Vec<f32>, limit: f32, min_jump: f32) -> f32 {
     distances.sort_by(f32::total_cmp);
-    let mut best = (1.25, 0.0); // a jump has to be at least this big to count
+    let mut best = (min_jump, 0.0);
     for w in distances.windows(2) {
         let ratio = w[1] / w[0].max(0.1);
         if w[0] < limit && ratio > best.0 {
@@ -432,9 +439,15 @@ pub fn arrange(
     let corner_x = (left.intercept + left.slope * top.intercept) / (1.0 - left.slope * top.slope);
     let corner_y = top.at(corner_x);
 
-    // Lattice positions are `phase + n * pitch`; the first cell is the first one past the corner.
+    // Lattice positions are `phase + n * pitch`. The first cell's middle is half a cell past the
+    // corner, plus the margin between the clues and the grid, which can be most of a cell when
+    // the cells are small. (So a blank line at the start only shows if it's a whole cell
+    // further.) Allow for the edge being a little off the other way, too.
+    let first = |corner: f32, phase: f32, pitch: f32| -> i64 {
+        ((corner + 0.5 * pitch - phase) / pitch - 0.15).ceil() as i64
+    };
     let slot = |pos: f32, phase: f32, pitch: f32, corner: f32| -> i64 {
-        ((pos - phase) / pitch).round() as i64 - ((corner - phase) / pitch).ceil() as i64
+        ((pos - phase) / pitch).round() as i64 - first(corner, phase, pitch)
     };
 
     let mut roles = vec![Role::Ignored; glyphs.len()];
@@ -497,7 +510,7 @@ pub fn arrange(
     }
 
     // In a column, a number is the digits on one line (they're already confined to the column).
-    let first_col = ((corner_x - col_phase) / col_pitch).ceil();
+    let first_col = first(corner_x, col_phase, col_pitch) as f32;
     let col_clues: Vec<Vec<u16>> = col_digits
         .iter_mut()
         .enumerate()
@@ -558,7 +571,9 @@ pub fn arrange(
             .iter()
             .flat_map(|d| d.windows(2).map(|w| w[1].x - w[0].x))
             .collect(),
-        h,
+        // (Center to center, which is a glyph width more than the gap.)
+        0.85 * h,
+        1.25,
     );
     let row_clues: Vec<Vec<u16>> = row_digits
         .iter()
@@ -603,14 +618,179 @@ pub fn arrange(
         ));
     }
 
+    let first_row = first(corner_y, row_phase, row_pitch) as f32;
     Ok(ClueLayout {
         rows: row_clues,
         cols: col_clues,
         roles,
         grid_top: top,
         grid_left: left,
+        col_centers: (0..width)
+            .map(|c| col_phase + (c as f32 + first_col) * col_pitch)
+            .collect(),
+        row_centers: (0..height)
+            .map(|r| row_phase + (r as f32 + first_row) * row_pitch)
+            .collect(),
+        col_pitch,
+        row_pitch,
+        glyph_height: h,
         warnings,
     })
+}
+
+/// Clues for a picture, as a human read them, for measuring how well `arrange` (and the OCR
+/// feeding it) did. Kept in a simple text format, meant for editing by hand:
+///
+/// ```text
+/// columns
+/// 1 2
+/// 0
+/// rows
+/// 3
+/// ```
+///
+/// One line per lane, `0` for an empty one. Blank lines and `#` comments are ignored.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Expected {
+    pub cols: Vec<Vec<u16>>,
+    pub rows: Vec<Vec<u16>>,
+    /// False until a human has checked them, which they say by deleting the line containing
+    /// `UNCHECKED`.
+    pub checked: bool,
+}
+
+impl Expected {
+    pub const UNCHECKED: &str = "UNCHECKED";
+
+    /// The file for a human to correct: what was read from `source`, marked unchecked.
+    pub fn render(cols: &[Vec<u16>], rows: &[Vec<u16>], source: &str) -> String {
+        let mut text = format!(
+            "# {}: what ocr-clues read from {source}. Correct it, then delete this line.\n",
+            Expected::UNCHECKED
+        );
+        for (name, lanes) in [("columns", cols), ("rows", rows)] {
+            text.push_str(name);
+            text.push('\n');
+            for lane in lanes {
+                if lane.is_empty() {
+                    text.push('0');
+                } else {
+                    let numbers: Vec<String> = lane.iter().map(|n| n.to_string()).collect();
+                    text.push_str(&numbers.join(" "));
+                }
+                text.push('\n');
+            }
+        }
+        text
+    }
+
+    pub fn parse(text: &str) -> anyhow::Result<Expected> {
+        use anyhow::{Context, bail};
+        let mut expected = Expected {
+            cols: vec![],
+            rows: vec![],
+            checked: true,
+        };
+        let mut section: Option<&mut Vec<Vec<u16>>> = None;
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.starts_with('#') {
+                if line.contains(Expected::UNCHECKED) {
+                    expected.checked = false;
+                }
+                continue;
+            }
+            match line {
+                "" => {}
+                "columns" => section = Some(&mut expected.cols),
+                "rows" => section = Some(&mut expected.rows),
+                _ => {
+                    let Some(lanes) = section.as_mut() else {
+                        bail!("line {}: expected \"columns\" or \"rows\" first", i + 1);
+                    };
+                    let lane = line
+                        .split_whitespace()
+                        .map(|n| n.parse::<u16>())
+                        .collect::<Result<Vec<u16>, _>>()
+                        .with_context(|| format!("line {}: expected numbers", i + 1))?;
+                    lanes.push(lane.into_iter().filter(|&n| n != 0).collect());
+                }
+            }
+        }
+        Ok(expected)
+    }
+
+    /// How far `cols` and `rows` are from these.
+    pub fn score(&self, cols: &[Vec<u16>], rows: &[Vec<u16>]) -> Score {
+        let mut score = Score::default();
+        for (name, expected, actual) in [("column", &self.cols, cols), ("row", &self.rows, rows)] {
+            if expected.len() != actual.len() {
+                score.mistakes.push(format!(
+                    "expected {} {name}s, got {}",
+                    expected.len(),
+                    actual.len()
+                ));
+            }
+            for i in 0..expected.len().max(actual.len()) {
+                let none = vec![];
+                let want = expected.get(i).unwrap_or(&none);
+                let got = actual.get(i).unwrap_or(&none);
+                score.lanes += 1;
+                score.numbers += want.len();
+                let missing = i >= expected.len() || i >= actual.len();
+                if want == got && !missing {
+                    score.lanes_right += 1;
+                } else if missing {
+                    // (Already reported, with the count.)
+                    score.numbers_wrong += want.len().max(got.len());
+                } else {
+                    score.numbers_wrong += edit_distance(want, got);
+                    let show = |lane: &[u16]| {
+                        let numbers: Vec<String> = lane.iter().map(|n| n.to_string()).collect();
+                        if numbers.is_empty() {
+                            "(empty)".to_string()
+                        } else {
+                            numbers.join(" ")
+                        }
+                    };
+                    score.mistakes.push(format!(
+                        "{name} {}: expected {}, got {}",
+                        i + 1,
+                        show(want),
+                        show(got)
+                    ));
+                }
+            }
+        }
+        score
+    }
+}
+
+/// The result of comparing clues to `Expected` ones.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Score {
+    pub lanes: usize,
+    pub lanes_right: usize,
+    /// Numbers in the expected clues
+    pub numbers: usize,
+    /// Numbers that would have to be added, removed, or changed to make the clues right
+    pub numbers_wrong: usize,
+    pub mistakes: Vec<String>,
+}
+
+/// The number of insertions, deletions, and substitutions to turn `a` into `b`.
+fn edit_distance(a: &[u16], b: &[u16]) -> usize {
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, y) in b.iter().enumerate() {
+            let substitute = diagonal + usize::from(x != y);
+            diagonal = row[j + 1];
+            row[j + 1] = substitute.min(row[j] + 1).min(row[j + 1] + 1);
+        }
+    }
+    row[b.len()]
 }
 
 #[cfg(test)]
@@ -850,12 +1030,49 @@ mod tests {
     #[test]
     fn split_thresholds() {
         // All alike: no two-digit numbers.
-        assert_eq!(split_threshold(vec![24.0, 24.5, 23.0, 25.0], 24.0), 0.0);
+        assert_eq!(
+            split_threshold(vec![24.0, 24.5, 23.0, 25.0], 20.0, 1.25),
+            0.0
+        );
         // Two clear groups.
-        let t = split_threshold(vec![14.0, 30.0, 31.0, 13.5, 29.0], 24.0);
+        let t = split_threshold(vec![14.0, 30.0, 31.0, 13.5, 29.0], 20.0, 1.25);
         assert!(14.0 < t && t < 29.0);
         // Two groups, but both too spread out to be digits of one number.
-        assert_eq!(split_threshold(vec![30.0, 60.0, 61.0], 24.0), 0.0);
+        assert_eq!(split_threshold(vec![30.0, 60.0, 61.0], 20.0, 1.25), 0.0);
+    }
+
+    #[test]
+    fn expected_round_trip() {
+        let cols = vec![vec![1, 2], vec![], vec![10]];
+        let rows = vec![vec![3], vec![]];
+        let text = Expected::render(&cols, &rows, "x.png");
+        let expected = Expected::parse(&text).unwrap();
+        assert_eq!((&expected.cols, &expected.rows), (&cols, &rows));
+        assert!(!expected.checked);
+
+        // Once a human deletes the marker (and maybe leaves some blank lines around):
+        let text: String = text.lines().skip(1).map(|l| format!("{l}\n\n")).collect();
+        let expected = Expected::parse(&text).unwrap();
+        assert_eq!((&expected.cols, &expected.rows), (&cols, &rows));
+        assert!(expected.checked);
+    }
+
+    #[test]
+    fn scoring() {
+        let expected = Expected {
+            cols: vec![vec![1, 2], vec![3]],
+            rows: vec![vec![1, 11], vec![2]],
+            checked: true,
+        };
+        let score = expected.score(&[vec![1, 2], vec![3]], &[vec![1, 1, 1], vec![2], vec![]]);
+        assert_eq!(score.lanes, 5);
+        assert_eq!(score.lanes_right, 3);
+        assert_eq!(score.numbers, 6);
+        // "11" became "1 1": one substitution, one insertion.
+        assert_eq!(score.numbers_wrong, 2);
+        assert_eq!(score.mistakes.len(), 2); // the bad row, and the row count
+        assert_eq!(edit_distance(&[1, 2, 3], &[1, 3]), 1);
+        assert_eq!(edit_distance(&[], &[4, 4]), 2);
     }
 
     #[test]

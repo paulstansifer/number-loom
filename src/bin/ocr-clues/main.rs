@@ -4,27 +4,31 @@
 //! cargo run --release --features ocr --bin ocr-clues -- puzzle.webp out.xml --debug-image debug.png
 //! ```
 //!
-//! OCR (the `ocrs` crate) finds the digits; `number_loom::clue_layout` works out which of them are
+//! OCR (the `ocrs` crate) finds the digits; `clue_layout` works out which of them are
 //! clues and how they line up. The OCR models aren't bundled; see `DEVELOPING.md`.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use clap::Parser;
-use number_loom::clue_layout::{ClueLayout, Glyph, Role, arrange};
+use clue_layout::{ClueLayout, Expected, Glyph, Role, Score, arrange};
 use number_loom::puzzle::{Color, Document, DynPuzzle, Nono, NonogramFormat, Puzzle, PuzzleDynOps};
 use number_loom::{export, import};
-use ocrs::{ImageSource, OcrEngine, OcrEngineParams, TextItem};
+use ocrs::{ImageSource, OcrEngine, OcrEngineParams, OcrInput, TextItem};
 use rten::Model;
 use rten_imageproc::{RectF, RetrievalMode, RotatedRect, find_contours};
 use rten_tensor::NdTensorView;
 use rten_tensor::prelude::*;
 
+mod clue_layout;
+mod reread;
+
 #[derive(clap::Parser, Debug)]
 #[command(about = "Read nonogram clues out of a picture")]
 struct Args {
     /// The picture of the puzzle
-    image: PathBuf,
+    #[arg(required_unless_present = "score")]
+    image: Option<PathBuf>,
 
     /// Where to write the puzzle; "-" (the default) for stdout
     output: Option<PathBuf>,
@@ -42,6 +46,19 @@ struct Args {
     /// The number of rows, for when there are empty rows at the bottom
     #[arg(long)]
     height: Option<usize>,
+
+    /// Read every picture in this directory, and compare each to the clues in the `.clues` file
+    /// beside it. Where there isn't one yet, write what was read, for a human to correct.
+    #[arg(long, conflicts_with_all = ["image", "output"])]
+    score: Option<PathBuf>,
+
+    /// With --score, write each picture's debug image (see --debug-image) into this directory
+    #[arg(long, requires = "score")]
+    debug_dir: Option<PathBuf>,
+
+    /// Skip the second pass, which re-reads each lane where the first pass says it is
+    #[arg(long)]
+    no_reread: bool,
 
     /// Print the digits OCR found (digit, center x, center y, width, height), and stop
     #[arg(long)]
@@ -212,7 +229,7 @@ fn split_tower(blob: &Blob, probs: NdTensorView<f32, 2>, height: f32) -> Vec<Blo
 /// made of digits.
 fn recognize(
     engine: &OcrEngine,
-    input: &ocrs::OcrInput,
+    input: &OcrInput,
     blobs: &[Blob],
 ) -> anyhow::Result<(Vec<(usize, Glyph)>, Vec<Rejected>)> {
     let lines: Vec<_> = blobs.iter().map(|b| vec![b.rect()]).collect();
@@ -262,16 +279,14 @@ fn recognize(
 /// buttons, and status bars, not clues.
 fn find_glyphs(
     engine: &OcrEngine,
-    image: &image::RgbImage,
+    input: &OcrInput,
     threshold: f32,
     min_area: f32,
 ) -> anyhow::Result<(Vec<Glyph>, Vec<Rejected>)> {
-    let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())?;
-    let input = engine.prepare_input(source)?;
-    let probs = engine.detect_text_pixels(&input)?;
+    let probs = engine.detect_text_pixels(input)?;
     let mask = probs.map(|p| *p > threshold);
     let blobs = find_blobs(mask.view(), min_area);
-    let (mut glyphs, mut rejected) = recognize(engine, &input, &blobs)?;
+    let (mut glyphs, mut rejected) = recognize(engine, input, &blobs)?;
 
     let median_height = |glyphs: &[(usize, Glyph)]| {
         let mut heights: Vec<f32> = glyphs.iter().map(|(_, g)| g.height).collect();
@@ -291,7 +306,7 @@ fn find_glyphs(
             .iter()
             .flat_map(|t| split_tower(t, probs.view(), height))
             .collect();
-        let (more_glyphs, more_rejected) = recognize(engine, &input, &pieces)?;
+        let (more_glyphs, more_rejected) = recognize(engine, input, &pieces)?;
         glyphs.extend(more_glyphs);
         rejected.extend(more_rejected);
     }
@@ -386,56 +401,109 @@ mod draw {
     }
 }
 
+/// The picture at `path`, scaled as requested.
+fn open_image(path: &Path, scale: f32) -> anyhow::Result<image::RgbImage> {
+    let mut image = image::open(path)
+        .with_context(|| format!("reading {path:?}"))?
+        .into_rgb8();
+    if scale != 1.0 {
+        let (w, h) = image.dimensions();
+        image = image::imageops::resize(
+            &image,
+            (w as f32 * scale) as u32,
+            (h as f32 * scale) as u32,
+            image::imageops::FilterType::CatmullRom,
+        );
+    }
+    Ok(image)
+}
+
+fn show(clues: &[Vec<u16>]) -> String {
+    clues
+        .iter()
+        .map(|c| {
+            c.iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Everything found in one picture.
+struct Reading {
+    image: image::RgbImage,
+    glyphs: Vec<Glyph>,
+    rejected: Vec<Rejected>,
+    /// With the clues from the second pass, if there was one.
+    layout: anyhow::Result<ClueLayout>,
+    reread: Option<reread::Reread>,
+}
+
+fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading> {
+    let image = open_image(path, args.scale)?;
+    let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())?;
+    let input = engine.prepare_input(source)?;
+    let (glyphs, rejected) = find_glyphs(engine, &input, args.threshold, args.min_area)?;
+    let mut layout = arrange(&glyphs, args.width, args.height);
+    let mut reread = None;
+    if let Ok(layout) = &mut layout
+        && !args.no_reread
+    {
+        let again = reread::reread(engine, &input, &image, layout)?;
+        layout.cols = again.cols.clone();
+        layout.rows = again.rows.clone();
+        reread = Some(again);
+    }
+    Ok(Reading {
+        image,
+        glyphs,
+        rejected,
+        layout,
+        reread,
+    })
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let engine = OcrEngine::new(OcrEngineParams {
-        detection_model: Some(load_model(args.detection_model, "text-detection")?),
-        recognition_model: Some(load_model(args.recognition_model, "text-recognition")?),
+        detection_model: Some(load_model(args.detection_model.clone(), "text-detection")?),
+        recognition_model: Some(load_model(
+            args.recognition_model.clone(),
+            "text-recognition",
+        )?),
         ..Default::default()
     })?;
 
-    let mut image = image::open(&args.image)
-        .with_context(|| format!("reading {:?}", args.image))?
-        .into_rgb8();
-    if args.scale != 1.0 {
-        let (w, h) = image.dimensions();
-        image = image::imageops::resize(
-            &image,
-            (w as f32 * args.scale) as u32,
-            (h as f32 * args.scale) as u32,
-            image::imageops::FilterType::CatmullRom,
-        );
+    if let Some(dir) = &args.score {
+        return score(&engine, dir, &args);
     }
-
-    let (glyphs, rejected) = find_glyphs(&engine, &image, args.threshold, args.min_area)?;
+    let reading = read(
+        &engine,
+        args.image.as_ref().expect("clap requires it"),
+        &args,
+    )?;
     if args.dump_glyphs {
-        for g in &glyphs {
+        for g in &reading.glyphs {
             println!("{} {} {} {} {}", g.digit, g.x, g.y, g.width, g.height);
         }
         return Ok(());
     }
-
-    let layout = arrange(&glyphs, args.width, args.height);
     if let Some(path) = &args.debug_image {
-        debug_image(&image, &glyphs, &rejected, layout.as_ref().ok())
+        debug_image(&reading)
             .save(path)
             .with_context(|| format!("writing {path:?}"))?;
     }
-    let layout = layout?;
+    if let Some(reread) = &reading.reread {
+        eprintln!(
+            "(The second pass fell back on the first for {} lanes.)",
+            reread.fallbacks
+        );
+    }
+    let layout = reading.layout?;
 
-    let show = |clues: &[Vec<u16>]| {
-        clues
-            .iter()
-            .map(|c| {
-                c.iter()
-                    .map(|n| n.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
     eprintln!("{} columns: {}", layout.cols.len(), show(&layout.cols));
     eprintln!("{} rows: {}", layout.rows.len(), show(&layout.rows));
     for warning in &layout.warnings {
@@ -483,13 +551,109 @@ fn main() -> anyhow::Result<()> {
     export::save(&mut document, &output, format)
 }
 
-fn debug_image(
-    image: &image::RgbImage,
-    glyphs: &[Glyph],
-    rejected: &[Rejected],
-    layout: Option<&ClueLayout>,
-) -> image::RgbImage {
+/// `--score`: read every picture in `dir`, and compare against what a human says is there.
+fn score(engine: &OcrEngine, dir: &Path, args: &Args) -> anyhow::Result<()> {
+    const PICTURES: &[&str] = &["webp", "png", "jpg", "jpeg", "gif", "bmp"];
+    let mut pictures: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {dir:?}"))?
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<Result<_, _>>()?;
+    pictures.retain(|p| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| PICTURES.contains(&e.to_lowercase().as_str()))
+    });
+    // Numerically, where the names are numbers.
+    let stem = |p: &PathBuf| {
+        p.file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    };
+    pictures.sort_by_key(|p| (stem(p).parse::<u64>().ok(), stem(p)));
+
+    let mut total = Score::default();
+    let (mut unchecked, mut written) = (vec![], vec![]);
+    for picture in &pictures {
+        let name = picture.file_name().unwrap_or_default().to_string_lossy();
+        let reading = read(engine, picture, args)?;
+        if let Some(dir) = &args.debug_dir {
+            let path = dir.join(picture.with_extension("png").file_name().unwrap());
+            debug_image(&reading)
+                .save(&path)
+                .with_context(|| format!("writing {path:?}"))?;
+        }
+        let (cols, rows) = match reading.layout {
+            Ok(layout) => (layout.cols, layout.rows),
+            Err(e) => {
+                println!("{name}: couldn't read: {e:#}");
+                (vec![], vec![])
+            }
+        };
+
+        let clues_path = picture.with_extension("clues");
+        if !clues_path.exists() {
+            std::fs::write(&clues_path, Expected::render(&cols, &rows, &name))
+                .with_context(|| format!("writing {clues_path:?}"))?;
+            written.push(clues_path.display().to_string());
+            continue;
+        }
+        let text = std::fs::read_to_string(&clues_path)
+            .with_context(|| format!("reading {clues_path:?}"))?;
+        let expected =
+            Expected::parse(&text).with_context(|| format!("in {}", clues_path.display()))?;
+        if !expected.checked {
+            unchecked.push(clues_path.display().to_string());
+            continue;
+        }
+
+        let score = expected.score(&cols, &rows);
+        println!(
+            "{name}: {}/{} lanes right, {}/{} numbers wrong",
+            score.lanes_right, score.lanes, score.numbers_wrong, score.numbers
+        );
+        for mistake in &score.mistakes {
+            println!("    {mistake}");
+        }
+        total.lanes += score.lanes;
+        total.lanes_right += score.lanes_right;
+        total.numbers += score.numbers;
+        total.numbers_wrong += score.numbers_wrong;
+    }
+
+    if total.lanes > 0 {
+        println!(
+            "Total: {}/{} lanes right ({:.1}%), {}/{} numbers wrong ({:.1}%)",
+            total.lanes_right,
+            total.lanes,
+            100.0 * total.lanes_right as f32 / total.lanes as f32,
+            total.numbers_wrong,
+            total.numbers,
+            100.0 * total.numbers_wrong as f32 / total.numbers.max(1) as f32,
+        );
+    }
+    if !written.is_empty() {
+        println!(
+            "Wrote what was read to these, for correcting (then delete the {} line):",
+            Expected::UNCHECKED
+        );
+        for path in &written {
+            println!("    {path}");
+        }
+    }
+    if !unchecked.is_empty() {
+        println!("Still {}, so not scored:", Expected::UNCHECKED);
+        for path in &unchecked {
+            println!("    {path}");
+        }
+    }
+    Ok(())
+}
+
+fn debug_image(reading: &Reading) -> image::RgbImage {
     use image::Rgb;
+    let (image, glyphs, rejected) = (&reading.image, &reading.glyphs, &reading.rejected);
+    let layout = reading.layout.as_ref().ok();
     let mut debug = image.clone();
     let (w, h) = (image.width() as f32, image.height() as f32);
     let orange = Rgb([255, 140, 0]);
@@ -508,6 +672,17 @@ fn debug_image(
         let (top, left) = (layout.grid_top, layout.grid_left);
         draw::line(&mut debug, (0.0, top.at(0.0)), (w, top.at(w)), green);
         draw::line(&mut debug, (left.at(0.0), 0.0), (left.at(h), h), green);
+    }
+    // The second pass's numbers (to the right of the first's, so they don't overlap).
+    for found in reading.reread.iter().flat_map(|r| &r.found) {
+        let (left, top, right, bottom) = found.area;
+        let area = (left as f32, top as f32, right as f32, bottom as f32);
+        let (color, label) = match found.number {
+            Some(n) => (Rgb([0, 170, 170]), n.to_string()),
+            None => (Rgb([255, 0, 255]), "?".to_string()),
+        };
+        draw::rect(&mut debug, area, color);
+        draw::text(&mut debug, (area.2 + 3.0, area.1), 11.0, &label, color);
     }
     for (i, g) in glyphs.iter().enumerate() {
         let role = layout.map_or(Role::Ignored, |l| l.roles[i]);

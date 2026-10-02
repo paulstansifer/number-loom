@@ -12,7 +12,7 @@ required-features = ["bench-pbnsolve"]
 # Reads clues out of a picture of a puzzle. Also behind a feature, since the OCR engine is heavy.
 [[bin]]
 name = "ocr-clues"
-path = "src/bin/ocr-clues.rs"
+path = "src/bin/ocr-clues/main.rs"
 required-features = ["ocr"]
 
 [package]
@@ -26,6 +26,7 @@ keywords = ["nonogram"]
 readme = "README.md"
 repository = "https://github.com/paulstansifer/number-loom"
 default-run = "number-loom"
+exclude = ["examples/"]
 
 # (See the [[bin]] section)
 [features]
@@ -63,7 +64,10 @@ web-time = "1.1.0"
 typed-index-collections = { version = "3.5.0", features = ["serde", "std"] }
 rand = "0.8.5"
 # for the `ocr-clues` binary:
-ocrs = { version = "0.13.1", optional = true, default-features = false, features = ["rten", "onnx"] }
+ocrs = { version = "0.13.1", optional = true, default-features = false, features = [
+    "rten",
+    "onnx",
+] }
 rten = { version = "0.26", optional = true }
 rten-tensor = { version = "0.26", optional = true }
 rten-imageproc = { version = "0.26", optional = true }

@@ -23,7 +23,6 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
       gallery.rs - for chosing a puzzle to solve
       outline_text.rs - overengineered halos for text readability on arbitrary backgrounds
     import.rs - read files and extract clues from grids
-    clue_layout.rs - arranging digits found in a picture into row and column clues (see "OCR")
     export.rs - write files 
     formats/
       char_grid.rs, html.rs, image.rs, olsak.rs, webpbn.rs, woven.rs - the file formats
@@ -38,7 +37,7 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     puzzle.rs - data structures
     solver_fuzzer.rs - stress test for solver correctness
     bin/bench-pbnsolve.rs - speed comparison against `pbnsolve` (see below)
-    bin/ocr-clues.rs - reads clues out of a picture of a puzzle (see "OCR")
+    bin/ocr-clues/ - reads clues out of a picture of a puzzle (has its own DEVELOPING.md)
   benches/ - benchmarks (currently quite limited)
     (see also src/bin/bench-pbnsolve.rs, below)
 
@@ -71,36 +70,8 @@ they find.
 
 # OCR
 
-`ocr-clues` reads the clues out of a screenshot or photo of a (black-and-white, square) puzzle:
-
-```
-cargo run --release --features ocr --bin ocr-clues -- puzzle.webp puzzle.xml --debug-image debug.png
-```
-
-It's behind the `ocr` feature because the OCR engine (`ocrs`, and its ML runtime `rten`) is big,
-and has no business in the web build. The models aren't bundled; put them in `~/.cache/ocrs/`
-(where `ocrs-cli` also looks):
-
-```
-curl https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.onnx -o ~/.cache/ocrs/text-detection.onnx
-curl https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.onnx -o ~/.cache/ocrs/text-recognition.onnx
-```
-
-The work is split in two. `src/bin/ocr-clues.rs` finds digits (with some help for what `ocrs`
-is bad at: lone "1"s, faded clues, and tightly-stacked column clues that detection sees as one
-blob). `src/clue_layout.rs` decides which digits are clues and how they group into numbers; it
-doesn't depend on `ocrs`, so its tests run with a plain `cargo test`. Its module comment
-explains the approach.
-
-`--debug-image` is the tool for figuring out what went wrong: column clues are outlined in
-blue, row clues in red, digits it ignored in gray, and text that wasn't digits in orange. The
-green lines are where it thinks the grid's top and left edges are. `--dump-glyphs` prints what
-OCR found, before any arranging.
-
-Two warnings are worth taking seriously: the row and column clues filling different numbers of
-cells means a digit was misread or missed, and a line that's too long for the grid often means
-two clues got read as one number. (Some apps space the digits of "11" exactly like "1 1", and
-then there's no telling them apart from the picture.)
+`ocr-clues` reads the clues out of a picture of a puzzle. It has its own notes, in
+`src/bin/ocr-clues/DEVELOPING.md`.
 
 # The `WOVEN` format
 
