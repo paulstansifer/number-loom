@@ -343,9 +343,19 @@ pub fn rough_pitch(response: &Response) -> Option<f32> {
     rough_cell_size(response).map(|(pitch, _, _)| pitch as f32)
 }
 
-pub fn find(image: &RgbImage) -> Option<Grid> {
+/// The grid, from its lines. `cell` is the size of a cell, if it's known already: the lines
+/// alone can be misleading about that (in a printed puzzle, digits and marks in the cells repeat
+/// at half a cell, too).
+pub fn find(image: &RgbImage, cell: Option<f32>) -> Option<Grid> {
     let response = Response::new(image);
-    let (pitch, h_tilt, v_tilt) = rough_cell_size(&response)?;
+    let (pitch, h_tilt, v_tilt) = match cell {
+        Some(cell) => (
+            cell.round() as usize,
+            tilt(&response, 0),
+            tilt(&response, 1),
+        ),
+        None => rough_cell_size(&response)?,
+    };
     let horizontal = find_lines(&response, 0, h_tilt, pitch)?;
     let vertical = find_lines(&response, 1, v_tilt, pitch)?;
 
@@ -444,6 +454,36 @@ impl Grid {
         self.rows.1 - self.rows.0
     }
 
+    /// Move `layout`'s lanes to the middles of the cells between this grid's lines, where they're
+    /// close (the lines are a more exact guide than the clues). (Not its edges: starting a lane's
+    /// strip right at a heavy border invites reading the border as a "1".)
+    pub fn snap(&self, layout: &mut ClueLayout) {
+        let (h, v) = (&self.horizontal, &self.vertical);
+        let snap = |centers: &mut Vec<f32>, lines: &Lines, at: f32, pitch: f32| {
+            let middles: Vec<f32> = (0..lines.intercepts.len().saturating_sub(1))
+                .map(|i| (lines.at(i, at) + lines.at(i + 1, at)) / 2.0)
+                .collect();
+            for center in centers.iter_mut() {
+                if let Some(&m) = middles
+                    .iter()
+                    .min_by(|a, b| (*a - *center).abs().total_cmp(&(*b - *center).abs()))
+                    && (m - *center).abs() < 0.4 * pitch
+                {
+                    *center = m;
+                }
+            }
+        };
+        // (Along the edges, where the clues are.)
+        let top = layout
+            .grid_top
+            .at(layout.col_centers.first().copied().unwrap_or(0.0));
+        let left = layout
+            .grid_left
+            .at(layout.row_centers.first().copied().unwrap_or(0.0));
+        snap(&mut layout.col_centers, v, top, layout.col_pitch);
+        snap(&mut layout.row_centers, h, left, layout.row_pitch);
+    }
+
     /// A layout with the grid's geometry, but no clues yet. `glyph_height` is the size of the
     /// clues' digits; `glyphs`, how many digits the layout is for.
     pub fn layout(&self, glyph_height: f32, glyphs: usize) -> ClueLayout {
@@ -476,6 +516,7 @@ impl Grid {
             col_pitch: v.pitch,
             row_pitch: h.pitch,
             glyph_height,
+            edges_on_lines: true,
             warnings: vec![],
         }
     }

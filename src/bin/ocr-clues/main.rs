@@ -485,8 +485,12 @@ struct Reading {
     reread: Option<reread::Reread>,
 }
 
-/// The picture, straightened out (see `warp`), if its lines can be traced.
-fn straighten(image: &image::RgbImage, args: &Args) -> anyhow::Result<Option<image::RgbImage>> {
+/// The picture, straightened out (see `warp`), if its lines can be traced, and the size of its
+/// cells.
+fn straighten(
+    image: &image::RgbImage,
+    args: &Args,
+) -> anyhow::Result<Option<(image::RgbImage, f32)>> {
     let (w, h) = (image.width() as f32, image.height() as f32);
     let Some((mesh, traced)) =
         warp::trace(image).and_then(|traced| Some((warp::Mesh::new(&traced, w, h)?, traced)))
@@ -515,11 +519,8 @@ fn straighten(image: &image::RgbImage, args: &Args) -> anyhow::Result<Option<ima
             .save(lines_path)
             .with_context(|| format!("writing {lines_path:?}"))?;
     }
-    Ok(Some(warp::flatten(
-        image,
-        &mesh,
-        traced.pitch.round().max(8.0),
-    )))
+    let cell = traced.pitch.round().max(8.0);
+    Ok(Some((warp::flatten(image, &mesh, cell), cell)))
 }
 
 /// How much sense a reading makes, from 0 (none) to 1 (it's consistent: the rows and columns
@@ -566,25 +567,25 @@ fn sense(layout: &anyhow::Result<ClueLayout>) -> f32 {
 fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading> {
     let image = open_image(path, args.scale)?;
     match args.dewarp {
-        Dewarp::Never => read_image(engine, image, false, args),
+        Dewarp::Never => read_image(engine, image, None, args),
         Dewarp::Always => match straighten(&image, args)? {
-            Some(flat) => read_image(engine, flat, true, args),
+            Some((flat, cell)) => read_image(engine, flat, Some(cell), args),
             None => {
                 eprintln!("Warning: couldn't trace the grid's lines to straighten them");
-                read_image(engine, image, false, args)
+                read_image(engine, image, None, args)
             }
         },
         // Straightening a picture that doesn't need it only loses detail, so try without first.
         Dewarp::Auto => {
-            let plain = read_image(engine, image.clone(), false, args)?;
+            let plain = read_image(engine, image.clone(), None, args)?;
             let plain_sense = sense(&plain.layout);
             if plain_sense >= 1.0 {
                 return Ok(plain);
             }
-            let Some(flat) = straighten(&image, args)? else {
+            let Some((flat, cell)) = straighten(&image, args)? else {
                 return Ok(plain);
             };
-            let flattened = read_image(engine, flat, true, args)?;
+            let flattened = read_image(engine, flat, Some(cell), args)?;
             // (A clear improvement, not just a different set of mistakes.)
             Ok(if sense(&flattened.layout) > plain_sense + 0.1 {
                 flattened
@@ -595,17 +596,27 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
     }
 }
 
+/// `flattened_cell` is the size of a cell, if the picture was straightened (which makes them all
+/// exactly that).
 fn read_image(
     engine: &OcrEngine,
     image: image::RgbImage,
-    flattened: bool,
+    flattened_cell: Option<f32>,
     args: &Args,
 ) -> anyhow::Result<Reading> {
+    let flattened = flattened_cell.is_some();
     let source = ImageSource::from_bytes(image.as_raw(), image.dimensions())?;
     let input = engine.prepare_input(source)?;
     let (glyphs, rejected) = find_glyphs(engine, &input, args.threshold, args.min_area, flattened)?;
-    let grid = grid::find(&image);
     let mut layout = arrange(&glyphs, args.width, args.height);
+    // The size of a cell, if it's known: exactly, from straightening; or roughly, from the
+    // clues (if their columns and rows agree).
+    let cell = flattened_cell.or_else(|| {
+        let found = layout.as_ref().ok()?;
+        let (a, b) = (found.col_pitch, found.row_pitch);
+        ((a - b).abs() < 0.1 * a.max(b)).then_some((a + b) / 2.0)
+    });
+    let grid = grid::find(&image, cell);
     let mut from_lines = false;
     // Where the grid's lines can be found, they're a surer guide to its shape than the clues.
     // The grid can also be found from its lines, but that's less reliable than the clues, if
@@ -641,6 +652,16 @@ fn read_image(
                 .push("the clues didn't make sense, so the grid was found from its lines".into());
             layout = Ok(from_grid);
             from_lines = true;
+        }
+    }
+    // Where the grid's lines can be seen, they say exactly where each lane is: the clues only
+    // say roughly. (Only if the two agree on the size of a cell.)
+    if let (Some(grid), Ok(layout)) = (&grid, &mut layout) {
+        let close = |a: f32, b: f32| (a - b).abs() < 0.1 * b;
+        if close(layout.col_pitch, grid.vertical.pitch)
+            && close(layout.row_pitch, grid.horizontal.pitch)
+        {
+            grid.snap(layout);
         }
     }
     let mut reread = None;

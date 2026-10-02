@@ -111,6 +111,9 @@ pub struct ClueLayout {
     pub row_pitch: f32,
     /// How tall a digit is.
     pub glyph_height: f32,
+    /// Whether `grid_top` and `grid_left` are the grid's border lines (found from its lines), as
+    /// opposed to where its clues end.
+    pub edges_on_lines: bool,
     /// Things that look wrong, for a human to check.
     pub warnings: Vec<String>,
 }
@@ -646,6 +649,7 @@ pub fn arrange(
         col_pitch,
         row_pitch,
         glyph_height: h,
+        edges_on_lines: false,
         warnings,
     })
 }

@@ -35,15 +35,25 @@ Here's what it does:
    used when the clues gave nothing sensible. It draws the lines it found in purple on the debug
    image, with the grid's bounds doubled.
 3. `reread.rs` goes back to the pixels, now knowing where each lane's clues
-   must be, and finds each number from the ink, then recognizes it on its own. (Measured on the
-   ink, the gap between two numbers is reliably wider than between two digits of one number, even
-   where "1 11" and "1 1 1" look alike to OCR.) Where that fails for a lane, step 2's reading
+   must be, and finds each number from the ink, then recognizes it on its own. (The digits of a
+   row's clues are grouped into numbers by how far apart they are. In most typefaces, it's the
+   gap between the ink of two digits that's the same everywhere, and wider between numbers, even
+   where "1 11" and "1 1 1" look alike to OCR; in others, every digit takes the same width,
+   and it's the distance from middle to middle. Whichever splits the picture's digits more
+   cleanly into near and far is the one used.) Where that fails for a lane, step 2's reading
    stands. `--no-reread` skips this step, for comparison. When the grid was found from its
    lines (so the clues likely sit in boxes), a lane that doesn't read cleanly is read slot by
    slot instead: the clues of every lane sit at the same, regular spacing. A slot with ink that
-   doesn't read as a number (say, a crossed-out clue) becomes a "blotted" clue, shown as `?`. (`--compare-digits` adds a check of
-   each digit against the others recognized as the same digit, in `templates.rs`; it hasn't
-   helped on the pictures we have.)
+   doesn't read as a number (say, a crossed-out clue) becomes a "blotted" clue, shown as `?`.
+   (`--compare-digits` adds a check of each digit against the others recognized as the same
+   digit, in `templates.rs`; it hasn't helped on the pictures we have.)
+
+   Printed puzzles often box their clues in, with the grid's lines carried on through the clue
+   areas. So: where the grid's lines can be found (and agree with the clues about the size of a
+   cell), each lane is moved to the middle between them; lines running along a lane (box sides,
+   dividers) don't count as ink; clues stacked so tightly that they touch are cut apart where the
+   ink is thinnest; and a thin sliver right at the grid's edge is taken for its border, not a
+   "1".
 4. `cells.rs` reads the state of the grid: which cells the person has filled in, crossed out,
    or left undecided. It sorts the cells into groups that look alike; a group with a mark drawn
    in it is crossed out, and a plain group clearly darker than the rest is filled. (So it doesn't
