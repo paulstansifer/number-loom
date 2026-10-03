@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use clap::Parser;
+use number_loom::import;
+use number_loom::puzzle::{DynPuzzle, PuzzleDynOps as _};
 use reqwest::blocking::Client;
 use serde_json::Value;
 
@@ -192,51 +194,120 @@ fn first_picture(post: &Value) -> Option<String> {
 
 /// What came of reading a post's picture.
 enum Outcome {
-    NoPicture,
-    /// What `ocr-clues` said about why it couldn't.
+    /// `ocr-clues` couldn't: the last thing it said, which says why.
     Unreadable(String),
-    /// What `ocr-clues` said about what it read.
-    Read(String),
+    /// Too few lanes with clues for a puzzle; likely not a picture of one at all.
+    TooSmall { rows: usize, cols: usize },
+    /// The clues read contradict each other, so some must be misread.
+    Contradictory { width: usize, height: usize },
+    /// `report` is what `ocr-clues` said.
+    Read {
+        width: usize,
+        height: usize,
+        cells_left: usize,
+        report: String,
+    },
 }
 
-/// Download the post's first picture, and read it, keeping everything in `dir`.
-fn read_post(http: &Client, ocr_clues: &Path, post: &Value, dir: &Path) -> anyhow::Result<Outcome> {
-    fs::create_dir_all(dir).with_context(|| format!("creating {dir:?}"))?;
-    fs::write(dir.join("post.json"), serde_json::to_string_pretty(post)?)?;
-    let Some(url) = first_picture(post) else {
-        return Ok(Outcome::NoPicture);
-    };
-    let ext = picture_extension(&url).unwrap_or_else(|| "png".into());
+/// Fewer lanes than this with clues in them, in either direction, isn't worth replying to.
+const MIN_LANES: usize = 4;
+
+impl Outcome {
+    /// One line, saying how well it went.
+    fn status(&self) -> String {
+        match self {
+            Outcome::Unreadable(why) => format!("unreadable: {why}"),
+            Outcome::TooSmall { rows, cols } => {
+                format!("too small for a puzzle: {rows} rows and {cols} columns with clues")
+            }
+            Outcome::Contradictory { width, height } => {
+                format!("read {width}x{height}, but the clues contradict each other")
+            }
+            Outcome::Read {
+                width,
+                height,
+                cells_left: 0,
+                ..
+            } => format!("read {width}x{height}; solvable with line logic"),
+            Outcome::Read {
+                width,
+                height,
+                cells_left,
+                ..
+            } => format!("read {width}x{height}; line logic leaves {cells_left} cells"),
+        }
+    }
+}
+
+/// Download the picture at `url`, and read it, keeping everything in `dir`. Returns where the
+/// picture went.
+fn read_picture(
+    http: &Client,
+    ocr_clues: &Path,
+    url: &str,
+    dir: &Path,
+) -> anyhow::Result<(PathBuf, Outcome)> {
+    let ext = picture_extension(url).unwrap_or_else(|| "png".into());
     let picture = dir.join(format!("picture.{ext}"));
     let bytes = http
-        .get(&url)
+        .get(url)
         .send()?
         .error_for_status()
         .with_context(|| format!("downloading {url}"))?
         .bytes()?;
     fs::write(&picture, bytes)?;
 
+    let puzzle_path = dir.join("puzzle.xml");
     let output = Command::new(ocr_clues)
         .arg(&picture)
-        .arg(dir.join("puzzle.xml"))
+        .arg(&puzzle_path)
         .arg("--debug-image")
         .arg(dir.join("debug.png"))
         .output()
         .with_context(|| format!("running {ocr_clues:?}"))?;
     let report = String::from_utf8_lossy(&output.stderr).into_owned();
     fs::write(dir.join("ocr.txt"), &report)?;
-    Ok(if output.status.success() {
-        Outcome::Read(report)
-    } else {
-        Outcome::Unreadable(report)
+    if !output.status.success() {
+        let why = report.lines().last().unwrap_or("").to_string();
+        return Ok((picture, Outcome::Unreadable(why)));
+    }
+    Ok((picture, check(&puzzle_path, report)?))
+}
+
+/// Whether the clues `ocr-clues` wrote to `puzzle_path` make sense.
+fn check(puzzle_path: &Path, report: String) -> anyhow::Result<Outcome> {
+    let document = import::load_path(&puzzle_path.to_path_buf(), None)?;
+    let puzzle = document
+        .try_puzzle()
+        .and_then(DynPuzzle::as_square_nono)
+        .context("ocr-clues wrote something other than a black-and-white puzzle")?;
+    let lane_map = &puzzle.geometry.lane_map;
+    // (Rows, then columns.)
+    let [rows, cols] = [0, 1].map(|family| {
+        lane_map
+            .family(family.into())
+            .filter(|&lane| !puzzle.lines[lane].is_empty())
+            .count()
+    });
+    if rows < MIN_LANES || cols < MIN_LANES {
+        return Ok(Outcome::TooSmall { rows, cols });
+    }
+    let [height, width] = [0, 1].map(|family| lane_map.family(family.into()).count());
+    Ok(match puzzle.plain_solve() {
+        Err(_) => Outcome::Contradictory { width, height },
+        Ok(solved) => Outcome::Read {
+            width,
+            height,
+            cells_left: solved.cells_left,
+            report,
+        },
     })
 }
 
 /// What to say in reply to the post, if anything. (A placeholder: the report, as is.)
 fn draft_reply(outcome: &Outcome) -> Option<String> {
-    let Outcome::Read(report) = outcome else {
-        // Better to say nothing than to clutter the thread.
-        return None;
+    let Outcome::Read { report, .. } = outcome else {
+        return None; // Can't read it; don't reply.
     };
     let quoted: String = report.lines().map(|l| format!("    {l}\n")).collect();
     Some(format!(
@@ -256,21 +327,30 @@ fn reply(post: &Value, dir: &Path, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle(http: &Client, ocr_clues: &Path, post: &Value, dir: &Path) -> anyhow::Result<()> {
+/// Read the post's first picture (if it has one), keeping everything in a directory of its own
+/// in `root`, and noting how it went in `root/log.txt`.
+fn handle(http: &Client, ocr_clues: &Path, post: &Value, root: &Path) -> anyhow::Result<()> {
+    let Some(url) = first_picture(post) else {
+        return Ok(());
+    };
     let id = post["id"].as_str().context("a post without an id")?;
-    let dir = dir.join(id);
     eprintln!("{id}: {}", post["title"].as_str().unwrap_or(""));
-    let outcome = read_post(http, ocr_clues, post, &dir)?;
-    match &outcome {
-        Outcome::NoPicture => eprintln!("    no picture"),
-        Outcome::Unreadable(report) => {
-            eprintln!(
-                "    couldn't read it: {}",
-                report.lines().last().unwrap_or("")
-            )
-        }
-        Outcome::Read(_) => eprintln!("    read it"),
-    }
+    let dir = root.join(id);
+    fs::create_dir_all(&dir).with_context(|| format!("creating {dir:?}"))?;
+    fs::write(dir.join("post.json"), serde_json::to_string_pretty(post)?)?;
+
+    let (picture, outcome) = read_picture(http, ocr_clues, &url, &dir)?;
+    let status = outcome.status();
+    eprintln!("    {status}");
+    let picture = fs::canonicalize(&picture).unwrap_or(picture);
+    let log = root.join("log.txt");
+    let mut log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .with_context(|| format!("writing {log:?}"))?;
+    writeln!(log, "{}\t{status}", picture.display())?;
+
     if let Some(text) = draft_reply(&outcome) {
         reply(post, &dir, &text)?;
     }
