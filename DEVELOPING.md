@@ -38,6 +38,7 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     solver_fuzzer.rs - stress test for solver correctness
     bin/bench-pbnsolve.rs - speed comparison against `pbnsolve` (see below)
     bin/ocr-clues/ - reads clues out of a picture of a puzzle (has its own DEVELOPING.md)
+    bin/reddit-bot.rs - runs `ocr-clues` on new posts to r/nonograms (but doesn't reply yet)
   benches/ - benchmarks (currently quite limited)
     (see also src/bin/bench-pbnsolve.rs, below)
 
@@ -72,6 +73,21 @@ they find.
 
 `ocr-clues` reads the clues out of a picture of a puzzle. It has its own notes, in
 `src/bin/ocr-clues/DEVELOPING.md`.
+
+`reddit-bot` watches r/nonograms, and runs `ocr-clues` on the first picture in each new post. For
+now, it only reads: what it would reply is saved, along with the picture, what `ocr-clues` said,
+and its debug image, in a directory for each post. Reddit only answers API requests with OAuth,
+so it needs `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` from an app registered at
+https://www.reddit.com/prefs/apps (it logs in as the app, not as a user):
+
+```
+cargo build --release --features ocr --bins
+target/release/reddit-bot bot/          # --once to check once and stop
+```
+
+`--listing` reads a listing saved from `/r/nonograms/new.json` instead, for trying it out without
+credentials. The first time it runs, every post in the listing it gets (the newest 25) counts as
+new.
 
 # The `WOVEN` format
 

@@ -15,6 +15,12 @@ name = "ocr-clues"
 path = "src/bin/ocr-clues/main.rs"
 required-features = ["ocr"]
 
+# Runs `ocr-clues` on pictures posted to r/nonograms.
+[[bin]]
+name = "reddit-bot"
+path = "src/bin/reddit-bot.rs"
+required-features = ["ocr"]
+
 [package]
 name = "number-loom"
 description = "Multipurpose GUI and CLI tool for constructing nonograms"
