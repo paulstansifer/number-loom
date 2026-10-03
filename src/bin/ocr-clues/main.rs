@@ -27,6 +27,8 @@ use rten_tensor::prelude::*;
 mod cells;
 mod clue_layout;
 mod grid;
+#[allow(dead_code)] // Not called yet.
+mod guidance;
 mod reread;
 mod templates;
 mod warp;
