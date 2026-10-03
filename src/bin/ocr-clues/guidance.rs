@@ -10,7 +10,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use number_loom::geometry::{CellIdx, GridKind, LaneIdx};
-use number_loom::puzzle::{Clue, Color, PartialSolution, Puzzle};
+use number_loom::gui::FamilyIdx;
+use number_loom::puzzle::{BACKGROUND, Clue, Color, PartialSolution, Puzzle};
 use number_loom::solve::conprop::conprop_solve_in_background;
 use number_loom::solve::conprop_picker::Picker;
 use number_loom::solve::grid_solve::{
@@ -59,7 +60,7 @@ pub enum Next {
     /// the order the search would have guessed them.
     Contradictions(Vec<(CellIdx, Color)>),
     /// None of this many guesses led anywhere.
-    Stuck { guesses: usize },
+    Stuck(usize),
     /// These lanes can't be completed as they stand. (Mistakes are only caught where the answer
     /// is known, so this is possible when it isn't all known.)
     Broken(Vec<LaneIdx>),
@@ -70,10 +71,138 @@ pub struct GuidanceReport {
     pub solved: Solved,
     /// What's known of the answer: all of it, unless `solved` says otherwise.
     pub answer: PartialSolution,
+    /// Number of cells the user filled in:
+    pub filled_cells: usize,
     /// The cells the person has got wrong.
     pub errors: Vec<CellIdx>,
     /// Where to go from here, once the errors are erased.
     pub next: Next,
+}
+
+/// Emits a Markdown message about the puzzle.
+/// Unlike everything else in this directory; this is human-written;
+/// LLMs should add TODOs if necessary, but not change any text.
+pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &GuidanceReport) -> String {
+    let mut res = String::new();
+
+    let like_what = match g.solved {
+        Solved::Ambiguous => " with multiple solutions.",
+        Solved::LineLogic => ", solvable with line logic.",
+        Solved::Search => ", only solvable with trial-and-error.",
+        Solved::OutOfTime => ", which I was unable to solve!",
+    };
+    // Fortunately, numbers <80 that start with a vowel sound aren't a multiple of five, so we're unlikely to
+    // need to say "an".
+    res.push_str(&format!(
+        "I see a {} puzzle{like_what}",
+        puz.geometry.dims_label()
+    ));
+
+    if !g.errors.is_empty() {
+        let pl = if g.errors.len() == 1 { "" } else { "s" };
+        res.push_str("\n"); // Want to start this on its own line.
+        res.push_str(&format!(
+            "If I read the grid correctly, there are {} mistake{pl} to remove: >!",
+            g.errors.len(),
+        ));
+
+        let mut first = true;
+        for error in g.errors.iter().take(5) {
+            if !first {
+                res.push_str(", ");
+                first = false;
+            }
+            let loc = K::coord_label(puz.geometry.coord(*error));
+            res.push_str(&format!("{loc}"));
+        }
+
+        if g.errors.len() > 5 {
+            res.push_str(&format!(", and {} more", g.errors.len() - 5));
+        }
+        res.push_str("!<\n");
+    } else if matches!(g.next, Next::Done) {
+        match g.solved {
+            Solved::LineLogic => {
+                res.push_str("You solved it correctly!\n");
+            }
+            Solved::Search => {
+                res.push_str("You solved it correctly!!\n");
+            }
+            Solved::Ambiguous => {
+                res.push_str("You found one of its solutions!\n");
+            }
+            Solved::OutOfTime => {
+                res.push_str("Nonetheless, you solved it!\n");
+            }
+        }
+        if matches!(g.solved, Solved::LineLogic | Solved::Search) {}
+    } else if g.filled_cells > 0 {
+        res.push_str(&format!(
+            "You've solved {:.1}% of the puzzle correctly.\n",
+            g.filled_cells as f32 / g.answer.len() as f32 * 100.0
+        ));
+    }
+    res.push_str(""); // New paragraph for guidan\nce.
+
+    match &g.next {
+        Next::Done => {} // handled above
+        Next::Lines(lhes) | Next::LinesAfterPartial(lhes) => {
+            if lhes.len() == 1 {
+                res.push_str("There is one lane ");
+            } else {
+                res.push_str(&format!("There are {} lanes ", lhes.len()));
+            }
+            res.push_str("you can progress with line logic");
+            if matches!(g.next, Next::LinesAfterPartial(_)) {
+                res.push_str(" (but only if you cross-reference color information)");
+            }
+            if lhes.len() > 5 {
+                res.push_str(" (here's the first five)");
+            }
+            res.push_str(": \n");
+            for lh in lhes.iter().take(5) {
+                let (fam, cell) = puz.lane_map().split_family(lh.lane);
+                // This would be badly wrong for triddlers!
+                let fam_str = if fam == FamilyIdx(0) { "R" } else { "C" };
+                let idx = cell + 1;
+                let pl = if lh.resolves.len() == 1 { "" } else { "s" };
+                res.push_str(&format!(
+                    " * >!{fam_str}{idx}, which can resolve {} cell{pl}!<\n",
+                    lh.resolves.len()
+                ));
+            }
+        }
+        Next::Contradictions(cons) => {
+            if cons.len() == 1 {
+                res.push_str("There is at least one cell ");
+            } else {
+                res.push_str(&format!("There are at least {} cells ", cons.len()));
+            }
+            res.push_str("that can be guessed and disproven:\n");
+            for (cell, color) in cons {
+                let loc = K::coord_label(puz.geometry.coord(*cell));
+                let color_str = if *color == BACKGROUND {
+                    "background"
+                } else {
+                    "colored-in" // currently, we don't handle multicolor puzzles
+                };
+                res.push_str(&format!(" * >!{loc} can't be {color_str}!<\n"));
+            }
+        }
+        Next::Stuck(_) => {
+            if g.solved == Solved::Search {
+                res.push_str("This puzzle probably requires nested guesses at this point. It's quite hard!\n");
+            } else {
+                res.push_str("There's also no obvious way to make progress.\n");
+            }
+        }
+        Next::Broken(_) => {
+            // This can happen if the puzzle is unsolved
+            res.push_str("The current grid is already contradictory.\n");
+        }
+    }
+
+    res
 }
 
 /// Guidance for someone who's gotten as far as `grid` in `puzzle`. An error if the clues have no
@@ -85,6 +214,7 @@ pub fn guidance<C: Clue, K: GridKind>(
     let (answer, solved) = find_answer(puzzle)?;
 
     let mut grid = grid.clone();
+    let filled_cells = grid.iter().filter(|c| c.is_known()).count();
     let mut errors = vec![];
     for (cell, mine) in grid.iter_mut_enumerated() {
         // (A mistake is ruling out the answer.)
@@ -96,13 +226,18 @@ pub fn guidance<C: Clue, K: GridKind>(
     }
 
     let next = if grid.iter().all(Cell::is_known) {
-        Next::Done
+        // Where the answer isn't all known, agreeing with it doesn't mean agreeing with the clues.
+        match scrub_lanes(puzzle, &grid) {
+            Ok(_) => Next::Done,
+            Err(broken) => Next::Broken(broken),
+        }
     } else {
         next_step(puzzle, grid)?
     };
     Ok(GuidanceReport {
         solved,
         answer,
+        filled_cells,
         errors,
         next,
     })
@@ -257,7 +392,7 @@ fn guess<C: Clue, K: GridKind>(
         }
     }
     Ok(if contradictions.is_empty() {
-        Next::Stuck { guesses: tried }
+        Next::Stuck(tried)
     } else {
         Next::Contradictions(contradictions)
     })
@@ -401,6 +536,16 @@ mod tests {
             "{:?}",
             report.next
         );
+    }
+
+    #[test]
+    fn filled_in_but_wrong_in_an_ambiguous_puzzle() {
+        // Nothing's known of the answer, so nothing counts as a mistake, but the clues disagree.
+        let p = puzzle(&["#.", ".#"]);
+        let report = guidance(&p, &progress(&p, &["##", "##"])).unwrap();
+        assert_eq!(report.solved, Solved::Ambiguous);
+        assert!(report.errors.is_empty());
+        assert!(matches!(report.next, Next::Broken(_)), "{:?}", report.next);
     }
 
     #[test]

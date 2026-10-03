@@ -1263,6 +1263,9 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     /// most of its shape.
     fn dims_label(dims: &Self::Dims, lane_map: &LaneMap) -> String;
 
+    /// Human-readable (and 1-indexed) coordinate description
+    fn coord_label(coord: Self::Coord) -> String;
+
     fn resized(dims: &Self::Dims, side: Self::Side, delta: i32) -> Option<Self::Dims>;
 
     /// `None` when the coordinate is outside the puzzle.
@@ -1390,6 +1393,11 @@ impl GridKind for Square {
 
     fn dims_label(dims: &Rect, _lanes: &LaneMap) -> String {
         format!("{}x{}", dims.width, dims.height)
+    }
+
+    fn coord_label(coord: Self::Coord) -> String {
+        let (x, y) = coord;
+        format!("R{}C{}", y + 1, x + 1)
     }
 
     fn resized(dims: &Rect, side: SquareSide, delta: i32) -> Option<Rect> {
@@ -1661,6 +1669,16 @@ impl GridKind for Tri {
         )
     }
 
+    fn coord_label(coord: Self::Coord) -> String {
+        let (horiz, rising, falling) = (coord.a, coord.b, coord.c);
+        format!(
+            "horiz: {} rising: {} falling: {}",
+            horiz + 1,
+            rising + 1,
+            falling + 1
+        )
+    }
+
     fn resized(dims: &Outline, side: Side, delta: i32) -> Option<Outline> {
         dims.resized(side, delta)
     }
@@ -1897,6 +1915,11 @@ impl<K: GridKind> Geometry<K> {
 
     pub fn cell(&self, coord: K::Coord) -> Option<CellIdx> {
         K::cell_of(&self.dims, &self.lookup, coord)
+    }
+
+    /// The inverse of [`cell`](Self::cell).
+    pub fn coord(&self, cell: CellIdx) -> K::Coord {
+        self.coords[cell]
     }
 
     /// Cells sharing an edge with this one, already filtered to those inside the puzzle.
