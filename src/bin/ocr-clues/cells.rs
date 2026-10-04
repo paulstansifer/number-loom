@@ -172,10 +172,25 @@ pub fn read(image: &RgbImage, layout: &ClueLayout) -> Vec<Vec<State>> {
     for g in (0..k).filter(|&g| marked(g)) {
         meaning[g] = State::Crossed;
     }
-    // Behind the marks is what an undecided cell looks like.
+    // Behind the marks is what an undecided cell looks like. That's best seen at the middle of
+    // each edge, where neither an X (corner to corner) nor a dot (in the middle) reaches: a thick
+    // X can take up so much of a cell that its typical brightness is the X's.
+    let edge_middles: Vec<usize> = [0, SIZE - 1]
+        .into_iter()
+        .flat_map(|edge| {
+            [SIZE / 2 - 1, SIZE / 2]
+                .into_iter()
+                .flat_map(move |i| [edge * SIZE + i, i * SIZE + edge])
+        })
+        .collect();
     let behind_marks: Vec<f32> = (0..k)
         .filter(|&g| marked(g))
-        .map(|g| looks_of[g].0)
+        .map(|g| {
+            let b = brightness(&average[g]);
+            let mut edges: Vec<f32> = edge_middles.iter().map(|&i| b[i]).collect();
+            edges.sort_by(f32::total_cmp);
+            edges[edges.len() / 2]
+        })
         .collect();
     let undecided_brightness = (!behind_marks.is_empty())
         .then(|| behind_marks.iter().sum::<f32>() / behind_marks.len() as f32);
