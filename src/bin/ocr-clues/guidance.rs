@@ -91,6 +91,10 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
         Solved::Search => ", only solvable with trial-and-error.",
         Solved::OutOfTime => ", which I was unable to solve!",
     };
+    // TODO: Markdown (Reddit's too) joins lines separated by a single "\n" into one paragraph, so
+    //   everything outside the lists comes out as one run-on paragraph. Paragraphs need "\n\n"
+    //   (and old Reddit needs a blank line before a list starts).
+    // TODO: "8x8" and "18x18" would need "an"; 8x8 is a common size for small puzzles.
     // Fortunately, numbers <80 that start with a vowel sound aren't a multiple of five, so we're unlikely to
     // need to say "an".
     res.push_str(&format!(
@@ -106,6 +110,7 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
             g.errors.len(),
         ));
 
+        // TODO: `first = false` is inside `if !first`, so it never runs, and no commas get printed.
         let mut first = true;
         for error in g.errors.iter().take(5) {
             if !first {
@@ -119,6 +124,8 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
         if g.errors.len() > 5 {
             res.push_str(&format!(", and {} more", g.errors.len() - 5));
         }
+        // TODO: `next` is worked out with the mistakes erased, but nothing says so; perhaps "Once
+        //   you fix those, ..." before the next steps.
         res.push_str("!<\n");
     } else if matches!(g.next, Next::Done) {
         match g.solved {
@@ -135,6 +142,7 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
                 res.push_str("Nonetheless, you solved it!\n");
             }
         }
+        // TODO: An empty `if`: unfinished, or left over?
         if matches!(g.solved, Solved::LineLogic | Solved::Search) {}
     } else if g.filled_cells > 0 {
         res.push_str(&format!(
@@ -142,6 +150,7 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
             g.filled_cells as f32 / g.answer.len() as f32 * 100.0
         ));
     }
+    // TODO: This adds nothing (see the TODO about paragraphs above).
     res.push_str(""); // New paragraph for guidan\nce.
 
     match &g.next {
@@ -159,6 +168,7 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
             if lhes.len() > 5 {
                 res.push_str(" (here's the first five)");
             }
+            // TODO: There's a trailing space after the colon.
             res.push_str(": \n");
             for lh in lhes.iter().take(5) {
                 let (fam, cell) = puz.lane_map().split_family(lh.lane);
@@ -186,10 +196,14 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
                 } else {
                     "colored-in" // currently, we don't handle multicolor puzzles
                 };
+                // TODO: "can't be colored-in" pretty much gives the cell away. Wording like "try supposing
+                //   R3C4 is filled in, and see what breaks" would teach the technique, with a softer spoiler.
                 res.push_str(&format!(" * >!{loc} can't be {color_str}!<\n"));
             }
         }
         Next::Stuck(_) => {
+            // TODO: For `Ambiguous`, it may help more to say there's more than one solution, so the person
+            //   has to pick one; and for `OutOfTime`, that I couldn't tell where to go.
             if g.solved == Solved::Search {
                 res.push_str("This puzzle probably requires nested guesses at this point. It's quite hard!\n");
             } else {
@@ -197,6 +211,7 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
             }
         }
         Next::Broken(_) => {
+            // TODO: Name the lanes that are broken (the field is unused, and the compiler warns about it).
             // This can happen if the puzzle is unsolved
             res.push_str("The current grid is already contradictory.\n");
         }
