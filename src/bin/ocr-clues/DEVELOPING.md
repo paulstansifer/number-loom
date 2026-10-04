@@ -65,9 +65,11 @@ Here's what it does:
    usually finished its block. A fully decided lane's clues are just its blocks; otherwise,
    blocks are matched with clues from each end, and then in the middle (see the module comment).
    A single blotted clue left over is whatever makes the row and column totals agree. A lane
-   still blotted after all that goes back to the first pass's reading, if there was one. Since a
-   lane redone from the grid copies the person's mistakes into it, `--message` says how many
-   clues were worked out. `--score` scores the clues after this step.
+   still blotted after all that goes back to the first pass's reading, if there was one. Clues
+   much fainter than the rest (some apps dim the clues that are done) are worked out the same
+   way, since a dim "1" is easily misread as a "7", but stay as they read where the grid can't
+   say. Since a lane redone from the grid copies the person's mistakes into it, `--message` says
+   how many clues were worked out. `--score` scores the clues after this step.
 
    `guidance.rs` goes further, for someone stuck partway through: it finds the answer
    (searching for up to two seconds if line logic isn't enough), lists the grid's mistakes, and

@@ -37,6 +37,10 @@ pub struct Reread {
     pub corrections: usize,
     /// Clues that are there, but couldn't be read.
     pub blots: usize,
+    /// For each clue in `cols` and `rows`, whether it's much fainter than is typical: some apps
+    /// dim the clues that are done, so the grid likely says what they are (see `repair`).
+    pub col_dimmed: Vec<Vec<bool>>,
+    pub row_dimmed: Vec<Vec<bool>>,
     /// For each lane with blotted clues, phase one's reading, if it had one: something to fall
     /// back on if the grid can't say what they are (see `repair`).
     pub col_backups: Vec<Option<Vec<u16>>>,
@@ -555,6 +559,22 @@ fn crop((left, top, right, bottom): Area) -> RotatedRect {
     ))
 }
 
+/// How much fainter than is typical a dimmed clue is (as a fraction of the typical contrast).
+const DIMMED: f32 = 0.6;
+
+/// How strongly the ink in `area` stands out from the background around it: how far from the
+/// most common shade (most of the area is background) the inkiest pixels are.
+fn contrast(luma: &Luma, &(left, top, right, bottom): &Area) -> Option<f32> {
+    let mut values: Vec<f32> = (top - 3..=bottom + 3)
+        .flat_map(|y| (left - 3..=right + 3).filter_map(move |x| luma.at(x, y)))
+        .collect();
+    values.sort_by(f32::total_cmp);
+    let background = *values.get(values.len() / 2)?;
+    let mut contrast: Vec<f32> = values.iter().map(|v| (v - background).abs()).collect();
+    contrast.sort_by(f32::total_cmp);
+    Some(contrast[contrast.len() * 97 / 100])
+}
+
 /// Recognition's reading of a number, if it's one or two digits.
 fn as_number(text: &str) -> Option<u16> {
     let digits: Vec<u8> = text
@@ -710,6 +730,11 @@ pub fn reread(
     let col_slot_readings: Vec<_> = col_slotted.iter().map(&mut take).collect();
     let row_slot_readings: Vec<_> = row_slotted.iter().map(&mut take).collect();
 
+    let mut contrasts: Vec<f32> = areas.iter().filter_map(|a| contrast(&luma, a)).collect();
+    contrasts.sort_by(f32::total_cmp);
+    let typical_contrast = contrasts.get(contrasts.len() / 2).copied().unwrap_or(0.0);
+    let dimmed = |area: &Area| contrast(&luma, area).is_some_and(|c| c < DIMMED * typical_contrast);
+
     let mut found = vec![];
     let mut fallbacks = 0;
     let mut blots = 0;
@@ -741,8 +766,8 @@ pub fn reread(
                     slots: Vec<Readings>,
                     before: &[Vec<u16>],
                     plausible: &dyn Fn(&[Area]) -> bool|
-     -> (Vec<Vec<u16>>, Vec<Option<Vec<u16>>>) {
-        let (mut result, mut backups) = (vec![], vec![]);
+     -> (Vec<Vec<u16>>, Vec<Option<Vec<u16>>>, Vec<Vec<bool>>) {
+        let (mut result, mut backups, mut dims) = (vec![], vec![], vec![]);
         for (i, lane) in runs.into_iter().enumerate() {
             let all_read = |lane: &[(Area, Option<u16>, Option<u16>)]| {
                 lane.iter().all(|(_, number, _)| number.is_some())
@@ -754,6 +779,7 @@ pub fn reread(
                     if !lane.is_empty() && all_read(&lane) && plausible(&areas) {
                         result.push(lane.iter().map(|r| r.1.unwrap()).collect());
                         backups.push(None);
+                        dims.push(vec![false; lane.len()]);
                     }
                 }
                 break;
@@ -774,8 +800,11 @@ pub fn reread(
             };
             match chosen {
                 Some(lane) => {
-                    let mut numbers = vec![];
+                    let (mut numbers, mut dim) = (vec![], vec![]);
                     for (area, number, recognized) in lane {
+                        if number != Some(0) {
+                            dim.push(dimmed(&area));
+                        }
                         found.push(Found {
                             area,
                             number,
@@ -794,24 +823,30 @@ pub fn reread(
                     let blotted = numbers.contains(&BLOTTED);
                     backups.push((blotted && !before.is_empty()).then(|| before.clone()));
                     result.push(numbers);
+                    dims.push(dim);
                 }
                 None => {
                     fallbacks += 1;
                     result.push(before.clone());
+                    dims.push(vec![false; before.len()]);
                     backups.push(None);
                 }
             }
         }
-        (result, backups)
+        (result, backups, dims)
     };
-    let (new_cols, col_backups) = read(true, col_runs, col_slot_readings, &layout.cols, &col_fits);
-    let (new_rows, row_backups) = read(false, row_runs, row_slot_readings, &layout.rows, &row_fits);
+    let (new_cols, col_backups, col_dimmed) =
+        read(true, col_runs, col_slot_readings, &layout.cols, &col_fits);
+    let (new_rows, row_backups, row_dimmed) =
+        read(false, row_runs, row_slot_readings, &layout.rows, &row_fits);
     Ok(Reread {
         cols: new_cols,
         rows: new_rows,
         fallbacks,
         corrections,
         blots,
+        col_dimmed,
+        row_dimmed,
         col_backups,
         row_backups,
         found,

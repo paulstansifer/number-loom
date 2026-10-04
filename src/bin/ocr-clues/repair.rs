@@ -14,6 +14,9 @@
 //!   blocks; or with all the blocks; whichever there are the right number of (and leave room for
 //!   the clues on either side).
 //!
+//! Clues the app has dimmed (as some do, for clues that are done) are worked out the same way,
+//! since the grid likely has their blocks, but where the grid can't say, they stay as they read.
+//!
 //! Then, if only one blotted clue is left in the whole puzzle, the totals say what it is: the
 //! rows and the columns fill the same number of cells. Any lanes that still have blotted clues go
 //! back to what the first pass read, if it read anything.
@@ -160,6 +163,37 @@ pub fn lane(clues: &[u16], cells: &[State]) -> Vec<u16> {
     repaired
 }
 
+/// `clues`, with the ones that are dimmed worked out from `cells` like blotted ones, where
+/// possible, and otherwise left as they read.
+fn lane_dimmed(clues: &[u16], dimmed: &[bool], cells: &[State]) -> Vec<u16> {
+    let masked: Vec<u16> = clues
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| {
+            if dimmed.get(i) == Some(&true) {
+                BLOTTED
+            } else {
+                n
+            }
+        })
+        .collect();
+    let mut worked_out = lane(&masked, cells);
+    // (A lane redone from the grid has nothing left blotted; otherwise, the clues line up.)
+    if worked_out.len() == clues.len() {
+        for (now, &read) in worked_out.iter_mut().zip(clues) {
+            if *now == BLOTTED {
+                *now = read;
+            }
+        }
+    }
+    worked_out
+}
+
+/// Lane `l`'s dimmed clues.
+fn dims(dimmed: &[Vec<bool>], l: usize) -> &[bool] {
+    dimmed.get(l).map_or(&[], |d| &d[..])
+}
+
 fn show(clues: &[u16]) -> String {
     if clues.is_empty() {
         return "(empty)".to_string();
@@ -168,12 +202,15 @@ fn show(clues: &[u16]) -> String {
     numbers.join(" ")
 }
 
-/// The clues, with the blotted ones worked out from the grid (`states`, `[row][column]`) where
-/// possible. `col_backups` and `row_backups` are what to fall back on for lanes where they can't
-/// be (see `reread::Reread`).
+/// The clues, with the blotted and dimmed ones worked out from the grid (`states`,
+/// `[row][column]`) where possible. `col_dimmed` and `row_dimmed` say which are dimmed, and
+/// `col_backups` and `row_backups` are what to fall back on for lanes where blotted clues can't
+/// be worked out (see `reread::Reread`).
 pub fn repair(
     cols: &[Vec<u16>],
     rows: &[Vec<u16>],
+    col_dimmed: &[Vec<bool>],
+    row_dimmed: &[Vec<bool>],
     col_backups: &[Option<Vec<u16>>],
     row_backups: &[Option<Vec<u16>>],
     states: &[Vec<State>],
@@ -191,12 +228,12 @@ pub fn repair(
         cols: cols
             .iter()
             .enumerate()
-            .map(|(c, clues)| lane(clues, &column(c)))
+            .map(|(c, clues)| lane_dimmed(clues, dims(col_dimmed, c), &column(c)))
             .collect(),
         rows: rows
             .iter()
             .enumerate()
-            .map(|(r, clues)| lane(clues, &row(r)))
+            .map(|(r, clues)| lane_dimmed(clues, dims(row_dimmed, r), &row(r)))
             .collect(),
         filled: 0,
         labels: vec![],
@@ -364,6 +401,25 @@ mod tests {
     }
 
     #[test]
+    fn dimmed() {
+        // Worked out like blotted clues...
+        assert_eq!(
+            lane_dimmed(&[7, 3], &[true, false], &cells("x#x....")),
+            vec![1, 3]
+        );
+        // ...but where the grid can't say, as they read.
+        assert_eq!(
+            lane_dimmed(&[7, 3], &[true, false], &cells(".......")),
+            vec![7, 3]
+        );
+        // A finished lane's clues are its blocks.
+        assert_eq!(
+            lane_dimmed(&[7, 3], &[true, false], &cells("x#x###x")),
+            vec![1, 3]
+        );
+    }
+
+    #[test]
     fn more_blocks_than_clues() {
         assert_eq!(lane(&[B], &cells("#x#x....")), vec![B]);
     }
@@ -374,7 +430,7 @@ mod tests {
         let states = vec![vec![State::Undecided; 3]; 3];
         let cols = vec![vec![1], vec![B], vec![1]];
         let rows = vec![vec![2], vec![1], vec![1]];
-        let repaired = repair(&cols, &rows, &[], &[], &states);
+        let repaired = repair(&cols, &rows, &[], &[], &[], &[], &states);
         assert_eq!(repaired.cols, vec![vec![1], vec![2], vec![1]]);
         assert_eq!(repaired.filled, 1);
         assert_eq!(repaired.labels, vec![(true, 1, 0, 2)]);
@@ -384,7 +440,7 @@ mod tests {
         let cols = vec![vec![1], vec![B], vec![B]];
         let rows = vec![vec![2], vec![2], vec![1]];
         let backups = vec![None, Some(vec![3]), None];
-        let repaired = repair(&cols, &rows, &backups, &[], &states);
+        let repaired = repair(&cols, &rows, &[], &[], &backups, &[], &states);
         assert_eq!(repaired.cols, vec![vec![1], vec![3], vec![1]]);
         assert_eq!(repaired.filled, 1);
     }

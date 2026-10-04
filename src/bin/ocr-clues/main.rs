@@ -535,13 +535,18 @@ fn straighten(
 /// The state of the grid, and the clues with the blotted ones worked out from it where possible.
 fn repaired(reading: &Reading, layout: &ClueLayout) -> (Vec<Vec<cells::State>>, repair::Repaired) {
     let states = cells::read(&reading.image, layout);
-    let (col_backups, row_backups) = match &reading.reread {
-        Some(reread) => (&reread.col_backups[..], &reread.row_backups[..]),
-        None => (&[][..], &[][..]),
+    let ((col_dimmed, row_dimmed), (col_backups, row_backups)) = match &reading.reread {
+        Some(reread) => (
+            (&reread.col_dimmed[..], &reread.row_dimmed[..]),
+            (&reread.col_backups[..], &reread.row_backups[..]),
+        ),
+        None => ((&[][..], &[][..]), (&[][..], &[][..])),
     };
     let repaired = repair::repair(
         &layout.cols,
         &layout.rows,
+        col_dimmed,
+        row_dimmed,
         col_backups,
         row_backups,
         &states,
