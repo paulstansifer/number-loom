@@ -94,7 +94,7 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
     // Fortunately, numbers <80 that start with a vowel sound aren't a multiple of five, so we're unlikely to
     // need to say "an".
     res.push_str(&format!(
-        "I see a {} puzzle{like_what}",
+        "I see a {} puzzle{like_what} ",
         puz.geometry.dims_label()
     ));
 
