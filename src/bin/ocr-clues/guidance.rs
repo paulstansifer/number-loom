@@ -79,10 +79,15 @@ pub struct GuidanceReport {
     pub next: Next,
 }
 
-/// Emits a Markdown message about the puzzle.
+/// Emits a Markdown message about the puzzle. `repairs` is how many clues couldn't be read, and
+/// were worked out from the grid instead (see `repair`).
 /// Unlike everything else in this directory; this is human-written;
 /// LLMs should add TODOs if necessary, but not change any text.
-pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &GuidanceReport) -> String {
+pub fn guidance_to_message<C: Clue, K: GridKind>(
+    puz: &Puzzle<C, K>,
+    g: &GuidanceReport,
+    repairs: usize,
+) -> String {
     let mut res = String::new();
 
     let like_what = match g.solved {
@@ -101,6 +106,14 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(puz: &Puzzle<C, K>, g: &Guidanc
         "I see a {} puzzle{like_what} ",
         puz.geometry.dims_label()
     ));
+    // TODO: Placeholder wording, written by Claude (at Paul's request) for the number of clue
+    //   repairs; to be rethought.
+    if repairs > 0 {
+        let pl = if repairs == 1 { "" } else { "s" };
+        res.push_str(&format!(
+            "(I couldn't read {repairs} clue{pl}, so I worked them out from your grid.) "
+        ));
+    }
 
     if !g.errors.is_empty() {
         let pl = if g.errors.len() == 1 { "" } else { "s" };

@@ -43,8 +43,9 @@ Here's what it does:
    cleanly into near and far is the one used.) Where that fails for a lane, step 2's reading
    stands. `--no-reread` skips this step, for comparison. When the grid was found from its
    lines (so the clues likely sit in boxes), a lane that doesn't read cleanly is read slot by
-   slot instead: the clues of every lane sit at the same, regular spacing. A slot with ink that
-   doesn't read as a number (say, a crossed-out clue) becomes a "blotted" clue, shown as `?`.
+   slot instead: the clues of every lane sit at the same, regular spacing. A number that
+   doesn't read (say, a crossed-out clue), by slot or as ink, becomes a "blotted" clue, shown
+   as `?`, and step 2's reading of that lane is kept in reserve (see step 4).
    (`--compare-digits` adds a check of each digit against the others recognized as the same
    digit, in `templates.rs`; it hasn't helped on the pictures we have.)
 
@@ -60,6 +61,14 @@ Here's what it does:
    need the clues, many of which are crossed out in a well-solved puzzle.) If the clues solve,
    any cells that disagree with the answer are reported.
 
+   `repair.rs` then works out blotted clues from the grid: someone who's crossed out a clue has
+   usually finished its block. A fully decided lane's clues are just its blocks; otherwise,
+   blocks are matched with clues from each end, and then in the middle (see the module comment).
+   A single blotted clue left over is whatever makes the row and column totals agree. A lane
+   still blotted after all that goes back to the first pass's reading, if there was one. Since a
+   lane redone from the grid copies the person's mistakes into it, `--message` says how many
+   clues were worked out. `--score` scores the clues after this step.
+
    `guidance.rs` goes further, for someone stuck partway through: it finds the answer
    (searching for up to two seconds if line logic isn't enough), lists the grid's mistakes, and
    then, with those erased, finds the lanes that settle cells by themselves, or failing that,
@@ -70,8 +79,9 @@ Here's what it does:
 `--debug-image` is the tool for figuring out what went wrong: step 2's column clues are outlined
 in blue, its row clues in red, digits it ignored in gray, and text that wasn't digits in orange.
 The green lines are where it thinks the grid's top and left edges are. Step 3's numbers are in
-teal, labeled with what they read as, or in magenta if they didn't read as a number. Step 4's
-cells are marked with a green square (filled), a red X (crossed out), or a gray dot (undecided).
+teal, labeled with what they read as, or in magenta if they didn't read as a number (in brown,
+labeled `?=N`, if the grid said it was N). Step 4's cells are marked with a green square
+(filled), a red X (crossed out), or a gray dot (undecided).
 `--dump-glyphs` prints what OCR found in step 1.
 
 To measure accuracy, keep pictures in a directory with a hand-checked `NAME.clues` beside each

@@ -29,6 +29,7 @@ mod cells;
 mod clue_layout;
 mod grid;
 mod guidance;
+mod repair;
 mod reread;
 mod templates;
 mod warp;
@@ -571,6 +572,23 @@ fn sense(layout: &anyhow::Result<ClueLayout>) -> f32 {
     agreement * fitting * read
 }
 
+/// The state of the grid, and the clues with the blotted ones worked out from it where possible.
+fn repaired(reading: &Reading, layout: &ClueLayout) -> (Vec<Vec<cells::State>>, repair::Repaired) {
+    let states = cells::read(&reading.image, layout);
+    let (col_backups, row_backups) = match &reading.reread {
+        Some(reread) => (&reread.col_backups[..], &reread.row_backups[..]),
+        None => (&[][..], &[][..]),
+    };
+    let repaired = repair::repair(
+        &layout.cols,
+        &layout.rows,
+        col_backups,
+        row_backups,
+        &states,
+    );
+    (states, repaired)
+}
+
 fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading> {
     let image = open_image(path, args.scale)?;
     match args.dewarp {
@@ -734,9 +752,11 @@ fn main() -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    let save_debug_image = |states: Option<&[Vec<cells::State>]>| -> anyhow::Result<()> {
+    let save_debug_image = |states: Option<&[Vec<cells::State>]>,
+                            repaired: Option<&repair::Repaired>|
+     -> anyhow::Result<()> {
         if let Some(path) = &args.debug_image {
-            debug_image(&reading, states)
+            debug_image(&reading, states, repaired)
                 .save(path)
                 .with_context(|| format!("writing {path:?}"))?;
         }
@@ -745,7 +765,7 @@ fn main() -> anyhow::Result<()> {
     let layout = match &reading.layout {
         Ok(layout) => layout,
         Err(e) => {
-            save_debug_image(None)?;
+            save_debug_image(None, None)?;
             anyhow::bail!("{e:#}");
         }
     };
@@ -765,6 +785,28 @@ fn main() -> anyhow::Result<()> {
         eprintln!("Warning: {warning}");
     }
 
+    // The state of the grid: what's been filled in and crossed out so far.
+    let (states, repaired) = repaired(&reading, layout);
+    eprintln!("The grid (# filled in, x crossed out, . undecided):");
+    for row in &states {
+        let line: String = row
+            .iter()
+            .map(|state| match state {
+                cells::State::Filled => '#',
+                cells::State::Crossed => 'x',
+                cells::State::Undecided => '.',
+            })
+            .collect();
+        eprintln!("    {line}");
+    }
+    for note in &repaired.notes {
+        eprintln!("Repaired: {note}");
+    }
+    if !repaired.notes.is_empty() {
+        eprintln!("Repaired columns: {}", show(&repaired.cols));
+        eprintln!("Repaired rows: {}", show(&repaired.rows));
+    }
+
     let as_nonos = |clues: &[Vec<u16>]| -> Vec<Vec<Nono>> {
         clues
             .iter()
@@ -780,33 +822,19 @@ fn main() -> anyhow::Result<()> {
     };
     let puzzle = Puzzle::square(
         import::bw_palette(),
-        as_nonos(&layout.rows),
-        as_nonos(&layout.cols),
+        as_nonos(&repaired.rows),
+        as_nonos(&repaired.cols),
     );
-    // The state of the grid: what's been filled in and crossed out so far.
-    let states = cells::read(&reading.image, layout);
-    eprintln!("The grid (# filled in, x crossed out, . undecided):");
-    for row in &states {
-        let line: String = row
-            .iter()
-            .map(|state| match state {
-                cells::State::Filled => '#',
-                cells::State::Crossed => 'x',
-                cells::State::Undecided => '.',
-            })
-            .collect();
-        eprintln!("    {line}");
-    }
 
-    let blotted = layout
+    let blotted = repaired
         .cols
         .iter()
-        .chain(&layout.rows)
+        .chain(&repaired.rows)
         .flatten()
         .filter(|&&n| n == clue_layout::BLOTTED)
         .count();
     if blotted > 0 {
-        save_debug_image(Some(&states))?;
+        save_debug_image(Some(&states), Some(&repaired))?;
         anyhow::bail!(
             "{blotted} clues couldn't be read (shown as \"?\"), so there's no puzzle to write; \
              see --debug-image"
@@ -843,7 +871,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("Warning: {wrong} cells of the grid disagree with the answer.");
         }
     }
-    save_debug_image(Some(&states))?;
+    save_debug_image(Some(&states), Some(&repaired))?;
 
     if let Some(path) = &args.message {
         let mut grid: PartialSolution = puzzle
@@ -866,8 +894,11 @@ fn main() -> anyhow::Result<()> {
         }
         // (Clues that don't make sense have nothing to advise about, but are still worth writing.)
         match guidance::guidance(&puzzle, &grid) {
-            Ok(report) => std::fs::write(path, guidance::guidance_to_message(&puzzle, &report))
-                .with_context(|| format!("writing {path:?}"))?,
+            Ok(report) => std::fs::write(
+                path,
+                guidance::guidance_to_message(&puzzle, &report, repaired.filled),
+            )
+            .with_context(|| format!("writing {path:?}"))?,
             Err(e) => eprintln!("Warning: no message, since the clues don't solve: {e:#}"),
         }
     }
@@ -911,20 +942,27 @@ fn score(engine: &OcrEngine, dir: &Path, args: &Args) -> anyhow::Result<()> {
     pictures.sort_by_key(|p| (stem(p).parse::<u64>().ok(), stem(p)));
 
     let mut total = Score::default();
+    // Pictures scored, and those read entirely right (which is what really matters).
+    let (mut scored, mut perfect) = (0, 0);
     let (mut unchecked, mut written) = (vec![], vec![]);
     for picture in &pictures {
         let name = picture.file_name().unwrap_or_default().to_string_lossy();
         let reading = read(engine, picture, args)?;
+        // (Scored after working out blotted clues from the grid, as the bot would.)
+        let repair = reading.layout.as_ref().ok().map(|l| repaired(&reading, l));
         if let Some(dir) = &args.debug_dir {
             let path = dir.join(picture.with_extension("png").file_name().unwrap());
-            debug_image(&reading, None)
+            let (states, repaired) = repair.as_ref().map(|(s, r)| (&s[..], r)).unzip();
+            debug_image(&reading, states, repaired)
                 .save(&path)
                 .with_context(|| format!("writing {path:?}"))?;
         }
-        let (cols, rows) = match reading.layout {
-            Ok(layout) => (layout.cols, layout.rows),
-            Err(e) => {
-                println!("{name}: couldn't read: {e:#}");
+        let (cols, rows) = match (repair, &reading.layout) {
+            (Some((_, repaired)), _) => (repaired.cols, repaired.rows),
+            (None, layout) => {
+                if let Err(e) = layout {
+                    println!("{name}: couldn't read: {e:#}");
+                }
                 (vec![], vec![])
             }
         };
@@ -957,6 +995,10 @@ fn score(engine: &OcrEngine, dir: &Path, args: &Args) -> anyhow::Result<()> {
         total.lanes_right += score.lanes_right;
         total.numbers += score.numbers;
         total.numbers_wrong += score.numbers_wrong;
+        scored += 1;
+        if score.lanes_right == score.lanes {
+            perfect += 1;
+        }
     }
 
     if total.lanes > 0 {
@@ -969,6 +1011,7 @@ fn score(engine: &OcrEngine, dir: &Path, args: &Args) -> anyhow::Result<()> {
             total.numbers,
             100.0 * total.numbers_wrong as f32 / total.numbers.max(1) as f32,
         );
+        println!("{perfect}/{scored} pictures read entirely right");
     }
     if !written.is_empty() {
         println!(
@@ -988,7 +1031,11 @@ fn score(engine: &OcrEngine, dir: &Path, args: &Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn debug_image(reading: &Reading, states: Option<&[Vec<cells::State>]>) -> image::RgbImage {
+fn debug_image(
+    reading: &Reading,
+    states: Option<&[Vec<cells::State>]>,
+    repaired: Option<&repair::Repaired>,
+) -> image::RgbImage {
     use image::Rgb;
     let (image, glyphs, rejected) = (&reading.image, &reading.glyphs, &reading.rejected);
     let layout = reading.layout.as_ref().ok();
@@ -1056,10 +1103,18 @@ fn debug_image(reading: &Reading, states: Option<&[Vec<cells::State>]>) -> image
     for found in reading.reread.iter().flat_map(|r| &r.found) {
         let (left, top, right, bottom) = found.area;
         let area = (left as f32, top as f32, right as f32, bottom as f32);
-        let (color, label) = match (found.number, found.recognized) {
-            (Some(n), Some(was)) => (Rgb([220, 160, 0]), format!("{was}>{n}")),
-            (Some(n), None) => (Rgb([0, 170, 170]), n.to_string()),
-            (None, _) => (Rgb([255, 0, 255]), "?".to_string()),
+        let worked_out = repaired.and_then(|r| {
+            let (column, lane, index) = found.place;
+            r.labels
+                .iter()
+                .find(|&&(c, l, i, _)| (c, l, i) == (column, lane, index))
+                .map(|l| l.3)
+        });
+        let (color, label) = match (found.number, found.recognized, worked_out) {
+            (Some(n), Some(was), _) => (Rgb([220, 160, 0]), format!("{was}>{n}")),
+            (Some(n), None, _) => (Rgb([0, 170, 170]), n.to_string()),
+            (None, _, Some(n)) => (Rgb([120, 60, 0]), format!("?={n}")),
+            (None, _, None) => (Rgb([255, 0, 255]), "?".to_string()),
         };
         draw::rect(&mut debug, area, color);
         draw::text(&mut debug, (area.2 + 3.0, area.1), 11.0, &label, color);

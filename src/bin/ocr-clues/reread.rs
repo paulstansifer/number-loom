@@ -24,6 +24,8 @@ pub struct Found {
     pub number: Option<u16>,
     /// What recognition said, if comparing with the other digits changed it.
     pub recognized: Option<u16>,
+    /// Which clue it is: whether it's a column's, which lane, and where in the lane.
+    pub place: (bool, usize, usize),
 }
 
 pub struct Reread {
@@ -35,6 +37,10 @@ pub struct Reread {
     pub corrections: usize,
     /// Clues that are there, but couldn't be read.
     pub blots: usize,
+    /// For each lane with blotted clues, phase one's reading, if it had one: something to fall
+    /// back on if the grid can't say what they are (see `repair`).
+    pub col_backups: Vec<Option<Vec<u16>>>,
+    pub row_backups: Vec<Option<Vec<u16>>>,
     pub found: Vec<Found>,
 }
 
@@ -727,12 +733,13 @@ pub fn reread(
     let row_fits = |areas: &[Area]| fits(areas, row_center(height), false, layout.row_pitch);
 
     type Readings = Option<Vec<(Area, Option<u16>, Option<u16>)>>;
-    let mut read = |runs: Vec<Readings>,
+    let mut read = |column: bool,
+                    runs: Vec<Readings>,
                     slots: Vec<Readings>,
                     before: &[Vec<u16>],
                     plausible: &dyn Fn(&[Area]) -> bool|
-     -> Vec<Vec<u16>> {
-        let mut result = vec![];
+     -> (Vec<Vec<u16>>, Vec<Option<Vec<u16>>>) {
+        let (mut result, mut backups) = (vec![], vec![]);
         for (i, lane) in runs.into_iter().enumerate() {
             let all_read = |lane: &[(Area, Option<u16>, Option<u16>)]| {
                 lane.iter().all(|(_, number, _)| number.is_some())
@@ -743,22 +750,24 @@ pub fn reread(
                     let areas: Vec<Area> = lane.iter().map(|r| r.0).collect();
                     if !lane.is_empty() && all_read(&lane) && plausible(&areas) {
                         result.push(lane.iter().map(|r| r.1.unwrap()).collect());
+                        backups.push(None);
                     }
                 }
                 break;
             };
             // As ink runs, if that read cleanly (but finding nothing where phase one found
-            // something is more likely a miss); or by slot, if that did. Otherwise, what the first
-            // pass said, if it said anything; or failing that, by slot, with whatever doesn't
-            // read left blotted.
+            // something is more likely a miss); or by slot, if that did. Otherwise, there are
+            // clues that don't read (they're crossed out, most likely): by slot, or as ink runs,
+            // with those left blotted, so that the grid can say what they are. Failing that, what
+            // the first pass said.
             let slot = slots.get(i).cloned().flatten().filter(|s| !s.is_empty());
             let chosen = match (lane, slot) {
                 (Some(lane), _) if all_read(&lane) && !(lane.is_empty() && !before.is_empty()) => {
                     Some(lane)
                 }
-                (_, Some(slot)) if all_read(&slot) => Some(slot),
-                _ if !before.is_empty() => None,
-                (_, slot) => slot,
+                (_, Some(slot)) => Some(slot),
+                (Some(lane), None) if !lane.is_empty() => Some(lane),
+                _ => None,
             };
             match chosen {
                 Some(lane) => {
@@ -768,6 +777,7 @@ pub fn reread(
                             area,
                             number,
                             recognized,
+                            place: (column, i, numbers.len()),
                         });
                         match number {
                             Some(0) => {}
@@ -778,24 +788,29 @@ pub fn reread(
                             }
                         }
                     }
+                    let blotted = numbers.contains(&BLOTTED);
+                    backups.push((blotted && !before.is_empty()).then(|| before.clone()));
                     result.push(numbers);
                 }
                 None => {
                     fallbacks += 1;
                     result.push(before.clone());
+                    backups.push(None);
                 }
             }
         }
-        result
+        (result, backups)
     };
-    let new_cols = read(col_runs, col_slot_readings, &layout.cols, &col_fits);
-    let new_rows = read(row_runs, row_slot_readings, &layout.rows, &row_fits);
+    let (new_cols, col_backups) = read(true, col_runs, col_slot_readings, &layout.cols, &col_fits);
+    let (new_rows, row_backups) = read(false, row_runs, row_slot_readings, &layout.rows, &row_fits);
     Ok(Reread {
         cols: new_cols,
         rows: new_rows,
         fallbacks,
         corrections,
         blots,
+        col_backups,
+        row_backups,
         found,
     })
 }
