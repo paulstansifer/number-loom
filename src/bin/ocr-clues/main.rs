@@ -13,10 +13,11 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use clue_layout::{ClueLayout, Expected, Glyph, Role, Score, arrange};
 use number_loom::puzzle::{
-    BACKGROUND, Color, Document, DynPuzzle, DynSolution, Nono, NonogramFormat, Puzzle,
-    PuzzleDynOps, UNSOLVED,
+    BACKGROUND, Color, Document, DynPuzzle, DynSolution, Nono, NonogramFormat, PartialSolution,
+    Puzzle, PuzzleDynOps, UNSOLVED,
 };
 use number_loom::solve::grid_solve::Report;
+use number_loom::solve::line_solve::Cell;
 use number_loom::{export, import};
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams, OcrInput, TextItem};
 use rten::Model;
@@ -27,7 +28,6 @@ use rten_tensor::prelude::*;
 mod cells;
 mod clue_layout;
 mod grid;
-#[allow(dead_code)] // Not called yet.
 mod guidance;
 mod reread;
 mod templates;
@@ -106,6 +106,11 @@ struct Args {
     /// Write a copy of the picture marked up with what was found where
     #[arg(long)]
     debug_image: Option<PathBuf>,
+
+    /// Write advice for the person solving it, in Markdown (for a reply on Reddit): what they've
+    /// got wrong, and where to look next
+    #[arg(long)]
+    message: Option<PathBuf>,
 
     /// How sure the OCR model must be that a pixel is part of some text
     #[arg(long, default_value_t = 0.15)]
@@ -839,6 +844,33 @@ fn main() -> anyhow::Result<()> {
         }
     }
     save_debug_image(Some(&states))?;
+
+    if let Some(path) = &args.message {
+        let mut grid: PartialSolution = puzzle
+            .geometry
+            .coords
+            .iter()
+            .map(|_| Cell::new(&puzzle.palette))
+            .collect();
+        for (r, row) in states.iter().enumerate() {
+            for (c, state) in row.iter().enumerate() {
+                let color = match state {
+                    cells::State::Filled => Color(1),
+                    cells::State::Crossed => BACKGROUND,
+                    cells::State::Undecided => continue,
+                };
+                if let Some(cell) = puzzle.geometry.cell((c, r)) {
+                    grid[cell] = Cell::from_color(color);
+                }
+            }
+        }
+        // (Clues that don't make sense have nothing to advise about, but are still worth writing.)
+        match guidance::guidance(&puzzle, &grid) {
+            Ok(report) => std::fs::write(path, guidance::guidance_to_message(&puzzle, &report))
+                .with_context(|| format!("writing {path:?}"))?,
+            Err(e) => eprintln!("Warning: no message, since the clues don't solve: {e:#}"),
+        }
+    }
 
     let output = args.output.unwrap_or_else(|| PathBuf::from("-"));
     let format = args

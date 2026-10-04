@@ -200,12 +200,12 @@ enum Outcome {
     TooSmall { rows: usize, cols: usize },
     /// The clues read contradict each other, so some must be misread.
     Contradictory { width: usize, height: usize },
-    /// `report` is what `ocr-clues` said.
+    /// `message` is the advice `ocr-clues` wrote for the person solving it, if it had any.
     Read {
         width: usize,
         height: usize,
         cells_left: usize,
-        report: String,
+        message: Option<String>,
     },
 }
 
@@ -258,11 +258,16 @@ fn read_picture(
     fs::write(&picture, bytes)?;
 
     let puzzle_path = dir.join("puzzle.xml");
+    let message_path = dir.join("message.md");
+    // (So a failed rerun can't leave an old one behind.)
+    let _ = fs::remove_file(&message_path);
     let output = Command::new(ocr_clues)
         .arg(&picture)
         .arg(&puzzle_path)
         .arg("--debug-image")
         .arg(dir.join("debug.png"))
+        .arg("--message")
+        .arg(&message_path)
         .output()
         .with_context(|| format!("running {ocr_clues:?}"))?;
     let report = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -271,11 +276,12 @@ fn read_picture(
         let why = report.lines().last().unwrap_or("").to_string();
         return Ok((picture, Outcome::Unreadable(why)));
     }
-    Ok((picture, check(&puzzle_path, report)?))
+    let message = fs::read_to_string(&message_path).ok();
+    Ok((picture, check(&puzzle_path, message)?))
 }
 
 /// Whether the clues `ocr-clues` wrote to `puzzle_path` make sense.
-fn check(puzzle_path: &Path, report: String) -> anyhow::Result<Outcome> {
+fn check(puzzle_path: &Path, message: Option<String>) -> anyhow::Result<Outcome> {
     let document = import::load_path(&puzzle_path.to_path_buf(), None)?;
     let puzzle = document
         .try_puzzle()
@@ -299,21 +305,21 @@ fn check(puzzle_path: &Path, report: String) -> anyhow::Result<Outcome> {
             width,
             height,
             cells_left: solved.cells_left,
-            report,
+            message,
         },
     })
 }
 
-/// What to say in reply to the post, if anything. (A placeholder: the report, as is.)
+/// What to say in reply to the post, if anything.
 fn draft_reply(outcome: &Outcome) -> Option<String> {
-    let Outcome::Read { report, .. } = outcome else {
-        return None; // Can't read it; don't reply.
+    let Outcome::Read {
+        message: Some(message),
+        ..
+    } = outcome
+    else {
+        return None; // Can't read it, or nothing to say about it; don't reply.
     };
-    let quoted: String = report.lines().map(|l| format!("    {l}\n")).collect();
-    Some(format!(
-        "Here are the clues I read from your picture:\n\n{quoted}\n\
-         ^(I'm a bot, and I make mistakes.)\n"
-    ))
+    Some(format!("{message}\n^(I'm a bot, and I make mistakes.)\n"))
 }
 
 /// Where replying to the post will go. For now, the reply is only saved.
@@ -353,6 +359,9 @@ fn handle(http: &Client, ocr_clues: &Path, post: &Value, root: &Path) -> anyhow:
 
     if let Some(text) = draft_reply(&outcome) {
         reply(post, &dir, &text)?;
+    } else {
+        // (So an earlier run's draft doesn't look like this one's.)
+        let _ = fs::remove_file(dir.join("reply.md"));
     }
     Ok(())
 }

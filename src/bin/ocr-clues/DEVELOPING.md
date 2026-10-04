@@ -60,10 +60,12 @@ Here's what it does:
    need the clues, many of which are crossed out in a well-solved puzzle.) If the clues solve,
    any cells that disagree with the answer are reported.
 
-   `guidance.rs` (not called yet) goes further, for someone stuck partway through: it finds the
-   answer (searching for up to two seconds if line logic isn't enough), lists the grid's mistakes,
-   and then, with those erased, finds the lanes that settle cells by themselves, or failing that,
-   guesses (up to five) that line logic can prove wrong.
+   `guidance.rs` goes further, for someone stuck partway through: it finds the answer
+   (searching for up to two seconds if line logic isn't enough), lists the grid's mistakes, and
+   then, with those erased, finds the lanes that settle cells by themselves, or failing that,
+   guesses (up to five) that line logic can prove wrong. `--message FILE` writes that up in
+   Markdown, for the bot to reply with. (The wording, in `guidance_to_message`, is
+   human-written.)
 
 `--debug-image` is the tool for figuring out what went wrong: step 2's column clues are outlined
 in blue, its row clues in red, digits it ignored in gray, and text that wasn't digits in orange.
