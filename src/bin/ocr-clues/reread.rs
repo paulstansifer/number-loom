@@ -613,7 +613,10 @@ pub fn reread(
         0.0 => None,
         t => Some((t, clarity(&gaps, t))),
     };
-    let by_advance = split_otsu(measured(&advance), 1.0 * h, 1.1);
+    // (From middle to middle, digits of different widths in a proportional typeface are a
+    // little nearer or farther apart: as much as 1.25 times, where every clue is one digit. A
+    // space between numbers makes it at least 1.4.)
+    let by_advance = split_otsu(measured(&advance), 1.0 * h, 1.35);
     let (distance, threshold): (&dyn Fn(&Area, &Area) -> f32, f32) = match (by_gap, by_advance) {
         // From middle to middle, every digit is about as far from the next as any other: they're
         // all numbers of their own.
