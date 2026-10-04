@@ -17,10 +17,10 @@ curl https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.onnx -o ~/
 Here's what it does:
 
 0. `warp.rs` can first straighten out a photo of paper that isn't flat or isn't square-on. By
-   default (`--dewarp auto`), that's only tried when the picture as it is gives clues that don't
-   make sense (row and column totals that disagree, clues too long for their lines), and only
-   kept if it makes clearly more sense straightened; it costs a second read. Each grid line is followed as a curve, snapping at each step to the
-   lattice of lines measured in the patch around it, and stopping where the lines stop being
+   default (`--dewarp auto`), that's only done when the grid's lines aren't pixel-perfect: a
+   screenshot's lines each sit in one row (or column) of pixels, and a photo's drift, even if
+   only a little (see `straightness`). Each grid line is followed as a curve, snapping at each
+   step to the lattice of lines measured in the patch around it, and stopping where the lines stop being
    solid (the grid has ended, or it's a column of digits, which lines up like a line but has
    gaps). Then one smooth surface is fitted to all of them (which also extends the lines past
    the grid, over the clues), and each cell is mapped to a square. `--debug-lines` draws what it

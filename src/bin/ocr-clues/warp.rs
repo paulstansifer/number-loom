@@ -326,6 +326,56 @@ pub fn trace(image: &RgbImage) -> Option<Traced> {
     })
 }
 
+/// Lines less straight than this (see `straightness`) are a photo's, and worth straightening.
+/// (On the pictures we have, photos come out between 0.05 and 0.32, and screenshots at 0.38 and
+/// up; but a photo of flat paper taken square-on can come out higher.)
+pub const STRAIGHT: f32 = 0.35;
+
+/// How pixel-perfect the traced lines are: for each line, the fraction of its points where the
+/// line itself (found from the pixels, to a fraction of a pixel) is within half a pixel of where
+/// it is at the line's other points; and the median of that over all the lines. A screenshot's
+/// lines are exactly level, so that's close to 1; a photo's drift, even if only a little.
+pub fn straightness(image: &RgbImage, traced: &Traced) -> f32 {
+    let response = Response::new(image);
+    let window = (0.3 * traced.pitch).max(3.0) as i64;
+    let mut fractions: Vec<f32> = [(&traced.horizontal, 0), (&traced.vertical, 1)]
+        .into_iter()
+        .flat_map(|(lines, axis)| {
+            let response = &response;
+            lines.iter().map(move |(_, curve)| {
+                let centers: Vec<f32> = curve
+                    .iter()
+                    .filter_map(|&(x, y)| {
+                        let (along, across) = if axis == 0 { (x, y) } else { (y, x) };
+                        let at = |c: i64| response.at(axis, along, c as f32);
+                        let near = across.round() as i64;
+                        let peak = (near - window..=near + window)
+                            .max_by(|&a, &b| at(a).total_cmp(&at(b)))?;
+                        let (mut sum, mut weight) = (0.0, 0.0);
+                        for c in peak - 2..=peak + 2 {
+                            sum += c as f32 * at(c);
+                            weight += at(c);
+                        }
+                        (weight > 0.0).then(|| sum / weight)
+                    })
+                    .collect();
+                let mut sorted = centers.clone();
+                sorted.sort_by(f32::total_cmp);
+                let Some(&median) = sorted.get(sorted.len() / 2) else {
+                    return 0.0;
+                };
+                let close = centers
+                    .iter()
+                    .filter(|&&c| (c - median).abs() < 0.5)
+                    .count();
+                close as f32 / centers.len() as f32
+            })
+        })
+        .collect();
+    fractions.sort_by(f32::total_cmp);
+    fractions.get(fractions.len() / 2).copied().unwrap_or(0.0)
+}
+
 /// A smooth family of lines: `across = f(along, k)` for the line numbered `k`, as a polynomial
 /// of degree `DEGREE` in each (after scaling both to about -1..1).
 struct Family {

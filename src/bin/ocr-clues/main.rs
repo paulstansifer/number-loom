@@ -84,7 +84,7 @@ struct Args {
     compare_digits: bool,
 
     /// Straighten out the grid's lines first, for photos of paper that isn't flat. ("auto" does
-    /// it when the picture as it is doesn't make sense, and straightening it helps.)
+    /// it when the lines aren't pixel-perfect, as a screenshot's are.)
     #[arg(long, value_enum, default_value = "auto")]
     dewarp: Dewarp,
 
@@ -497,11 +497,12 @@ struct Reading {
 /// cells.
 fn straighten(
     image: &image::RgbImage,
+    traced: Option<warp::Traced>,
     args: &Args,
 ) -> anyhow::Result<Option<(image::RgbImage, f32)>> {
     let (w, h) = (image.width() as f32, image.height() as f32);
     let Some((mesh, traced)) =
-        warp::trace(image).and_then(|traced| Some((warp::Mesh::new(&traced, w, h)?, traced)))
+        traced.and_then(|traced| Some((warp::Mesh::new(&traced, w, h)?, traced)))
     else {
         return Ok(None);
     };
@@ -531,47 +532,6 @@ fn straighten(
     Ok(Some((warp::flatten(image, &mesh, cell), cell)))
 }
 
-/// How much sense a reading makes, from 0 (none) to 1 (it's consistent: the rows and columns
-/// fill the same number of cells, every clue fits, and none is blotted).
-fn sense(layout: &anyhow::Result<ClueLayout>) -> f32 {
-    let Ok(layout) = layout else {
-        return 0.0;
-    };
-    let (width, height) = (layout.cols.len(), layout.rows.len());
-    let lanes = width + height;
-    if lanes == 0 {
-        return 0.0;
-    }
-    let clues = |lanes: &[Vec<u16>]| -> Vec<u16> {
-        lanes
-            .iter()
-            .flatten()
-            .copied()
-            .filter(|&n| n != clue_layout::BLOTTED)
-            .collect()
-    };
-    let (cols, rows) = (clues(&layout.cols), clues(&layout.rows));
-    let total = |c: &[u16]| c.iter().map(|&n| n as f32).sum::<f32>();
-    let (sc, sr) = (total(&cols), total(&rows));
-    if sc + sr == 0.0 {
-        return 0.0;
-    }
-    let agreement = 1.0 - (sc - sr).abs() / sc.max(sr);
-    let fits = |lanes: &[Vec<u16>], len: usize| {
-        lanes
-            .iter()
-            .filter(|lane| {
-                lane.iter().map(|&n| n as usize).sum::<usize>() + lane.len().saturating_sub(1)
-                    <= len
-            })
-            .count()
-    };
-    let fitting = (fits(&layout.cols, height) + fits(&layout.rows, width)) as f32 / lanes as f32;
-    let numbers = layout.cols.iter().chain(&layout.rows).flatten().count();
-    let read = (cols.len() + rows.len()) as f32 / numbers.max(1) as f32;
-    agreement * fitting * read
-}
-
 /// The state of the grid, and the clues with the blotted ones worked out from it where possible.
 fn repaired(reading: &Reading, layout: &ClueLayout) -> (Vec<Vec<cells::State>>, repair::Repaired) {
     let states = cells::read(&reading.image, layout);
@@ -593,30 +553,22 @@ fn read(engine: &OcrEngine, path: &Path, args: &Args) -> anyhow::Result<Reading>
     let image = open_image(path, args.scale)?;
     match args.dewarp {
         Dewarp::Never => read_image(engine, image, None, args),
-        Dewarp::Always => match straighten(&image, args)? {
+        Dewarp::Always => match straighten(&image, warp::trace(&image), args)? {
             Some((flat, cell)) => read_image(engine, flat, Some(cell), args),
             None => {
                 eprintln!("Warning: couldn't trace the grid's lines to straighten them");
                 read_image(engine, image, None, args)
             }
         },
-        // Straightening a picture that doesn't need it only loses detail, so try without first.
+        // A screenshot's lines are pixel-perfect, and straightening it would only lose detail. A
+        // photo's lines aren't, quite.
         Dewarp::Auto => {
-            let plain = read_image(engine, image.clone(), None, args)?;
-            let plain_sense = sense(&plain.layout);
-            if plain_sense >= 1.0 {
-                return Ok(plain);
+            let traced = warp::trace(&image)
+                .filter(|traced| warp::straightness(&image, traced) < warp::STRAIGHT);
+            match straighten(&image, traced, args)? {
+                Some((flat, cell)) => read_image(engine, flat, Some(cell), args),
+                None => read_image(engine, image, None, args),
             }
-            let Some((flat, cell)) = straighten(&image, args)? else {
-                return Ok(plain);
-            };
-            let flattened = read_image(engine, flat, Some(cell), args)?;
-            // (A clear improvement, not just a different set of mistakes.)
-            Ok(if sense(&flattened.layout) > plain_sense + 0.1 {
-                flattened
-            } else {
-                plain
-            })
         }
     }
 }
