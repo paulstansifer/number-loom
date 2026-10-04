@@ -1,5 +1,9 @@
-name: Publish Puzzle Archive
+name: Publish to GitHub Pages
 
+# Publishes the web build of the app at https://paulstansifer.github.io/number-loom/, along with
+# the puzzle library, `puzzles.zip`. Both go in one workflow because each Pages deployment
+# replaces the whole site.
+#
 # The in-app puzzle library fetches https://paulstansifer.github.io/number-loom/puzzles.zip.
 # It has to be Pages rather than a release asset: a release download redirects to another host,
 # and neither hop sends the `Access-Control-Allow-Origin` header that the wasm build needs to
@@ -9,10 +13,7 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'puzzles/**'  # watch this directory
-      - '.github/workflows/puzzle_archive.yml'
-  workflow_dispatch:  # to publish without waiting for a puzzle to change
+  workflow_dispatch:  # to republish without pushing anything
 
 permissions:
   contents: read
@@ -33,11 +34,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install trunk
+        uses: jetli/trunk-action@v0.5.1
+        with:
+          version: 'v0.21.14'
+      - name: Build the app
+        run: trunk build --release --dist _site
       - name: Create zip archive
         # Zipped from inside `puzzles/`, so entries are bare filenames with no directory prefix.
-        run: |
-          mkdir -p _site
-          (cd puzzles && zip -r ../_site/puzzles.zip .)
+        run: (cd puzzles && zip -r ../_site/puzzles.zip .)
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
