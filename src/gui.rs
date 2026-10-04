@@ -170,13 +170,26 @@ pub fn edit_image(document: Document) {
             .dyn_into::<web_sys::HtmlCanvasElement>()
             .expect("the_canvas_id was not a HtmlCanvasElement");
 
+        let linked = woven_from_url_hash();
+
         let start_result = eframe::WebRunner::new()
             .start(
                 canvas,
                 web_options,
                 Box::new(|cc| {
                     egui_material_icons::initialize(&cc.egui_ctx);
-                    Ok(Box::new(NonogramGui::new(document)))
+                    let gui = match linked {
+                        None => NonogramGui::new(document),
+                        Some(Ok(linked_document)) => NonogramGui::new_solving(linked_document),
+                        Some(Err(e)) => {
+                            let gui = NonogramGui::new(document);
+                            gui.editor_gui.status.set(StatusMessage::error(format!(
+                                "Error loading the puzzle in the link: {e}"
+                            )));
+                            gui
+                        }
+                    };
+                    Ok(Box::new(gui))
                 }),
             )
             .await;
@@ -193,6 +206,26 @@ pub fn edit_image(document: Document) {
             }
         }
     });
+}
+
+/// A link like `.../number-loom/#WOVEN-...-` carries a puzzle to open. `None` if the URL doesn't
+/// have one.
+#[cfg(target_arch = "wasm32")]
+fn woven_from_url_hash() -> Option<anyhow::Result<Document>> {
+    let hash = web_sys::window()?.location().hash().ok()?;
+    // Some chat apps and mailers percent-encode the `+` and `/` of the base-64.
+    let hash = js_sys::decode_uri_component(&hash)
+        .ok()
+        .and_then(|decoded| decoded.as_string())
+        .unwrap_or(hash);
+    let woven = hash.strip_prefix('#')?;
+    if !woven.starts_with("WOVEN-") {
+        return None;
+    }
+    Some(crate::formats::woven::from_woven(
+        woven,
+        "linked.woven".to_string(),
+    ))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -870,6 +903,17 @@ impl NonogramGui {
         }
     }
 
+    /// Like `new`, but starting out in solve mode — unless `document` turns out to be unsolvable,
+    /// in which case `new` puts a blank canvas in the editor and says why.
+    pub fn new_solving(mut document: Document) -> Self {
+        let solvable = document.solution().is_ok(); // (cached, so `new` won't solve it again)
+        let mut gui = Self::new(document);
+        if solvable {
+            gui.enter_solve_mode();
+        }
+        gui
+    }
+
     fn enter_solve_mode(&mut self) {
         self.solve_gui = Some(SolveGui::new(
             self.editor_gui.document.clone(),
@@ -1374,5 +1418,18 @@ impl BacktrackSolver {
         if let Some(report) = &self.report {
             ui.label(report);
         }
+    }
+}
+
+#[cfg(test)]
+mod new_solving_tests {
+    use super::*;
+
+    #[test]
+    fn a_linked_puzzle_opens_in_solve_mode() {
+        let woven = include_str!("../examples/woven/square_bw.1.woven");
+        let doc =
+            crate::formats::woven::from_woven(woven.trim(), "linked.woven".to_string()).unwrap();
+        assert!(NonogramGui::new_solving(doc).solve_gui.is_some());
     }
 }
