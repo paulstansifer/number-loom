@@ -381,6 +381,11 @@ impl NonogramGui {
                 if let Some(handle) = handle {
                     let document =
                         crate::import::load(&handle.file_name(), handle.read().await, None);
+                    // We need a solution to edit it:
+                    let document = match document {
+                        Ok(mut document) => document.find_solution().await.map(|()| document),
+                        Err(e) => Err(e),
+                    };
 
                     sender.send(document).unwrap();
                 }

@@ -29,7 +29,7 @@ fn solve_examples() {
         let path = entry.path();
         if path.is_file() {
             let mut document = import::load_path(&path, None).unwrap();
-            match document.puzzle().plain_solve() {
+            match document.puzzle().line_solve() {
                 Ok(Report {
                     solve_counts,
                     cells_left,
@@ -118,7 +118,7 @@ fn solve_triddler_examples() {
             .as_tri_nono()
             .unwrap_or_else(|| panic!("{path:?}: expected a triddler"));
         let Report { cells_left, .. } = puzzle
-            .plain_solve()
+            .line_solve()
             .unwrap_or_else(|e| panic!("{path:?}: internal error: {e:?}"));
         assert_eq!(cells_left, 0, "{path:?}: should solve by line logic alone");
         solved_any = true;

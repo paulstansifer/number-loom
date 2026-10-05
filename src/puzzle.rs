@@ -507,6 +507,10 @@ macro_rules! with_solution {
     };
 }
 
+/// How long `plain_solve` lets the backtracking solver run before settling for line logic's
+/// answer.
+pub const PLAIN_SOLVE_BACKTRACK_BUDGET: web_time::Duration = web_time::Duration::from_secs(2);
+
 pub trait PuzzleDynOps {
     fn palette(&self) -> &HashMap<Color, ColorInfo>;
     /// How many lanes each clue family has: two entries for a square puzzle, three for a triddler.
@@ -524,7 +528,8 @@ pub trait PuzzleDynOps {
         partial: &mut PartialSolution,
         options: &crate::solve::grid_solve::SolveOptions,
     ) -> anyhow::Result<crate::solve::grid_solve::Report>;
-    fn plain_solve(&self) -> anyhow::Result<crate::solve::grid_solve::Report> {
+    /// `solve` without backtracking, as quickly as possible.
+    fn line_solve(&self) -> anyhow::Result<crate::solve::grid_solve::Report> {
         self.solve(/*backtrack=*/ false, &SolveOptions::default())
     }
     /// One `LineStatus` per lane, parallel to `LaneMap::lanes`.
@@ -635,6 +640,35 @@ impl PuzzleDynOps for DynPuzzle {
 }
 
 impl DynPuzzle {
+    /// Solve the puzzle, with a deadline of `PLAINSOLVE_BACKTRACK_BUDGET` for the backtracking solver.
+    pub async fn plain_solve(&self) -> anyhow::Result<crate::solve::grid_solve::Report> {
+        let report = self.line_solve()?;
+        if report.cells_left == 0 {
+            return Ok(report);
+        }
+
+        let (progress, _) = std::sync::mpsc::channel(); // Nobody's watching
+        let (terminate, terminate_r) = std::sync::mpsc::channel();
+        let deadline = web_time::Instant::now() + PLAIN_SOLVE_BACKTRACK_BUDGET;
+        crate::gui::send_after(PLAIN_SOLVE_BACKTRACK_BUDGET, terminate);
+
+        let outcome = with_puzzle!(self, |p| {
+            crate::solve::conprop::conprop_solve_in_background(
+                p,
+                &SolveOptions::default(),
+                progress,
+                terminate_r,
+            )
+            .await
+        });
+        match outcome {
+            Ok(report) => Ok(report),
+            // Out of time: settle for what line logic got.
+            Err(_) if web_time::Instant::now() >= deadline => Ok(report),
+            Err(e) => Err(e), // No solution at all
+        }
+    }
+
     pub fn shape(&self) -> Shape {
         with_puzzle!(self, |p| p.geometry.shape())
     }
@@ -1125,7 +1159,7 @@ impl Document {
         }
 
         let puzzle = self.puzzle();
-        match puzzle.plain_solve() {
+        match puzzle.line_solve() {
             Ok(report) => {
                 if report.cells_left > 0 {
                     problems.push("puzzle is not solvable with line-logic".to_string());
@@ -1230,16 +1264,24 @@ impl Document {
         self.s.as_ref()
     }
 
+    /// This uses `plain_solve`, so it tries backtracking, but has a deadline.
+    pub async fn find_solution(&mut self) -> anyhow::Result<()> {
+        if self.s.is_none() {
+            self.s = Some(self.p.as_ref().unwrap().plain_solve().await?.solution);
+        }
+        Ok(())
+    }
+
     pub fn solution(&mut self) -> anyhow::Result<&DynSolution> {
         if self.s.is_none() {
-            self.s = Some(self.p.as_ref().unwrap().plain_solve()?.solution)
+            self.s = Some(self.p.as_ref().unwrap().line_solve()?.solution)
         }
         Ok(self.s.as_ref().unwrap())
     }
 
     pub fn solution_mut(&mut self) -> &mut DynSolution {
         if self.s.is_none() {
-            self.s = Some(self.p.as_ref().unwrap().plain_solve().unwrap().solution)
+            self.s = Some(self.p.as_ref().unwrap().line_solve().unwrap().solution)
         }
         self.p = None; // Edits will invalidate the puzzle!
         self.s.as_mut().unwrap()
@@ -1248,7 +1290,7 @@ impl Document {
     pub fn take_solution(self) -> anyhow::Result<DynSolution> {
         match self.s {
             Some(s) => Ok(s),
-            None => self.p.unwrap().plain_solve().map(|r| r.solution),
+            None => self.p.unwrap().line_solve().map(|r| r.solution),
         }
     }
 
@@ -1418,5 +1460,30 @@ mod resize_tests {
             }
         }
         assert!(refused, "shrinking never refused");
+    }
+}
+
+#[cfg(test)]
+mod find_solution_tests {
+    use super::*;
+
+    /// Line logic stalls on this one (see `a_puzzle_that_needs_a_guess` in `conprop.rs`), but the
+    /// search finishes it.
+    #[test]
+    fn a_clue_only_puzzle_that_needs_a_guess_still_gets_its_picture() {
+        let picture =
+            crate::formats::char_grid::char_grid_to_solution("..###\n..#.#\n##...\n....#\n.##..\n")
+                .unwrap();
+        let puzzle = picture.to_puzzle();
+        assert!(puzzle.line_solve().unwrap().cells_left > 0);
+
+        let mut doc = Document::from_puzzle(puzzle, "clues.g".to_string());
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(doc.find_solution())
+            .unwrap();
+        assert_eq!(*doc.solution().unwrap(), picture);
     }
 }

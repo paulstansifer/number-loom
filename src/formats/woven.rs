@@ -1262,7 +1262,7 @@ mod triangular_tests {
             cells.clone().into(),
         );
 
-        let report = solution.to_puzzle().plain_solve().unwrap();
+        let report = solution.to_puzzle().line_solve().unwrap();
         // Whatever it manages to pin down must agree with the picture we started from.
         for (solved, truth) in report.solution.cells().iter().zip(&cells) {
             assert!(

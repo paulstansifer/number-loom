@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn the_doc_triddler_solves_completely() {
         let mut doc = webpbn_to_document(DOC_TRIDDLER).unwrap();
-        let report = doc.puzzle().plain_solve().unwrap();
+        let report = doc.puzzle().line_solve().unwrap();
         assert_eq!(report.cells_left, 0, "should solve by line logic alone");
     }
 
@@ -682,7 +682,7 @@ mod tests {
                     puzzle.lines[lane].reverse();
                 }
             }
-            let solved_cleanly = matches!(puzzle.plain_solve(), Ok(r) if r.cells_left == 0);
+            let solved_cleanly = matches!(puzzle.line_solve(), Ok(r) if r.cells_left == 0);
             assert!(
                 !solved_cleanly,
                 "reversing family {family_to_flip:?} should not also work"
@@ -733,7 +733,7 @@ mod tests {
     #[test]
     fn a_file_in_webpbn_house_style_solves() {
         let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
-        assert_eq!(doc.puzzle().plain_solve().unwrap().cells_left, 0);
+        assert_eq!(doc.puzzle().line_solve().unwrap().cells_left, 0);
     }
 
     #[test]
@@ -876,7 +876,7 @@ mod tests {
         assert!(serialized.contains(r#"char=".""#));
 
         let mut reloaded = webpbn_to_document(&serialized).unwrap();
-        assert_eq!(reloaded.puzzle().plain_solve().unwrap().cells_left, 0);
+        assert_eq!(reloaded.puzzle().line_solve().unwrap().cells_left, 0);
     }
 
     /// A 2x2 grid where every clue is a lone `1` — line logic alone can't place any of them
@@ -907,7 +907,7 @@ mod tests {
     #[test]
     fn line_logic_alone_cannot_solve_the_ambiguous_fixture() {
         let mut doc = webpbn_to_document(AMBIGUOUS_WITH_SOLUTION).unwrap();
-        assert!(doc.puzzle().plain_solve().unwrap().cells_left > 0);
+        assert!(doc.puzzle().line_solve().unwrap().cells_left > 0);
     }
 
     #[test]

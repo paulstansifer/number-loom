@@ -266,6 +266,31 @@ pub async fn yield_now() {
     wasm_bindgen_futures::JsFuture::from(p).await.unwrap();
 }
 
+/// Send `()` on `sender` once `delay` has passed, without waiting for it (e.g. to stop a
+/// background search).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn send_after(delay: web_time::Duration, sender: mpsc::Sender<()>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let _ = sender.send(()); // Don't panic if it's already gone!
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn send_after(delay: web_time::Duration, sender: mpsc::Sender<()>) {
+    use wasm_bindgen::JsCast as _;
+    let callback = wasm_bindgen::closure::Closure::once_into_js(move || {
+        let _ = sender.send(()); // Don't panic if it's already gone!
+    });
+    web_sys::window()
+        .unwrap()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            callback.unchecked_ref(),
+            delay.as_millis() as i32,
+        )
+        .expect("Failed to call set_timeout");
+}
+
 type Version = u32;
 
 pub struct Staleable<T> {
@@ -763,7 +788,7 @@ impl NonogramGui {
             {
                 let puzzle = self.editor_gui.document.try_solution().unwrap().to_puzzle();
 
-                let (report, mask) = match puzzle.plain_solve() {
+                let (report, mask) = match puzzle.line_solve() {
                     Ok(grid_solve::Report {
                         solve_counts,
                         cells_left,

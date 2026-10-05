@@ -247,6 +247,8 @@ pub async fn load_library() -> anyhow::Result<Vec<Document>> {
 
 /// Fetches puzzles. Failing to reach or read the archive is an error; a puzzle inside it
 /// that won't load is not (see `documents_from_zip`).
+/// We should never publish a clues-only puzzle, since we don't want to have to solve them
+/// on load.
 pub async fn load_zip_from_url(url: &str) -> anyhow::Result<Vec<Document>> {
     let response = reqwest::get(url)
         .await
@@ -256,6 +258,7 @@ pub async fn load_zip_from_url(url: &str) -> anyhow::Result<Vec<Document>> {
         .error_for_status()
         .with_context(|| format!("couldn't fetch {url}"))?;
 
+    // TODO: maybe warn if any puzzles are stored as clues-only
     documents_from_zip(&response.bytes().await?)
 }
 

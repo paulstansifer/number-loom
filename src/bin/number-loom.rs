@@ -65,6 +65,14 @@ fn main() -> anyhow::Result<()> {
 
     let mut document =
         import::load_path(&input_path, args.input_format).expect("could not load puzzle");
+    if args.gui || args.disambiguate {
+        // Need a picture, so solve it (potentially slow). Perhaps we should time out?
+        let _ = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(document.find_solution());
+    }
     for problem in document.quality_check() {
         eprintln!("Warning: {}", problem);
     }
