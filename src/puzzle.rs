@@ -1315,6 +1315,10 @@ impl Document {
         self.in_progress.as_ref()
     }
 
+    pub fn set_in_progress(&mut self, in_progress: Option<PartialSolution>) {
+        self.in_progress = in_progress;
+    }
+
     /// The square picture, for code that only understands rows and columns. Callers should
     /// report this to the user rather than unwrapping it — the editor cannot yet edit triddlers.
     pub fn square_solution_mut(&mut self) -> Option<&mut Solution<Square>> {

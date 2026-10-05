@@ -4,6 +4,7 @@
 //! `toolbar`, so their state lives no wider than this module needs.
 
 use super::*;
+use crate::formats::partial_cells::has_progress;
 
 /// How far the puzzle library has got, once the Library button has asked for it.
 pub enum LibraryStatus {
@@ -192,8 +193,12 @@ impl NonogramGui {
             self.loader(ui);
 
             if ui.button("Save/share").clicked() {
-                self.share_string =
-                    crate::formats::woven::to_woven(&mut self.editor_gui.document).unwrap();
+                self.share_progress = self.solve_progress();
+                self.share_string = share_string(
+                    &self.editor_gui.document,
+                    self.share_progress.as_ref(),
+                    self.save_solve_progress,
+                );
                 self.quality_warnings = self.editor_gui.document.quality_check();
                 self.show_save_share_window = true;
             }
@@ -213,6 +218,20 @@ impl NonogramGui {
                                 ui.label(warning);
                             }
                             ui.separator();
+                        }
+                        let save_progress = ui.add_enabled(
+                            self.share_progress.is_some(),
+                            egui::Checkbox::new(
+                                &mut self.save_solve_progress,
+                                "save solve progress",
+                            ),
+                        );
+                        if save_progress.changed() {
+                            self.share_string = share_string(
+                                &self.editor_gui.document,
+                                self.share_progress.as_ref(),
+                                self.save_solve_progress,
+                            );
                         }
                         ui.label("Share String:");
                         ui.add(
@@ -290,7 +309,11 @@ impl NonogramGui {
                             );
                         });
                         if ui.button("Save").clicked() {
-                            let mut document_copy = self.editor_gui.document.clone();
+                            let mut document_copy = document_to_save(
+                                &self.editor_gui.document,
+                                self.share_progress.as_ref(),
+                                self.save_solve_progress,
+                            );
 
                             let (sender, receiver) = mpsc::channel();
                             self.save_result_receiver = receiver;
@@ -359,6 +382,17 @@ impl NonogramGui {
         });
     }
 
+    /// The grid as it's being solved (or, outside of solve mode, as it was loaded), if anything
+    /// on it is known.
+    fn solve_progress(&mut self) -> Option<PartialSolution> {
+        let progress = match &mut self.solve_gui {
+            Some(solve_gui) => solve_gui.canvas.document.solution().ok()?.to_partial(),
+            None => self.editor_gui.document.in_progress()?.clone(),
+        };
+        let palette = self.editor_gui.document.solution().ok()?.palette();
+        has_progress(&progress.raw, palette.keys().copied()).then_some(progress)
+    }
+
     fn loader(&mut self, ui: &mut egui::Ui) {
         if ui.button("Open").clicked() {
             let (sender, receiver) = mpsc::channel();
@@ -407,4 +441,25 @@ impl NonogramGui {
             }
         }
     }
+}
+
+/// `document`, with `progress` in it if `save_progress` (and none otherwise, even if it was loaded
+/// with some).
+fn document_to_save(
+    document: &Document,
+    progress: Option<&PartialSolution>,
+    save_progress: bool,
+) -> Document {
+    let mut document = document.clone();
+    document.set_in_progress(progress.filter(|_| save_progress).cloned());
+    document
+}
+
+fn share_string(
+    document: &Document,
+    progress: Option<&PartialSolution>,
+    save_progress: bool,
+) -> String {
+    crate::formats::woven::to_woven(&mut document_to_save(document, progress, save_progress))
+        .unwrap()
 }

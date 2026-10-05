@@ -73,6 +73,17 @@ impl SolveGui {
         for cell in working_doc.solution_mut().cells_mut() {
             *cell = UNSOLVED;
         }
+        // Pick up where the document left off. (The grid can only show cells that are settled.)
+        if let Some(in_progress) = document.in_progress() {
+            let cells = working_doc.solution_mut().cells_mut();
+            if in_progress.len() == cells.len() {
+                for (cell, progress) in cells.iter_mut().zip(in_progress) {
+                    if progress.is_known() {
+                        *cell = progress.unwrap_color();
+                    }
+                }
+            }
+        }
         working_doc.solution_mut().palette_mut().insert(
             UNSOLVED,
             crate::puzzle::ColorInfo {

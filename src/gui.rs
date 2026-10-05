@@ -111,8 +111,8 @@ use crate::{
     // grid space, and only the painter converts.
     layout::Point,
     puzzle::{
-        BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynSolution, Palette, PuzzleDynOps,
-        Solution, UNSOLVED,
+        BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynSolution, Palette, PartialSolution,
+        PuzzleDynOps, Solution, UNSOLVED,
     },
     solve::conprop,
     solve::grid_solve::{self, DisambigResult, SolveOptions, disambig_candidates},
@@ -395,6 +395,10 @@ pub struct NonogramGui {
     pub solve_gui: Option<SolveGui>,
     show_save_share_window: bool,
     share_string: String,
+    /// The solve progress there was when the Save/share window was opened, if there was any.
+    share_progress: Option<PartialSolution>,
+    /// Whether to put `share_progress` in what the Save/share window saves and shares.
+    save_solve_progress: bool,
     pasted_string: String,
     quality_warnings: Vec<String>,
     /// Whether the picture is too big for the space it's shown in, and so has somewhere to pan
@@ -735,6 +739,8 @@ impl NonogramGui {
             solve_gui: None,
             show_save_share_window: false,
             share_string: "".to_string(),
+            share_progress: None,
+            save_solve_progress: false,
             pasted_string: "".to_string(),
             quality_warnings: vec![],
             pannable: false,
@@ -1456,5 +1462,36 @@ mod new_solving_tests {
         let doc =
             crate::formats::woven::from_woven(woven.trim(), "linked.woven".to_string()).unwrap();
         assert!(NonogramGui::new_solving(doc).solve_gui.is_some());
+    }
+
+    #[test]
+    fn a_linked_puzzle_opens_with_its_progress() {
+        use crate::solve::line_solve::Cell;
+
+        let woven = include_str!("../examples/woven/square_bw.1.woven");
+        let mut doc =
+            crate::formats::woven::from_woven(woven.trim(), "linked.woven".to_string()).unwrap();
+        let answer = doc.solution().unwrap().cells().raw.to_vec();
+        // The first cell, as it is in the answer, and nothing else.
+        let mut progress: PartialSolution = vec![Cell::new_anything(); answer.len()].into();
+        progress[CellIdx(0)] = Cell::from_color(answer[0]);
+        doc.set_in_progress(Some(progress));
+
+        let woven = crate::formats::woven::to_woven(&mut doc).unwrap();
+        let doc = crate::formats::woven::from_woven(&woven, "linked.woven".to_string()).unwrap();
+        let mut gui = NonogramGui::new_solving(doc);
+        let grid = gui
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .canvas
+            .document
+            .solution()
+            .unwrap()
+            .cells()
+            .raw
+            .to_vec();
+        assert_eq!(grid[0], answer[0]);
+        assert!(grid[1..].iter().all(|&c| c == UNSOLVED));
     }
 }
