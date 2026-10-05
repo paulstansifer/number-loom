@@ -24,23 +24,23 @@ const OLSAK_TRIDDLER_GROUPS: [(ClueSet, bool, bool); 6] = [
     (ClueSet::Top, true, false),
 ];
 
-fn olsak_ch(c: char, orig_to_sanitized: &mut HashMap<char, char>) -> char {
+fn olsak_ch(c: char, orig_to_sanitized: &mut HashMap<char, char>) -> anyhow::Result<char> {
+    if let Some(&sanitized) = orig_to_sanitized.get(&c) {
+        return Ok(sanitized);
+    }
     let existing = HashSet::<char>::from_iter(orig_to_sanitized.values().cloned());
-    *orig_to_sanitized.entry(c).or_insert_with(|| {
-        if c.is_alphanumeric() && !existing.contains(&c) {
-            c
-        } else {
-            for c in 'a'..='z' {
-                if !existing.contains(&c) {
-                    return c;
-                }
-            }
-            panic!("too many colors!")
-        }
-    })
+    let sanitized = if c.is_alphanumeric() && !existing.contains(&c) {
+        c
+    } else {
+        ('a'..='z')
+            .find(|c| !existing.contains(c))
+            .context("too many colors for the Olsak format")?
+    };
+    orig_to_sanitized.insert(c, sanitized);
+    Ok(sanitized)
 }
 
-pub fn as_olsak_nono<K: GridKind>(puzzle: &Puzzle<Nono, K>) -> String {
+pub fn as_olsak_nono<K: GridKind>(puzzle: &Puzzle<Nono, K>) -> anyhow::Result<String> {
     let mut orig_to_sanitized: HashMap<char, char> = HashMap::new();
 
     let mut palette = puzzle.palette.clone();
@@ -59,7 +59,7 @@ pub fn as_olsak_nono<K: GridKind>(puzzle: &Puzzle<Nono, K>) -> String {
     for color in palette.values_mut() {
         if color.rgb != (255, 255, 255) {
             let (r, g, b) = color.rgb;
-            color.ch = olsak_ch(color.ch, &mut orig_to_sanitized);
+            color.ch = olsak_ch(color.ch, &mut orig_to_sanitized)?;
             let ch = color.ch;
             let (spec, comment) = (&format!("#{r:02X}{g:02X}{b:02X}"), color.name.to_string());
 
@@ -99,10 +99,10 @@ pub fn as_olsak_nono<K: GridKind>(puzzle: &Puzzle<Nono, K>) -> String {
         }
     }
 
-    res
+    Ok(res)
 }
 
-pub fn as_olsak_triano(puzzle: &Puzzle<Triano, Square>) -> String {
+pub fn as_olsak_triano(puzzle: &Puzzle<Triano, Square>) -> anyhow::Result<String> {
     use crate::puzzle::Corner;
     let mut orig_to_sanitized: HashMap<char, char> = HashMap::new();
 
@@ -113,15 +113,15 @@ pub fn as_olsak_triano(puzzle: &Puzzle<Triano, Square>) -> String {
         .palette
         .iter()
         .map(|(color, color_info)| {
-            (
+            Ok((
                 color,
                 puzzle::ColorInfo {
-                    ch: olsak_ch(color_info.ch, &mut orig_to_sanitized),
+                    ch: olsak_ch(color_info.ch, &mut orig_to_sanitized)?,
                     ..color_info.clone()
                 },
-            )
+            ))
         })
-        .collect::<HashMap<_, _>>();
+        .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
     // Nonny doesn't like it if white isn't the first color in the palette.
     res.push_str("   0:   #FFFFFF   white\n");
@@ -187,7 +187,7 @@ pub fn as_olsak_triano(puzzle: &Puzzle<Triano, Square>) -> String {
         res.push('\n');
     }
 
-    res
+    Ok(res)
 }
 
 /// Assemble a triddler from Olsak's six data groups.
@@ -422,6 +422,9 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
             let dim_1_glue = comment.chars().nth(1).map(parse_glue).unwrap_or(NoGlue);
 
             if dim_0_glue != NoGlue || dim_1_glue != NoGlue {
+                if triddler {
+                    bail!("a puzzle can't be both a triddler and a trianogram");
+                }
                 clue_style = ClueStyle::Triano;
             }
 
@@ -443,12 +446,14 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
             if dim_0_glue == NoGlue && dim_1_glue == NoGlue {
                 olsak_palette.insert(input_ch, color_info);
             } else {
-                assert!(dim_0_glue != NoGlue && dim_1_glue != NoGlue);
+                if dim_0_glue == NoGlue || dim_1_glue == NoGlue {
+                    bail!("a cap color must be glued in both directions: {line}");
+                }
                 olsak_glued_palettes[0].insert((input_ch, dim_0_glue), color_info.clone());
                 olsak_glued_palettes[1].insert((input_ch, dim_1_glue), color_info);
             }
 
-            next_color += 1;
+            next_color = next_color.checked_add(1).context("more than 255 colors")?;
         } else if let Dimension(d) = cur_stanza {
             olsak_palette.entry('1').or_insert_with(|| ColorInfo {
                 ch: '#',
@@ -517,8 +522,14 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
                             olsak_palette[&'1'].color
                         };
 
-                        let body_len = chars.iter().collect::<String>().parse::<u16>()?
-                            - (front_cap.is_some() as u16 + back_cap.is_some() as u16);
+                        let body_len = chars
+                            .iter()
+                            .collect::<String>()
+                            .parse::<u16>()?
+                            .checked_sub(front_cap.is_some() as u16 + back_cap.is_some() as u16)
+                            .with_context(|| {
+                                format!("clue {clue_str} is too short for its caps")
+                            })?;
 
                         clues.push(Triano {
                             front_cap,
@@ -547,9 +558,6 @@ pub fn olsak_to_puzzle(olsak: &str) -> anyhow::Result<DynPuzzle> {
     }
 
     if triddler {
-        if clue_style == ClueStyle::Triano {
-            bail!("a puzzle can't be both a triddler and a trianogram");
-        }
         return Ok(olsak_triddler(palette, nono_clues)?.into());
     }
 
@@ -588,7 +596,7 @@ mod triddler_tests {
         );
 
         let original = solution.to_puzzle();
-        let serialized = super::as_olsak_nono(original.as_tri_nono().unwrap());
+        let serialized = super::as_olsak_nono(original.as_tri_nono().unwrap()).unwrap();
         assert!(serialized.starts_with("#t\n"), "must declare a triddler");
 
         let reloaded = olsak_to_puzzle(&serialized).expect("should re-read");
@@ -775,7 +783,7 @@ mod tests {
 
         let p = Puzzle::<Triano, Square>::square(palette, rows, cols);
 
-        let serialized = super::as_olsak_triano(&p);
+        let serialized = super::as_olsak_triano(&p).unwrap();
 
         println!("{}", serialized);
 
@@ -784,5 +792,57 @@ mod tests {
         println!("{:?}", roundtripped);
 
         puzzles_eq(&p, &roundtripped.as_square_triano().unwrap()).unwrap();
+    }
+}
+
+/// Malformed files should be reported, not crash.
+#[cfg(test)]
+mod malformed_tests {
+    use super::olsak_to_puzzle;
+    use crate::puzzle::PuzzleDynOps;
+
+    #[test]
+    fn a_zero_means_an_empty_line() {
+        let puzzle = olsak_to_puzzle(": rows\n2\n0\n: columns\n1\n1 0\n").unwrap();
+        let report = puzzle.line_solve().unwrap();
+        assert_eq!(report.cells_left, 0);
+    }
+
+    /// This used to crash the line solver. (Line logic calls this "solved" from the rows alone,
+    /// without noticing the columns disagree; only the backtracking solver checks on the way out.)
+    #[test]
+    fn zeros_in_a_contradictory_puzzle_dont_crash_the_solver() {
+        let puzzle = olsak_to_puzzle(": rows\n2\n0\n: columns\n0\n0\n").unwrap();
+        let _ = puzzle.line_solve();
+    }
+
+    #[test]
+    fn more_than_255_colors_is_an_error() {
+        let mut olsak = "#d\n".to_string();
+        for i in 1..=300 {
+            olsak.push_str(&format!("   x:x  #{i:06X}\n"));
+        }
+        olsak.push_str(": rows\n1\n: columns\n1\n");
+        assert!(olsak_to_puzzle(&olsak).is_err());
+    }
+
+    #[test]
+    fn a_cap_glued_in_only_one_direction_is_an_error() {
+        let olsak = "#d\n   a:a  white/black  >\n: rows\n1\n: columns\n1\n";
+        assert!(olsak_to_puzzle(olsak).is_err());
+    }
+
+    #[test]
+    fn a_triddler_with_caps_is_an_error() {
+        let olsak =
+            "#t\n#d\n   a:a  white/black  <<\n: a\n1\n: b\n1\n: c\n1\n: d\n1\n: e\n1\n: f\n1\n";
+        assert!(olsak_to_puzzle(olsak).is_err());
+    }
+
+    #[test]
+    fn a_clue_too_short_for_its_caps_is_an_error() {
+        let olsak =
+            "#d\n   a:a  white/black  <<\n   b:b  black/white  >>\n: rows\na1b\n: columns\n1\n";
+        assert!(olsak_to_puzzle(olsak).is_err());
     }
 }

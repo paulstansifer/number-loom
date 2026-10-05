@@ -63,8 +63,8 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mut document =
-        import::load_path(&input_path, args.input_format).expect("could not load puzzle");
+    let mut document = import::load_path(&input_path, args.input_format)
+        .with_context(|| format!("could not load {}", input_path.display()))?;
     if args.gui || args.disambiguate {
         // Need a picture, so solve it (potentially slow). Perhaps we should time out?
         let _ = tokio::runtime::Builder::new_current_thread()
@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
         gui::edit_image(document);
         return Ok(());
     } else if args.disambiguate {
-        let solution = document.take_solution().expect("impossible puzzle");
+        let solution = document.take_solution().context("impossible puzzle")?;
 
         let disambig = tokio::runtime::Builder::new_current_thread()
             .enable_all()

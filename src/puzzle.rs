@@ -341,6 +341,7 @@ impl<C: Clue> Puzzle<C, Square> {
         });
         let mut lines = rows;
         lines.extend(cols);
+        let lines = without_empty_blocks(lines);
         Puzzle {
             palette,
             geometry,
@@ -387,9 +388,18 @@ impl<C: Clue> Puzzle<C, Tri> {
         Puzzle {
             palette,
             geometry,
-            lines,
+            lines: without_empty_blocks(lines.raw).into(),
         }
     }
+}
+
+/// "0" is used by some representations as a more writable alternative to the empty list,
+/// but the empty list is the "right" way to represent an empty line.
+fn without_empty_blocks<C: Clue>(mut lines: Vec<Vec<C>>) -> Vec<Vec<C>> {
+    for line in &mut lines {
+        line.retain(|clue| clue.len() > 0);
+    }
+    lines
 }
 
 impl<C: Clue, K: GridKind> Puzzle<C, K> {

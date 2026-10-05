@@ -59,9 +59,9 @@ pub fn to_bytes(
     } else {
         match format {
             NonogramFormat::Olsak => match document.puzzle() {
-                DynPuzzle::SquareNono(p) => as_olsak_nono(p),
-                DynPuzzle::TriNono(p) => as_olsak_nono(p),
-                DynPuzzle::SquareTriano(p) => as_olsak_triano(p),
+                DynPuzzle::SquareNono(p) => as_olsak_nono(p)?,
+                DynPuzzle::TriNono(p) => as_olsak_nono(p)?,
+                DynPuzzle::SquareTriano(p) => as_olsak_triano(p)?,
             },
             NonogramFormat::Webpbn => as_webpbn(document),
             NonogramFormat::Html => {
