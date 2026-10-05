@@ -867,6 +867,7 @@ fn main() -> anyhow::Result<()> {
     let mut document = Document::new(
         Some(DynPuzzle::SquareNono(puzzle)),
         None,
+        None,
         output.display().to_string(),
         None,
         None,

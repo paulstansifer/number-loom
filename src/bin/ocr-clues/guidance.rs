@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use number_loom::formats::partial_cells::has_progress;
 use number_loom::formats::woven::to_woven;
 use number_loom::geometry::{CellIdx, GridKind, LaneIdx};
 use number_loom::gui::FamilyIdx;
@@ -84,9 +85,11 @@ pub struct GuidanceReport {
     pub next: Next,
     /// A link that opens the puzzle in the web app, to solve from the beginning. `None` unless
     /// all of the answer is known, because WOVEN carries the answer, not the clues.
-    // TODO: A link to the puzzle as the person has it (with the errors erased), for when it isn't
-    //   done. WOVEN has nowhere to put progress yet, and the app always opens links on a blank grid.
     pub start_url: Option<String>,
+    /// Like `start_url`, but with the person's progress (with the errors erased) filled in.
+    /// `None` if `start_url` is, or if they're done, or if nothing's left once the errors are
+    /// erased.
+    pub progress_url: Option<String>,
 }
 
 /// Emits a Markdown message about the puzzle. `repairs` is how many clues couldn't be read, and
@@ -251,8 +254,9 @@ pub fn guidance<C: Clue, K: GridKind>(
 ) -> anyhow::Result<GuidanceReport> {
     let (solution, solved) = find_answer(puzzle)?;
     let answer = solution.to_partial();
-    let start_url = if matches!(solved, Solved::LineLogic | Solved::Search) {
-        Some(share_url(solution)?)
+    let all_known = matches!(solved, Solved::LineLogic | Solved::Search);
+    let start_url = if all_known {
+        Some(share_url(solution.clone(), None)?)
     } else {
         None
     };
@@ -268,6 +272,15 @@ pub fn guidance<C: Clue, K: GridKind>(
             *mine = Cell::new(&puzzle.palette);
         }
     }
+
+    let progress_url = if all_known
+        && !grid.iter().all(Cell::is_known)
+        && has_progress(&grid.raw, puzzle.palette.keys().copied())
+    {
+        Some(share_url(solution, Some(grid.clone()))?)
+    } else {
+        None
+    };
 
     let next = if grid.iter().all(Cell::is_known) {
         // Where the answer isn't all known, agreeing with it doesn't mean agreeing with the clues.
@@ -285,12 +298,27 @@ pub fn guidance<C: Clue, K: GridKind>(
         errors,
         next,
         start_url,
+        progress_url,
     })
 }
 
-/// A link that opens `solution`'s puzzle in the web app.
-fn share_url(solution: DynSolution) -> anyhow::Result<String> {
-    let woven = to_woven(&mut Document::from_solution(solution, String::new()))?;
+/// A link that opens `solution`'s puzzle in the web app, as far along as `in_progress`.
+fn share_url(
+    solution: DynSolution,
+    in_progress: Option<PartialSolution>,
+) -> anyhow::Result<String> {
+    let mut doc = Document::new(
+        None,
+        Some(solution),
+        in_progress,
+        String::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let woven = to_woven(&mut doc)?;
     // (It comes broken into lines.)
     let woven: String = woven.chars().filter(|c| !c.is_whitespace()).collect();
     Ok(format!("{APP_URL}#{woven}"))
@@ -551,6 +579,7 @@ mod tests {
         let report = guidance(&p, &progress(&p, &["##x", "x#x", "x##"])).unwrap();
         assert!(report.errors.is_empty());
         assert!(matches!(report.next, Next::Done), "{:?}", report.next);
+        assert!(report.progress_url.is_none());
     }
 
     #[test]
@@ -561,10 +590,42 @@ mod tests {
             &progress(&p, &[".....", ".....", ".....", ".....", "....."]),
         )
         .unwrap();
-        let url = report.start_url.unwrap();
-        let woven = url.strip_prefix(&format!("{APP_URL}#")).unwrap();
-        let mut doc = number_loom::formats::woven::from_woven(woven, String::new()).unwrap();
+        let mut doc = open_link(&report.start_url.unwrap());
         assert_eq!(doc.solution().unwrap().to_partial(), report.answer);
+        assert!(doc.in_progress().is_none());
+        // (There's nothing to show yet.)
+        assert!(report.progress_url.is_none());
+    }
+
+    #[test]
+    fn the_progress_link_has_the_mistakes_erased() {
+        let p = puzzle(&["#####", "#....", "#.###", "#...#", "#####"]);
+        let report = guidance(
+            &p,
+            &progress(&p, &["#####", "x#...", ".....", ".....", "....."]),
+        )
+        .unwrap();
+        let mut doc = open_link(&report.progress_url.unwrap());
+        assert_eq!(doc.solution().unwrap().to_partial(), report.answer);
+        // (Undecided cells come back as able to be anything, not just anything in the palette.)
+        let decided = |grid: &PartialSolution| -> Vec<Option<Color>> {
+            grid.iter()
+                .map(|c| c.is_known().then(|| c.unwrap_color()))
+                .collect()
+        };
+        assert_eq!(
+            decided(doc.in_progress().unwrap()),
+            decided(&progress(
+                &p,
+                &["#####", ".....", ".....", ".....", "....."]
+            ))
+        );
+    }
+
+    /// The document a link from `guidance` opens.
+    fn open_link(url: &str) -> Document {
+        let woven = url.strip_prefix(&format!("{APP_URL}#")).unwrap();
+        number_loom::formats::woven::from_woven(woven, String::new()).unwrap()
     }
 
     #[test]
@@ -599,6 +660,7 @@ mod tests {
         assert_eq!(report.solved, Solved::Ambiguous);
         assert!(report.errors.is_empty());
         assert!(report.start_url.is_none());
+        assert!(report.progress_url.is_none());
         assert!(
             matches!(report.next, Next::Stuck { .. }),
             "{:?}",
