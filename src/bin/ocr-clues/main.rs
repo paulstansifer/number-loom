@@ -797,7 +797,7 @@ fn main() -> anyhow::Result<()> {
              see --debug-image"
         );
     }
-    let report = puzzle.plain_solve();
+    let report = puzzle.line_solve();
     match &report {
         Ok(report) if report.cells_left == 0 => eprintln!("Solvable with line logic."),
         Ok(report) => eprintln!("Line logic leaves {} cells unsolved.", report.cells_left),

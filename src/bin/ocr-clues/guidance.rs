@@ -9,9 +9,12 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use number_loom::formats::woven::to_woven;
 use number_loom::geometry::{CellIdx, GridKind, LaneIdx};
 use number_loom::gui::FamilyIdx;
-use number_loom::puzzle::{BACKGROUND, Clue, Color, PartialSolution, Puzzle};
+use number_loom::puzzle::{
+    BACKGROUND, Clue, Color, Document, DynSolution, PartialSolution, Puzzle,
+};
 use number_loom::solve::conprop::conprop_solve_in_background;
 use number_loom::solve::conprop_picker::Picker;
 use number_loom::solve::grid_solve::{
@@ -26,6 +29,8 @@ const SEARCH_TIME: Duration = Duration::from_secs(2);
 const GUESSES: usize = 200;
 /// How many of those that lead to a contradiction are enough.
 const CONTRADICTIONS: usize = 5;
+/// Where the web app lives; a `#WOVEN-...-` after it opens that puzzle.
+const APP_URL: &str = "https://paulstansifer.github.io/number-loom/";
 
 /// How the answer was found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +82,11 @@ pub struct GuidanceReport {
     pub errors: Vec<CellIdx>,
     /// Where to go from here, once the errors are erased.
     pub next: Next,
+    /// A link that opens the puzzle in the web app, to solve from the beginning. `None` unless
+    /// all of the answer is known, because WOVEN carries the answer, not the clues.
+    // TODO: A link to the puzzle as the person has it (with the errors erased), for when it isn't
+    //   done. WOVEN has nowhere to put progress yet, and the app always opens links on a blank grid.
+    pub start_url: Option<String>,
 }
 
 /// Emits a Markdown message about the puzzle. `repairs` is how many clues couldn't be read, and
@@ -239,7 +249,13 @@ pub fn guidance<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
 ) -> anyhow::Result<GuidanceReport> {
-    let (answer, solved) = find_answer(puzzle)?;
+    let (solution, solved) = find_answer(puzzle)?;
+    let answer = solution.to_partial();
+    let start_url = if matches!(solved, Solved::LineLogic | Solved::Search) {
+        Some(share_url(solution)?)
+    } else {
+        None
+    };
 
     let mut grid = grid.clone();
     let filled_cells = grid.iter().filter(|c| c.is_known()).count();
@@ -268,15 +284,25 @@ pub fn guidance<C: Clue, K: GridKind>(
         filled_cells,
         errors,
         next,
+        start_url,
     })
 }
 
-/// Line logic, and then, if that doesn't finish the job, a search (for a while).
+/// A link that opens `solution`'s puzzle in the web app.
+fn share_url(solution: DynSolution) -> anyhow::Result<String> {
+    let woven = to_woven(&mut Document::from_solution(solution, String::new()))?;
+    // (It comes broken into lines.)
+    let woven: String = woven.chars().filter(|c| !c.is_whitespace()).collect();
+    Ok(format!("{APP_URL}#{woven}"))
+}
+
+/// Line logic, and then, if that doesn't finish the job, a search (for a while). Cells that
+/// aren't known are `UNSOLVED`.
 fn find_answer<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
-) -> anyhow::Result<(PartialSolution, Solved)> {
+) -> anyhow::Result<(DynSolution, Solved)> {
     let report = grid_solve::solve(puzzle, &mut None, &SolveOptions::default())?;
-    let line_logic = report.solution.to_partial();
+    let line_logic = report.solution;
     if report.cells_left == 0 {
         return Ok((line_logic, Solved::LineLogic));
     }
@@ -304,9 +330,9 @@ fn find_answer<C: Clue, K: GridKind>(
     let out_of_time = timer.join().expect("the timer panicked");
 
     match searched {
-        Ok(report) if report.cells_left == 0 => Ok((report.solution.to_partial(), Solved::Search)),
+        Ok(report) if report.cells_left == 0 => Ok((report.solution, Solved::Search)),
         // (When it finds a second solution, it reports what's known without guessing.)
-        Ok(report) => Ok((report.solution.to_partial(), Solved::Ambiguous)),
+        Ok(report) => Ok((report.solution, Solved::Ambiguous)),
         Err(_) if out_of_time => Ok((line_logic, Solved::OutOfTime)),
         Err(e) => Err(e),
     }
@@ -396,7 +422,7 @@ fn guess<C: Clue, K: GridKind>(
     let mut stalled = SolveState::new(&mut ctx, grid);
     // Line logic has nothing to add (that's why we're guessing), but with this out of the way,
     // each guess only has to revisit the lanes it bears on.
-    stalled.run_and_check(&mut ctx)?;
+    stalled.run(&mut ctx)?;
 
     let no_history = HashMap::new();
     let mut picker = Picker::from_situation(
@@ -413,8 +439,7 @@ fn guess<C: Clue, K: GridKind>(
         };
         tried += 1;
         let mut supposing = stalled.clone();
-        if supposing.learn(&mut ctx, cell, true, color).is_err()
-            || supposing.run_and_check(&mut ctx).is_err()
+        if supposing.learn(&mut ctx, cell, true, color).is_err() || supposing.run(&mut ctx).is_err()
         {
             contradictions.push((cell, color));
         }
@@ -529,6 +554,20 @@ mod tests {
     }
 
     #[test]
+    fn the_link_opens_the_same_puzzle() {
+        let p = puzzle(&["#####", "#....", "#.###", "#...#", "#####"]);
+        let report = guidance(
+            &p,
+            &progress(&p, &[".....", ".....", ".....", ".....", "....."]),
+        )
+        .unwrap();
+        let url = report.start_url.unwrap();
+        let woven = url.strip_prefix(&format!("{APP_URL}#")).unwrap();
+        let mut doc = number_loom::formats::woven::from_woven(woven, String::new()).unwrap();
+        assert_eq!(doc.solution().unwrap().to_partial(), report.answer);
+    }
+
+    #[test]
     fn guesses_that_go_wrong() {
         let p = puzzle(&[
             "###..#.", ".....#.", ".####..", "...#..#", ".##...#", "....##.", "..####.",
@@ -559,6 +598,7 @@ mod tests {
         let report = guidance(&p, &progress(&p, &["..", ".."])).unwrap();
         assert_eq!(report.solved, Solved::Ambiguous);
         assert!(report.errors.is_empty());
+        assert!(report.start_url.is_none());
         assert!(
             matches!(report.next, Next::Stuck { .. }),
             "{:?}",
