@@ -7,17 +7,23 @@ use colored::{ColoredString, Colorize};
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum SolveMode {
     // Listed in order from quickest to most comprehensive:
+    Verify, // Have to do it anyways, might as well do it first.
     Skim,
     Scrub,
 }
 
 impl SolveMode {
-    pub fn all() -> &'static [SolveMode] {
+    pub fn all_modes() -> &'static [SolveMode] {
+        &[SolveMode::Verify, SolveMode::Skim, SolveMode::Scrub]
+    }
+
+    pub fn regular_modes() -> &'static [SolveMode] {
         &[SolveMode::Skim, SolveMode::Scrub]
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            SolveMode::Verify => "check",
             SolveMode::Skim => "skim",
             SolveMode::Scrub => "scrub",
         }
@@ -25,6 +31,7 @@ impl SolveMode {
 
     pub fn colorized_name(self) -> ColoredString {
         match self {
+            SolveMode::Verify => self.name().blue(),
             SolveMode::Skim => self.name().green(),
             SolveMode::Scrub => self.name().red(),
         }
@@ -32,12 +39,13 @@ impl SolveMode {
 
     pub fn ch(self) -> char {
         match self {
+            SolveMode::Verify => 'v',
             SolveMode::Skim => '-',
             SolveMode::Scrub => '+',
         }
     }
 
-    pub fn first() -> SolveMode {
+    pub fn first_regular() -> SolveMode {
         SolveMode::Skim
     }
 
@@ -48,6 +56,7 @@ impl SolveMode {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ModeMap<T> {
+    pub verify: T,
     pub skim: T,
     pub scrub: T,
 }
@@ -55,6 +64,7 @@ pub struct ModeMap<T> {
 impl<T: Clone> ModeMap<T> {
     pub fn new_uniform(value: T) -> ModeMap<T> {
         ModeMap {
+            verify: value.clone(),
             skim: value.clone(),
             scrub: value,
         }
@@ -63,7 +73,7 @@ impl<T: Clone> ModeMap<T> {
 
 impl<T: std::fmt::Display> std::fmt::Display for ModeMap<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for mode in SolveMode::all() {
+        for mode in SolveMode::regular_modes() {
             // In practice, we know this is a count so (HACK) pluralize:
             write!(f, "{}s: {: >6}", mode.name(), self[*mode])?;
             if *mode != SolveMode::last() {
@@ -79,6 +89,7 @@ impl<T> std::ops::Index<SolveMode> for ModeMap<T> {
 
     fn index(&self, index: SolveMode) -> &Self::Output {
         match index {
+            SolveMode::Verify => &self.verify,
             SolveMode::Skim => &self.skim,
             SolveMode::Scrub => &self.scrub,
         }
@@ -88,6 +99,7 @@ impl<T> std::ops::Index<SolveMode> for ModeMap<T> {
 impl<T> std::ops::IndexMut<SolveMode> for ModeMap<T> {
     fn index_mut(&mut self, index: SolveMode) -> &mut Self::Output {
         match index {
+            SolveMode::Verify => &mut self.verify,
             SolveMode::Skim => &mut self.skim,
             SolveMode::Scrub => &mut self.scrub,
         }
@@ -293,6 +305,52 @@ fn learn_cell_not(
         affected_cells.push(idx);
     }
     Ok(())
+}
+
+/// `lane` must be completely solved. Is it consistent with its clues?
+pub fn verify_line<C: Clue>(cs: &[C], lane: &[Cell]) -> anyhow::Result<ScrubReport> {
+    let mut clue_idx = 0;
+    let mut idx_in_clue = None; // in between clues
+
+    for (cell_idx, cell) in lane.iter().enumerate() {
+        let color = cell.unwrap_color();
+        if idx_in_clue.is_none() && color == BACKGROUND {
+            continue;
+        }
+
+        if clue_idx >= cs.len() {
+            bail!("foreground colors after last clue");
+        }
+
+        if idx_in_clue.is_none() {
+            idx_in_clue = Some(0);
+            if clue_idx > 0 && cs[clue_idx - 1].must_be_separated_from(&cs[clue_idx]) {
+                if lane[cell_idx - 1].unwrap_color() != BACKGROUND {
+                    bail!("unseparated clues")
+                }
+            }
+        }
+
+        if let Some(really_idx_in_clue) = idx_in_clue {
+            if color != cs[clue_idx].color_at(really_idx_in_clue) {
+                bail!("incorrect color")
+            }
+
+            if really_idx_in_clue + 1 >= cs[clue_idx].len() {
+                idx_in_clue = None;
+                clue_idx += 1
+            } else {
+                idx_in_clue = Some(really_idx_in_clue + 1);
+            }
+        }
+    }
+    if clue_idx != cs.len() {
+        bail!("some clues unused");
+    }
+
+    Ok(ScrubReport {
+        affected_cells: vec![],
+    })
 }
 
 /// Whether clue `i` needs a background square before it (`.0`) and after it (`.1`).

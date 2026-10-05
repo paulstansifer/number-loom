@@ -13,7 +13,7 @@ use crate::{
     },
     solve::line_solve::{
         Cell, ClueSummary, ModeMap, ScrubReport, SolveMode, count_lane, exhaust_line, score_counts,
-        skim_line, skim_to_find_fixed_clues,
+        skim_line, skim_to_find_fixed_clues, verify_line,
     },
 };
 
@@ -242,8 +242,8 @@ fn find_best_lane<C: Clue>(
 ) -> Option<LaneIdx> {
     while let Some(idx) = queue.pop_front() {
         lanes[idx].queued[mode] = false;
-        if lanes[idx].unknown_cells == 0 {
-            continue; // solved while it waited; never coming back.
+        if lanes[idx].unknown_cells == 0 && mode != SolveMode::Verify {
+            continue;
         }
         return Some(idx);
     }
@@ -478,8 +478,9 @@ pub enum Step {
 }
 
 const INITIAL_ALLOWED_FAILURES: ModeMap<i32> = ModeMap {
+    verify: 0, /*ignored*/
     skim: 10,
-    scrub: 0, /*ignored */
+    scrub: 0, /*ignored*/
 };
 
 /// A solve in progress. Cloning one forks the search: hand the copy a `guess` and drive it with
@@ -534,18 +535,20 @@ impl<'p, C: Clue> SolveState<'p, C> {
         // Seed each mode's queue once, best score first. A lane already fully known never goes
         // in at all — it would just be popped and dropped the moment it got its turn.
         let mut queues = ModeMap::new_uniform(std::collections::VecDeque::new());
-        for mode in SolveMode::all() {
+        for mode in SolveMode::all_modes() {
             let score = |idx: LaneIdx| match mode {
+                SolveMode::Verify => unreachable!(),
                 SolveMode::Skim => initial_scores[idx].0,
                 SolveMode::Scrub => initial_scores[idx].1,
             };
-            let mut order: Vec<LaneIdx> = lanes
-                .keys()
-                .filter(|&idx| lanes[idx].unknown_cells != 0)
-                .collect();
-            order.sort_by_key(|&idx| std::cmp::Reverse(score(idx)));
+            let queuable =
+                |l: &LaneState<C>| (l.unknown_cells == 0) == (mode == &SolveMode::Verify);
+            let mut order: Vec<LaneIdx> = lanes.keys().filter(|i| queuable(&lanes[*i])).collect();
+            if *mode != SolveMode::Verify {
+                order.sort_by_key(|&idx| std::cmp::Reverse(score(idx)));
+            }
             for lane in &mut lanes {
-                lane.queued[*mode] = lane.unknown_cells != 0;
+                lane.queued[*mode] = queuable(&lane);
             }
             queues[*mode] = order.into();
         }
@@ -596,23 +599,19 @@ impl<'p, C: Clue> SolveState<'p, C> {
         }
     }
 
-    /// Line logic has filled everything it can: check the remaining dirty lanes for contradictions.
-    fn finish<E: Unsolvable, K: GridKind>(
-        &self,
-        puzzle: &Puzzle<C, K>,
-        step: Step,
-    ) -> Result<Step, E> {
-        // TODO: we can do this faster by only checking the lanes that got filled in that way!
-        verify_lines_inner(puzzle, &self.grid)?;
-        Ok(step)
-    }
-
     /// Pick the next lane to attempt, escalating to a more thorough mode once the cheap ones stop
     /// paying off. `None` means every mode up to `max_effort` is exhausted.
     fn choose_lane(&mut self, max_effort: SolveMode) -> Option<(LaneIdx, SolveMode)> {
+        // We gotta verify at some point, might as well do it now.
+        if let Some(idx) = self.queues[SolveMode::Verify].pop_front() {
+            // HACK: This is basically `find_best_lane`, but it's terser to call it.
+            self.lanes[idx].queued[SolveMode::Verify] = false;
+            return Some((idx, SolveMode::Verify));
+        }
+
         loop {
             let mut mode = max_effort;
-            for m in SolveMode::all() {
+            for m in SolveMode::regular_modes() {
                 if self.allowed_failures[*m] > 0 {
                     mode = std::cmp::min(mode, *m);
                     break;
@@ -657,7 +656,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         let lane_map = ctx.lane_map();
 
         let Some((idx, mode)) = self.choose_lane(options.max_effort) else {
-            return self.finish(puzzle, Step::Stalled);
+            return Ok(Step::Stalled);
         };
         let solved_lane = self.lanes[idx].lane;
 
@@ -680,6 +679,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         self.solve_counts[mode] += 1;
         let clues = self.lanes[idx].clues;
         let mut report = match mode {
+            SolveMode::Verify => verify_line(clues, grid_lane),
             SolveMode::Scrub => op_or_cache(exhaust_line, clues, grid_lane, ctx.line_cache),
             SolveMode::Skim => skim_line(clues, grid_lane),
         }
@@ -754,11 +754,11 @@ impl<'p, C: Clue> SolveState<'p, C> {
             );
         }
 
-        if self.cells_left == 0 {
-            return self.finish(puzzle, Step::Solved);
+        if self.cells_left == 0 && self.queues[SolveMode::Verify].is_empty() {
+            return Ok(Step::Solved);
         }
 
-        if mode != SolveMode::first() && !report.affected_cells.is_empty() {
+        if mode != SolveMode::first_regular() && !report.affected_cells.is_empty() {
             // Made progress: reset and try easy stuff first again.
             self.allowed_failures = INITIAL_ALLOWED_FAILURES;
         }
@@ -873,7 +873,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         }
 
         // Report everything is stalled (per above, it ought to be!)
-        for mode in SolveMode::all() {
+        for mode in SolveMode::all_modes() {
             self.queues[*mode].clear();
         }
         for lane in &mut self.lanes {
@@ -928,10 +928,14 @@ impl<'p, C: Clue> SolveState<'p, C> {
         for idx in touched {
             debug_assert_unknown_cells_agree(&lanes[idx], lane_map, grid);
 
-            if Some(idx) == just_solved || lanes[idx].unknown_cells == 0 {
+            if Some(idx) == just_solved {
                 continue;
             }
-            for mode in SolveMode::all() {
+            for mode in SolveMode::all_modes() {
+                if (lanes[idx].unknown_cells == 0) != (*mode == SolveMode::Verify) {
+                    continue; // Verify is valid iff the lane is filled.
+                }
+
                 let queued = &mut lanes[idx].queued[*mode];
                 if !*queued {
                     *queued = true;
@@ -1028,30 +1032,6 @@ pub fn fixed_clues<C: Clue, K: GridKind>(
             skim_to_find_fixed_clues(&puzzle.lines[lane], &gathered)
         })
         .collect()
-}
-
-/// Check that a solution is consistent
-pub fn verify_lines<C: Clue, K: GridKind>(
-    puzzle: &Puzzle<C, K>,
-    grid: &PartialSolution,
-) -> anyhow::Result<()> {
-    verify_lines_inner(puzzle, grid)
-}
-
-fn verify_lines_inner<E: Unsolvable, C: Clue, K: GridKind>(
-    puzzle: &Puzzle<C, K>,
-    grid: &PartialSolution,
-) -> Result<(), E> {
-    // TODO: this probably could be done faster
-    let lane_map = &puzzle.geometry.lane_map;
-    let mut gathered = vec![]; // A scratch copy, so skimming it is harmless
-    for family in lane_map.families() {
-        for lane in puzzle.geometry.lane_map.family(family) {
-            gather_into(lane_map, lane, grid, &mut gathered);
-            skim_line(&puzzle.lines[lane], &mut gathered).map_err(|e| E::in_lane(lane, e))?;
-        }
-    }
-    Ok(())
 }
 
 pub enum DisambigResult {
@@ -1451,7 +1431,7 @@ mod tests {
         );
         assert_ne!(state.grid, stalled_grid);
 
-        let attempts_before_rewind: usize = SolveMode::all()
+        let attempts_before_rewind: usize = SolveMode::regular_modes()
             .iter()
             .map(|m| state.solve_counts[*m])
             .sum();
@@ -1463,7 +1443,7 @@ mod tests {
         // Still stalled, and stalled for free: the grid is one line logic had already run itself
         // out on, so `run` must report that without attempting a single lane.
         assert_eq!(state.run(&mut ctx).unwrap(), Step::Stalled);
-        let attempts_after_rewind: usize = SolveMode::all()
+        let attempts_after_rewind: usize = SolveMode::regular_modes()
             .iter()
             .map(|m| state.solve_counts[*m])
             .sum();
