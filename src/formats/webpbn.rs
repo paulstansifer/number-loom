@@ -3,14 +3,16 @@ use std::collections::{HashMap, HashSet};
 
 use typed_index_collections::{TiSlice, TiVec};
 
+use crate::formats::partial_cells;
 use crate::geometry::{
     CellIdx, ClueSet, ClueSetCounts, FamilyIdx, GridKind, LaneIdx, LanePos, Outline, Shape, Square,
     Tri,
 };
 use crate::puzzle::{
-    BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynPuzzle, DynSolution, Nono, Puzzle,
-    Solution,
+    BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynPuzzle, DynSolution, Nono,
+    PartialSolution, Puzzle, Solution,
 };
+use crate::solve::line_solve::Cell;
 
 fn get_children<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
@@ -101,21 +103,19 @@ fn triddler_puzzle(
 /// know which delimiter means what, though: treating all three characters as row boundaries and
 /// keeping only the non-blank segments between them recovers the rows in top-to-bottom order
 /// either way, and rows read left-to-right — the same order `Geometry`'s dense numbering uses.
+///
+/// Cells may be partly known (see `partial_cells`), as in a `type="saved"` snapshot of someone's
+/// progress.
 fn parse_solution_image(
     text: &str,
     ch_to_color: &HashMap<char, Color>,
-) -> anyhow::Result<Vec<Color>> {
+) -> anyhow::Result<Vec<Cell>> {
     let mut cells = vec![];
     for row in text.split(['|', '/', '\\']) {
         if row.trim().is_empty() {
             continue;
         }
-        for ch in row.chars() {
-            let color = ch_to_color
-                .get(&ch)
-                .with_context(|| format!("solution image uses undefined color char: {ch}"))?;
-            cells.push(*color);
-        }
+        cells.extend(partial_cells::parse_cells(row, ch_to_color).context("in a solution image")?);
     }
     Ok(cells)
 }
@@ -175,6 +175,8 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
     // The `<solution type="goal">` image, if the file bothered to include one — a puzzle that
     // isn't line-solvable has no other way for us to learn its answer.
     let mut goal_solution: Option<Vec<Color>> = None;
+    // A `<solution type="saved">` image: someone's partial progress towards solving it.
+    let mut saved_progress: Option<Vec<Cell>> = None;
 
     let triddler = match puzzle_node.attribute("type") {
         None | Some("grid") => false,
@@ -291,18 +293,29 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
                 None => cols = clue_lanes,
             }
         } else if tag_name == "solution" {
-            // webpbn also allows `type="saved"`/`"solution"` for user snapshots; only the
-            // designer's intended answer is any use to us.
+            // webpbn also allows `type="solution"` for alternate answers, which we ignore. If
+            // there's more than one of a type we use, the first one wins.
             let solution_type = puzzle_part.attribute("type").unwrap_or("goal");
-            if solution_type == "goal" {
-                let image = find_first_child(puzzle_part, "image")?;
-                let text: String = image
-                    .children()
-                    .filter(|n| n.is_text())
-                    .filter_map(|n| n.text())
-                    .collect::<Vec<_>>()
-                    .join("");
-                goal_solution = Some(parse_solution_image(&text, &ch_to_color)?);
+            if !matches!(solution_type, "goal" | "saved") {
+                continue;
+            }
+            let image = find_first_child(puzzle_part, "image")?;
+            let text: String = image
+                .children()
+                .filter(|n| n.is_text())
+                .filter_map(|n| n.text())
+                .collect::<Vec<_>>()
+                .join("");
+            let cells = parse_solution_image(&text, &ch_to_color)?;
+            if solution_type == "saved" {
+                saved_progress.get_or_insert(cells);
+            } else if goal_solution.is_none() {
+                let colors = cells
+                    .iter()
+                    .map(|cell| cell.known_or())
+                    .collect::<Option<Vec<Color>>>()
+                    .context("the goal solution image has cells that aren't fully known")?;
+                goal_solution = Some(colors);
             }
         }
     }
@@ -323,9 +336,19 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
         (p.into(), solution)
     };
 
+    if let Some(saved) = &saved_progress {
+        let cell_count = puzzle.lane_map().cell_count();
+        anyhow::ensure!(
+            saved.len() == cell_count,
+            "saved solution image has {} cells but the puzzle has {cell_count}",
+            saved.len(),
+        );
+    }
+
     Ok(Document::new(
         Some(puzzle),
         solution,
+        saved_progress.map(PartialSolution::from),
         "".to_string(),
         title,
         description,
@@ -337,19 +360,27 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
 
 /// `pbnsolve` doesn't like spaces in `<solution>`s, and I bet non-ASCII is asking for trouble, so
 /// clean up the palette
-fn websafe_chars(palette: &HashMap<Color, ColorInfo>) -> HashMap<Color, ColorInfo> {
+fn webpbn_safe_chars(palette: &HashMap<Color, ColorInfo>) -> HashMap<Color, ColorInfo> {
     let mut palette = palette.clone();
 
     if let Some(bg) = palette.get_mut(&BACKGROUND) {
         bg.ch = '.';
     }
     let mut used: HashSet<char> = palette.values().map(|c| c.ch).collect();
+    for res in partial_cells::RESERVED_CHS {
+        used.insert(res); // Probably these would go wrong even in a solution
+    }
     used.insert('.'); // reserved for the background even if it's absent from this palette
 
     let mut fresh = ('a'..='z').chain('A'..='Z').chain('0'..='9');
 
     for (&color, info) in palette.iter_mut() {
-        if color == BACKGROUND || (info.ch != '.' && info.ch.is_ascii() && info.ch != ' ') {
+        if color == BACKGROUND
+            || (info.ch != '.'
+                && info.ch.is_ascii()
+                && info.ch != ' '
+                && !partial_cells::RESERVED_CHS.contains(&info.ch))
+        {
             continue;
         }
         let new_ch = fresh
@@ -399,30 +430,65 @@ impl ImageDelimiter for Tri {
     }
 }
 
-/// Renders a `<solution type="goal"><image>...</image></solution>` body. `Solution` has a palette,
-/// but we're using a different one.
+/// Lays out a `<solution><image>...</image></solution>` body row by row, with each row's cells
+/// spelled by `spell_row`, or `None` if some row can't be spelled.
+fn image<K: GridKind + ImageDelimiter>(
+    geometry: &crate::geometry::Geometry<K>,
+    mut spell_row: impl FnMut(&TiSlice<LanePos, CellIdx>) -> Option<String>,
+) -> Option<String> {
+    let mut image = String::new();
+    for lane in geometry.family(FamilyIdx(0)) {
+        let cells = &geometry.lane_map.lanes[lane].cells;
+        let (left, right) = K::row_delimiters(geometry, cells);
+        image.push(left);
+        image.push_str(&spell_row(cells)?);
+        image.push(right);
+        image.push('\n');
+    }
+    Some(image)
+}
+
+/// Renders a `<solution type="goal">` image. `Solution` has a palette, but we're using a
+/// different one.
 fn solution_image<K: GridKind + ImageDelimiter>(
     solution: &Solution<K>,
     palette: &HashMap<Color, ColorInfo>,
 ) -> String {
-    let mut image = String::new();
-    for lane in solution.geometry.family(FamilyIdx(0)) {
-        let cells = &solution.geometry.lane_map.lanes[lane].cells;
-        let (left, right) = K::row_delimiters(&solution.geometry, cells);
-        image.push(left);
-        for &cell in cells.iter() {
-            image.push(palette[&solution.cells[cell]].ch);
-        }
-        image.push(right);
-        image.push('\n');
+    image(&solution.geometry, |cells| {
+        Some(
+            cells
+                .iter()
+                .map(|&cell| palette[&solution.cells[cell]].ch)
+                .collect(),
+        )
+    })
+    .unwrap()
+}
+
+/// Renders a `<solution type="saved">` image, or `None` if there's no progress worth saving (or
+/// it doesn't fit `geometry` and `palette`).
+fn progress_image<K: GridKind + ImageDelimiter>(
+    geometry: &crate::geometry::Geometry<K>,
+    progress: &PartialSolution,
+    palette: &HashMap<Color, ColorInfo>,
+) -> Option<String> {
+    if progress.len() != geometry.cell_count()
+        || !partial_cells::has_progress(&progress.raw, palette.keys().copied())
+    {
+        return None;
     }
-    image
+    let ch_of: HashMap<Color, char> = palette.iter().map(|(&c, ci)| (c, ci.ch)).collect();
+    image(geometry, |cells| {
+        let row: Vec<Cell> = cells.iter().map(|&cell| progress[cell]).collect();
+        partial_cells::spell_cells(&row, &ch_of)
+    })
 }
 
 /// webpbn describes `Nono` clues in either shape, so dispatch once and let the writer below be
 /// generic over the grid kind. Also writes the picture alongside the clues whenever the document
 /// has a complete one (from a stored solution, or one line logic alone can recover) — most
-/// documents do, and a webpbn file that has both lets any reader skip re-deriving it.
+/// documents do, and a webpbn file that has both lets any reader skip re-deriving it. Any
+/// progress towards solving it is written too, as a `<solution type="saved">`.
 pub fn as_webpbn(document: &Document) -> String {
     let mut document_with_puzzle = document.clone();
     let has_solution = document_with_puzzle
@@ -462,7 +528,7 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
 ) -> String {
     use indoc::indoc;
 
-    let palette = websafe_chars(&puzzle.palette);
+    let palette = webpbn_safe_chars(&puzzle.palette);
 
     let puzzle_type = match puzzle.geometry.shape() {
         Shape::Square { .. } => "grid",
@@ -570,6 +636,14 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
     if let Some(solution) = solution {
         res.push_str("<solution type=\"goal\">\n<image>\n");
         res.push_str(&solution_image(solution, &palette));
+        res.push_str("</image>\n</solution>\n");
+    }
+
+    if let Some(progress) = document.in_progress()
+        && let Some(image) = progress_image(&puzzle.geometry, progress, &palette)
+    {
+        res.push_str("<solution type=\"saved\">\n<image>\n");
+        res.push_str(&image);
         res.push_str("</image>\n</solution>\n");
     }
 
@@ -788,6 +862,120 @@ mod tests {
         assert!(!serialized.contains("<solution"));
     }
 
+    /// A 2x2 puzzle, with its goal and some progress towards it.
+    const WITH_SAVED: &str = r#"<?xml version="1.0"?>
+        <puzzleset>
+        <puzzle type="grid" backgroundcolor="white" defaultcolor="black">
+        <color name="white" char=".">FFFFFF</color>
+        <color name="black" char="X">000000</color>
+        <clues type="columns">
+        <line><count>1</count></line>
+        <line><count>1</count></line>
+        </clues>
+        <clues type="rows">
+        <line><count>1</count></line>
+        <line><count>1</count></line>
+        </clues>
+        <solution type="goal"><image>|X.|.X|</image></solution>
+        <solution type="saved"><image>|X?|[X.][X]|</image></solution>
+        </puzzle></puzzleset>"#;
+
+    /// A `<solution type="saved">` is someone's progress: `?` is an unknown cell, and `[...]` lists
+    /// the colors a cell might still be. It shouldn't be mistaken for (or clobber) the goal.
+    #[test]
+    fn reads_saved_progress() {
+        let mut doc = webpbn_to_document(WITH_SAVED).unwrap();
+        let x = Color(1);
+        let mut either = Cell::new_impossible();
+        either.actually_could_be(x);
+        either.actually_could_be(BACKGROUND);
+        assert_eq!(
+            doc.in_progress().unwrap().raw,
+            vec![
+                Cell::from_color(x),
+                Cell::new_anything(),
+                either,
+                Cell::from_color(x)
+            ]
+        );
+        assert_eq!(
+            doc.solution().unwrap().cells().raw,
+            vec![x, BACKGROUND, BACKGROUND, x]
+        );
+    }
+
+    #[test]
+    fn saved_progress_survives_a_round_trip() {
+        let original = webpbn_to_document(WITH_SAVED).unwrap();
+        let serialized = as_webpbn(&original);
+        assert!(serialized.contains(r#"<solution type="saved">"#));
+
+        // `[X.]` comes back as `?`, which isn't the same `Cell`, but means the same thing.
+        let possibilities = |doc: &Document| -> Vec<[bool; 2]> {
+            doc.in_progress()
+                .unwrap()
+                .iter()
+                .map(|cell| [BACKGROUND, Color(1)].map(|color| cell.can_be(color)))
+                .collect()
+        };
+        let reloaded = webpbn_to_document(&serialized).unwrap();
+        assert_eq!(possibilities(&reloaded), possibilities(&original));
+    }
+
+    /// Progress that knows nothing isn't written, and a color drawn as `?` can't stay that way.
+    #[test]
+    fn writing_progress_skips_blanks_and_reserved_chars() {
+        let mut palette = crate::import::bw_palette();
+        palette.get_mut(&Color(1)).unwrap().ch = '?';
+        let one = vec![vec![Nono {
+            color: Color(1),
+            count: 1,
+        }]];
+        let puzzle = Puzzle::square(palette, one.clone(), one);
+        let with_progress = |cell: Cell| {
+            Document::new(
+                Some(puzzle.clone().into()),
+                None,
+                Some(vec![cell].into()),
+                "".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        let blank = with_progress(Cell::new_anything());
+        assert!(!as_webpbn(&blank).contains(r#"type="saved""#));
+
+        let known = with_progress(Cell::from_color(Color(1)));
+        let mut reloaded = webpbn_to_document(&as_webpbn(&known)).unwrap();
+        assert_eq!(reloaded.in_progress(), known.in_progress());
+        assert_ne!(reloaded.puzzle().palette()[&Color(1)].ch, '?');
+    }
+
+    #[test]
+    fn unknown_cells_are_only_allowed_in_saved_progress() {
+        const GOAL_WITH_UNKNOWN: &str = r#"<?xml version="1.0"?>
+            <puzzleset>
+            <puzzle type="grid" backgroundcolor="white" defaultcolor="black">
+            <color name="white" char=".">FFFFFF</color>
+            <color name="black" char="X">000000</color>
+            <clues type="columns"><line><count>1</count></line></clues>
+            <clues type="rows"><line><count>1</count></line></clues>
+            <solution type="goal"><image>|?|</image></solution>
+            </puzzle></puzzleset>"#;
+
+        assert!(webpbn_to_document(GOAL_WITH_UNKNOWN).is_err());
+        assert!(
+            webpbn_to_document(DOC_TRIDDLER)
+                .unwrap()
+                .in_progress()
+                .is_none()
+        );
+    }
+
     #[test]
     fn websafe_chars_reassigns_problem_characters_only() {
         let mut palette = HashMap::new();
@@ -835,7 +1023,7 @@ mod tests {
             },
         );
 
-        let safe = websafe_chars(&palette);
+        let safe = webpbn_safe_chars(&palette);
 
         assert_eq!(safe[&BACKGROUND].ch, '.');
         assert_eq!(safe[&Color(3)].ch, 'Q');

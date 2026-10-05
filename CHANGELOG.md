@@ -1,6 +1,8 @@
 ## Changelog
 
 ## Future
+### Added
+ - Support for saving/loading in-progress puzzles in WOVEN format and webpbn's XML format.
 ### Changed
  - The tree-search backtracking solver has been replaced with a faster one based on constraint propagation.
 

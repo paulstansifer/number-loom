@@ -1,5 +1,9 @@
+use crate::formats::partial_cells;
 use crate::geometry::{CellIdx, GridKind, Shape, Square, Tri};
-use crate::puzzle::{ClueStyle, Color, ColorInfo, Document, DynSolution, Solution};
+use crate::puzzle::{
+    ClueStyle, Color, ColorInfo, Document, DynSolution, PartialSolution, Solution,
+};
+use anyhow::{Error, bail};
 use base64::{Engine as _, engine::general_purpose};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -19,6 +23,10 @@ pub struct WovenVersion0 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
     pub solution: SerializableSolution,
+    /// Progress towards solving the puzzle, spelled with the `ch`s of `solution.palette` in the
+    /// notation of `partial_cells`. Only written if that palette's `ch`s are unambiguous.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub in_progress: String,
 }
 
 /// If we ever have to break backwards-compatibility,
@@ -67,12 +75,11 @@ impl SerializableSolution {
             .collect()
     }
 
-    /// Gives every palette entry a `ch` that no other entry uses, keeping the ones that are
-    /// already unambiguous; returns `false` if we run out of characters.
-    fn make_chs_unique(palette: &mut [ColorInfo]) -> bool {
+    /// Gives every palette entry a `ch` that no other entry uses, and that isn't in `reserved`,
+    /// keeping the ones that are already unambiguous; returns `false` if we run out of characters.
+    fn make_chs_unique(palette: &mut [ColorInfo], reserved: &[char]) -> bool {
         let spoken_for: std::collections::HashSet<char> = palette.iter().map(|ci| ci.ch).collect();
-        let mut taken: std::collections::HashSet<char> =
-            std::collections::HashSet::with_capacity(palette.len());
+        let mut taken: std::collections::HashSet<char> = reserved.iter().copied().collect();
 
         for ci in palette.iter_mut() {
             if taken.insert(ci.ch) {
@@ -99,11 +106,60 @@ impl SerializableSolution {
             .map(|color| ch_of.get(color).copied())
             .collect()
     }
+
+    /// Like the `From` impl, but keeps the palette's `ch`s out of `reserved` (if it can).
+    fn new(solution: &DynSolution, reserved: &[char]) -> Self {
+        match solution {
+            DynSolution::Square(s) => SerializableSolution::from_solution(s, reserved),
+            DynSolution::Tri(s) => SerializableSolution::from_solution(s, reserved),
+        }
+    }
+
+    /// Each `ch` in the palette, and the color it spells, or `None` if that's ambiguous or uses
+    /// one of `partial_cells::RESERVED_CHS`.
+    fn ch_to_color(&self) -> Option<std::collections::HashMap<char, Color>> {
+        let mut res = std::collections::HashMap::new();
+        for ci in &self.palette {
+            if partial_cells::RESERVED_CHS.contains(&ci.ch) || res.insert(ci.ch, ci.color).is_some()
+            {
+                return None;
+            }
+        }
+        Some(res)
+    }
+
+    fn spell_in_progress(&self, in_progress: &PartialSolution) -> Option<String> {
+        let ch_of = self
+            .ch_to_color()?
+            .into_iter()
+            .map(|(ch, color)| (color, ch))
+            .collect();
+        partial_cells::spell_cells(&in_progress.raw, &ch_of)
+    }
 }
 
-impl From<&mut Document> for WovenVersion0 {
-    fn from(doc: &mut Document) -> Self {
-        WovenVersion0 {
+impl TryFrom<&mut Document> for WovenVersion0 {
+    type Error = anyhow::Error;
+    fn try_from(doc: &mut Document) -> anyhow::Result<Self> {
+        let in_progress = doc.in_progress().cloned();
+        let solution = doc.solution()?;
+        let in_progress = in_progress
+            .filter(|ip| partial_cells::has_progress(&ip.raw, solution.palette().keys().copied()));
+
+        // Progress needs `?`, `[`, and `]` to itself, but only rename colors if we need to.
+        let reserved: &[char] = if in_progress.is_some() {
+            &partial_cells::RESERVED_CHS
+        } else {
+            &[]
+        };
+        let solution = SerializableSolution::new(solution, reserved);
+        // If the palette couldn't be made unambiguous (which shouldn't happen for a palette small
+        // enough for `PartialSolution`), dropping progress beats failing to save at all.
+        let in_progress = in_progress
+            .and_then(|ip| solution.spell_in_progress(&ip))
+            .unwrap_or_default();
+
+        Ok(WovenVersion0 {
             title: doc.title.clone(),
             description: doc.description.clone(),
             author: doc.author.clone(),
@@ -117,11 +173,9 @@ impl From<&mut Document> for WovenVersion0 {
             } else {
                 Some(doc.license.clone())
             },
-            solution: doc
-                .solution()
-                .expect("Need a solution to save a document!")
-                .into(),
-        }
+            solution,
+            in_progress,
+        })
     }
 }
 
@@ -169,12 +223,12 @@ fn decode_woven(s: &str) -> anyhow::Result<WovenDocument> {
 }
 
 pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
-    encode_woven(&WovenDocument::V0(doc.into()))
+    encode_woven(&WovenDocument::V0(doc.try_into()?))
 }
 
 pub fn from_woven(s: &str, filename: String) -> anyhow::Result<Document> {
     let mut doc: Document = match decode_woven(s)? {
-        WovenDocument::V0(s_doc_v0) => s_doc_v0.into(),
+        WovenDocument::V0(s_doc_v0) => s_doc_v0.try_into()?,
     };
 
     doc.file = filename;
@@ -414,6 +468,7 @@ mod tests {
         let mut doc = Document::new(
             Some(puzzle),
             None,
+            None,
             "test.webpbn".to_string(),
             Some("Test Title".to_string()),
             Some("Test Description".to_string()),
@@ -422,8 +477,8 @@ mod tests {
             Some("Test License".to_string()),
         );
 
-        let s_doc: WovenVersion0 = (&mut doc).into();
-        let mut new_doc: Document = s_doc.into();
+        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        let mut new_doc: Document = s_doc.try_into().unwrap();
 
         // .file is lost, which is fine
         assert_eq!(doc.title, new_doc.title);
@@ -467,6 +522,7 @@ mod tests {
         let mut doc = Document::new(
             None,
             Some(DynSolution::Square(solution)),
+            None,
             "test.webpbn".to_string(),
             Some("Test Title".to_string()),
             Some("Test Description".to_string()),
@@ -475,8 +531,8 @@ mod tests {
             Some("Test License".to_string()),
         );
 
-        let s_doc: WovenVersion0 = (&mut doc).into();
-        let mut new_doc: Document = s_doc.into();
+        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        let mut new_doc: Document = s_doc.try_into().unwrap();
 
         // .file is lost, which is fine.
         assert_eq!(doc.title, new_doc.title);
@@ -526,6 +582,7 @@ mod tests {
         let mut doc = Document::new(
             Some(puzzle),
             None,
+            None,
             "test.webpbn".to_string(),
             Some("Test Title".to_string()),
             Some("Test Description".to_string()),
@@ -546,25 +603,154 @@ mod tests {
         assert_eq!(doc.license, new_doc.license);
         assert_eq!(doc.puzzle(), new_doc.puzzle());
     }
+
+    /// Progress survives a share string, alongside (and distinct from) the solution it's
+    /// working towards. Black is drawn as `?` here, which progress needs for itself, so it has to
+    /// be renamed.
+    #[test]
+    fn test_in_progress_round_trip() {
+        use crate::puzzle::BACKGROUND;
+        use crate::solve::line_solve::Cell;
+
+        let (b, x, r) = (BACKGROUND, Color(1), Color(2));
+        let mut palette = crate::import::bw_palette();
+        palette.get_mut(&x).unwrap().ch = '?';
+        palette.insert(
+            r,
+            ColorInfo {
+                ch: 'r',
+                name: "red".to_string(),
+                rgb: (255, 0, 0),
+                color: r,
+                corner: None,
+            },
+        );
+        let solution =
+            Solution::from_columns(ClueStyle::Nono, palette, vec![vec![x, b], vec![r, x]]);
+
+        let mut not_red = Cell::new_impossible();
+        not_red.actually_could_be(b);
+        not_red.actually_could_be(x);
+        let in_progress: PartialSolution = vec![
+            Cell::from_color(x),
+            Cell::new_anything(),
+            not_red,
+            Cell::from_color(r),
+        ]
+        .into();
+
+        let mut doc = Document::new(
+            None,
+            Some(DynSolution::Square(solution.clone())),
+            Some(in_progress.clone()),
+            "".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        // Black, `?`, either white or black, and red.
+        assert_eq!(s_doc.in_progress, "!?[ !]r");
+
+        let mut new_doc = from_woven(&to_woven(&mut doc).unwrap(), "".to_string()).unwrap();
+        assert_eq!(new_doc.in_progress(), Some(&in_progress));
+
+        let new_solution = new_doc.solution().unwrap();
+        assert_eq!(new_solution.cells(), &solution.cells);
+        let black_ch = new_solution.palette()[&x].ch;
+        assert!(!partial_cells::RESERVED_CHS.contains(&black_ch));
+    }
+
+    /// Without any progress, there's nothing extra in the share string, and nothing comes back.
+    #[test]
+    fn test_no_in_progress_round_trip() {
+        let solution = Solution::from_columns(
+            ClueStyle::Nono,
+            crate::import::bw_palette(),
+            vec![vec![Color(1), crate::puzzle::BACKGROUND]],
+        );
+        let mut doc = Document::from_solution(DynSolution::Square(solution), "".to_string());
+
+        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        assert!(
+            !serde_json::to_string(&s_doc)
+                .unwrap()
+                .contains("in_progress")
+        );
+
+        let new_doc: Document = s_doc.try_into().unwrap();
+        assert!(new_doc.in_progress().is_none());
+    }
+
+    /// Progress that knows nothing isn't written either, and doesn't cost a color its `ch`.
+    #[test]
+    fn test_blank_in_progress_is_not_written() {
+        use crate::solve::line_solve::Cell;
+
+        let mut palette = crate::import::bw_palette();
+        palette.get_mut(&Color(1)).unwrap().ch = '?';
+        let solution =
+            Solution::from_columns(ClueStyle::Nono, palette, vec![vec![Color(1), Color(0)]]);
+        let mut doc = Document::new(
+            None,
+            Some(DynSolution::Square(solution)),
+            Some(vec![Cell::new_anything(); 2].into()),
+            "".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        assert_eq!(s_doc.in_progress, "");
+        assert!(s_doc.solution.palette.iter().any(|ci| ci.ch == '?'));
+    }
 }
 
-impl From<WovenVersion0> for Document {
-    fn from(s_doc: WovenVersion0) -> Self {
-        Document::new(
+impl TryFrom<WovenVersion0> for Document {
+    type Error = Error;
+    fn try_from(s_doc: WovenVersion0) -> anyhow::Result<Self> {
+        let solution: DynSolution = (&s_doc.solution).into();
+        let mut in_progress = None;
+        if !s_doc.in_progress.is_empty() {
+            let Some(ch_to_color) = s_doc.solution.ch_to_color() else {
+                bail!("unable to figure out the color")
+            };
+            let cells = partial_cells::parse_cells(&s_doc.in_progress, &ch_to_color)?;
+
+            if cells.len() != solution.cells().len() {
+                bail!("in-progress cells don't match the solution's size");
+            }
+            in_progress = Some(PartialSolution::from(cells));
+        }
+
+        Ok(Document::new(
             None,
-            Some((&s_doc.solution).into()),
+            Some(solution),
+            in_progress,
             "".to_string(),
             Some(s_doc.title),
             Some(s_doc.description),
             Some(s_doc.author),
             s_doc.id,
             s_doc.license,
-        )
+        ))
     }
 }
 
 impl<K: GridKind> From<&Solution<K>> for SerializableSolution {
     fn from(solution: &Solution<K>) -> Self {
+        SerializableSolution::from_solution(solution, &[])
+    }
+}
+
+impl SerializableSolution {
+    fn from_solution<K: GridKind>(solution: &Solution<K>, reserved: &[char]) -> Self {
         let as_stored: Vec<ColorInfo> = solution.palette.values().cloned().sorted().collect();
 
         // Spelling the cells needs a palette whose `ch`s tell the colors apart, so try to make
@@ -572,7 +758,7 @@ impl<K: GridKind> From<&Solution<K>> for SerializableSolution {
         // writing if the spelling it was made for succeeded — otherwise the file would carry
         // renamed colors for no reason at all.
         let mut repaired = as_stored.clone();
-        let spelled = SerializableSolution::make_chs_unique(&mut repaired)
+        let spelled = SerializableSolution::make_chs_unique(&mut repaired, reserved)
             .then(|| {
                 repaired.sort(); // see `make_chs_unique`: a new `ch` can change where an entry sorts
                 SerializableSolution::spell_cells(&solution.cells.raw, &repaired)
@@ -597,10 +783,7 @@ impl<K: GridKind> From<&Solution<K>> for SerializableSolution {
 
 impl From<&DynSolution> for SerializableSolution {
     fn from(solution: &DynSolution) -> Self {
-        match solution {
-            DynSolution::Square(s) => s.into(),
-            DynSolution::Tri(s) => s.into(),
-        }
+        SerializableSolution::new(solution, &[])
     }
 }
 
@@ -661,6 +844,7 @@ mod golden_tests {
     use super::*;
     use crate::geometry::{Geometry, Outline, Rect};
     use crate::puzzle::{BACKGROUND, Corner, UNSOLVED};
+    use crate::solve::line_solve::Cell;
     use std::collections::{BTreeMap, HashMap};
     use std::path::{Path, PathBuf};
 
@@ -713,7 +897,8 @@ mod golden_tests {
     /// variant and field the format can carry, since a type that no fixture exercises is a type
     /// that can break compatibility without any test noticing: both `Shape` variants, both
     /// `ClueStyle` variants, `Corner` in all four orientations and absent, `UNSOLVED` cells,
-    /// non-ASCII palette characters, and the optional metadata both present and missing.
+    /// non-ASCII palette characters, the optional metadata both present and missing, and
+    /// in-progress cells that are known, unknown, and narrowed down to some colors.
     fn corpus() -> Vec<(&'static str, Document)> {
         let mut fixtures = Vec::new();
 
@@ -758,6 +943,7 @@ mod golden_tests {
                     }),
                     cells.into(),
                 ))),
+                None,
                 "square_color_metadata.woven".to_string(),
                 Some("Test Pattern".to_string()),
                 Some("Every metadata field, populated.".to_string()),
@@ -863,6 +1049,47 @@ mod golden_tests {
             ),
         ));
 
+        // Someone partway through solving: a cell they know, one they know nothing about, and one
+        // they've narrowed down to two of the three colors. Red is drawn as `?`, which progress
+        // needs for itself, so writing this renames it.
+        let solving = palette(vec![
+            color(' ', "white", (255, 255, 255), BACKGROUND, None),
+            color('#', "black", (0, 0, 0), Color(1), None),
+            color('?', "red", (255, 0, 0), Color(2), None),
+        ]);
+        let cells = picture(&solving, &["#?", " #"]);
+        let mut white_or_black = Cell::new_impossible();
+        white_or_black.actually_could_be(BACKGROUND);
+        white_or_black.actually_could_be(Color(1));
+        let progress = vec![
+            Cell::from_color(Color(1)),
+            Cell::new_anything(),
+            white_or_black,
+            Cell::new_anything(),
+        ];
+        fixtures.push((
+            "square_in_progress",
+            Document::new(
+                None,
+                Some(DynSolution::Square(Solution::new(
+                    ClueStyle::Nono,
+                    solving,
+                    Geometry::<Square>::new(Rect {
+                        width: 2,
+                        height: 2,
+                    }),
+                    cells.into(),
+                ))),
+                Some(progress.into()),
+                "square_in_progress.woven".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        ));
+
         fixtures
     }
 
@@ -961,12 +1188,12 @@ mod golden_tests {
     /// put the fixture into a state where the old and new files can never agree again.
     fn canonical_form(s_doc: WovenDocument, source: &Path) -> String {
         let mut doc: Document = match s_doc {
-            WovenDocument::V0(v0) => v0.into(),
+            WovenDocument::V0(v0) => v0.try_into().unwrap(),
         };
         let _ = doc
             .solution()
             .unwrap_or_else(|e| panic!("{}: has no usable solution: {e:?}", source.display()));
-        as_json(&WovenDocument::V0((&mut doc).into()))
+        as_json(&WovenDocument::V0((&mut doc).try_into().unwrap()))
     }
 
     fn canonical_form_of_share_string(path: &Path) -> String {
@@ -1138,7 +1365,7 @@ mod golden_tests {
         let dir = PathBuf::from(GOLDEN_DIR);
         for (name, mut doc) in corpus() {
             let Some(fixture) = existing.iter().find(|f| f.name == name) else {
-                let s_doc = WovenDocument::V0((&mut doc).into());
+                let s_doc = WovenDocument::V0((&mut doc).try_into().unwrap());
                 std::fs::write(
                     dir.join(format!("{name}.0.woven")),
                     to_woven(&mut doc).unwrap(),

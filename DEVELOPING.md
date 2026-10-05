@@ -25,7 +25,8 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     import.rs - read files and extract clues from grids
     export.rs - write files 
     formats/
-      char_grid.rs, html.rs, image.rs, olsak.rs, webpbn.rs, woven.rs
+      char_grid.rs, html.rs, image.rs, olsak.rs, webpbn.rs, woven.rs - the file formats
+      partial_cells.rs - the `?`/`[...]` notation for partly-known cells, shared by webpbn and WOVEN
     solve/ - the automatic solver (as opposed to gui/solver.rs, the interactive solving view)
       line_solve.rs - quick ("skim") and exhaustive ("scrub") line-logic implementation
       grid_solve.rs - uses repeated line-logic to solve a puzzle

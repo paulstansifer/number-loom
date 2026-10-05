@@ -1148,6 +1148,8 @@ pub fn infer_format(path: &str, format_arg: Option<NonogramFormat>) -> NonogramF
 pub struct Document {
     p: Option<DynPuzzle>,
     s: Option<DynSolution>,
+    /// Someone's progress towards solving the puzzle. The GUI doesn't use this (yet).
+    in_progress: Option<PartialSolution>,
     /// Path if native, just a filename, if on the Web
     pub file: String,
     pub title: String,
@@ -1186,6 +1188,7 @@ impl Document {
     pub fn new(
         puzzle: Option<DynPuzzle>,
         solution: Option<DynSolution>,
+        in_progress: Option<PartialSolution>,
         file: String,
         title: Option<String>,
         description: Option<String>,
@@ -1197,6 +1200,7 @@ impl Document {
         Document {
             p: puzzle,
             s: solution,
+            in_progress,
             file,
             title: title.unwrap_or_default(),
             description: description.unwrap_or_default(),
@@ -1289,11 +1293,14 @@ impl Document {
         Ok(self.s.as_ref().unwrap())
     }
 
+    // TODO: the GUI currently uses `solution` from two documents, instead of using `in_progress`
+    // for user solve progress.
     pub fn solution_mut(&mut self) -> &mut DynSolution {
         if self.s.is_none() {
             self.s = Some(self.p.as_ref().unwrap().line_solve().unwrap().solution)
         }
         self.p = None; // Edits will invalidate the puzzle!
+        self.in_progress = None;
         self.s.as_mut().unwrap()
     }
 
@@ -1302,6 +1309,10 @@ impl Document {
             Some(s) => Ok(s),
             None => self.p.unwrap().line_solve().map(|r| r.solution),
         }
+    }
+
+    pub fn in_progress(&self) -> Option<&PartialSolution> {
+        self.in_progress.as_ref()
     }
 
     /// The square picture, for code that only understands rows and columns. Callers should
@@ -1314,6 +1325,7 @@ impl Document {
         Self {
             p: Some(puzzle),
             s: None,
+            in_progress: None,
             file,
             title: "".to_string(),
             description: "".to_string(),
@@ -1327,6 +1339,7 @@ impl Document {
         Self {
             p: None,
             s: Some(solution),
+            in_progress: None,
             file,
             title: "".to_string(),
             description: "".to_string(),
