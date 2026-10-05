@@ -580,7 +580,7 @@ mod tests {
         });
         let mut ll_state = SolveState::new(&mut ctx, grid);
         if line_solve {
-            ll_state.run_and_check(&mut ctx).unwrap();
+            ll_state.run(&mut ctx).unwrap();
         }
         let mut rng = rand::rngs::StdRng::seed_from_u64(0);
         let mut picker = Picker::from_situation(puzzle, &ll_state.grid, &HashMap::new(), &mut rng);

@@ -253,9 +253,7 @@ impl<'p, 'c, 'x, C: Clue, K: GridKind> ConpropState<'p, 'c, 'x, C, K> {
         while any_nogoods_fired {
             any_nogoods_fired = false;
 
-            let linear_res = self
-                .ll_state
-                .run_and_check_recording(self.ctx, &mut self.trail);
+            let linear_res = self.ll_state.run_recording(self.ctx, &mut self.trail);
             self.update_nogood_counters(self.trail.len());
 
             // Had to update the counters first.
@@ -700,7 +698,7 @@ fn initial_state<'p, C: Clue, K: GridKind>(
         ctx,
         vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into(),
     );
-    linear_state.run_and_check(ctx)?;
+    linear_state.run(ctx)?;
     Ok(linear_state)
 }
 

@@ -568,7 +568,8 @@ impl<'p, C: Clue> SolveState<'p, C> {
         self.run_inner(ctx, None)
     }
 
-    /// `run`, appending the cells overwritten with more specific information to `trail`.
+    /// `run`, appending the cells overwritten with more specific information to `trail`, and
+    /// reporting which lane led to a contradiction.
     ///
     /// The trail is complete even when this returns an error, which is the case that matters:
     /// nothing reaches the grid until a line solver has finished with its private copy of a lane,
@@ -578,7 +579,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         &mut self,
         ctx: &mut SolveContext<'p, '_, C, K>,
         trail: &mut Vec<TrailStep>,
-    ) -> anyhow::Result<Step> {
+    ) -> Result<Step, Contradiction> {
         self.run_inner(ctx, Some(trail))
     }
 
@@ -595,33 +596,15 @@ impl<'p, C: Clue> SolveState<'p, C> {
         }
     }
 
-    /// If we don't trust that the puzzle is solvable (crucially, if we've made a guess!),
-    /// we need to check that we haven't broken anything.
-    pub fn run_and_check<K: GridKind>(
-        &mut self,
-        ctx: &mut SolveContext<'p, '_, C, K>,
-    ) -> anyhow::Result<Step> {
-        self.run_and_check_inner(ctx, None)
-    }
-
-    /// like `run_recording`, but also check for contradictions, and report which lane led to one.
-    pub fn run_and_check_recording<K: GridKind>(
-        &mut self,
-        ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: &mut Vec<TrailStep>,
-    ) -> Result<Step, Contradiction> {
-        self.run_and_check_inner(ctx, Some(trail))
-    }
-
-    fn run_and_check_inner<E: Unsolvable, K: GridKind>(
-        &mut self,
-        ctx: &mut SolveContext<'p, '_, C, K>,
-        trail: Option<&mut Vec<TrailStep>>,
+    /// Line logic has filled everything it can: check the remaining dirty lanes for contradictions.
+    fn finish<E: Unsolvable, K: GridKind>(
+        &self,
+        puzzle: &Puzzle<C, K>,
+        step: Step,
     ) -> Result<Step, E> {
-        let res = self.run_inner(ctx, trail)?;
-        // TODO: we can do this faster by only checking invalidated lines!
-        verify_lines_inner(ctx.puzzle, &self.grid)?;
-        Ok(res)
+        // TODO: we can do this faster by only checking the lanes that got filled in that way!
+        verify_lines_inner(puzzle, &self.grid)?;
+        Ok(step)
     }
 
     /// Pick the next lane to attempt, escalating to a more thorough mode once the cheap ones stop
@@ -674,7 +657,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         let lane_map = ctx.lane_map();
 
         let Some((idx, mode)) = self.choose_lane(options.max_effort) else {
-            return Ok(Step::Stalled);
+            return self.finish(puzzle, Step::Stalled);
         };
         let solved_lane = self.lanes[idx].lane;
 
@@ -772,7 +755,7 @@ impl<'p, C: Clue> SolveState<'p, C> {
         }
 
         if self.cells_left == 0 {
-            return Ok(Step::Solved);
+            return self.finish(puzzle, Step::Solved);
         }
 
         if mode != SolveMode::first() && !report.affected_cells.is_empty() {
@@ -1059,14 +1042,13 @@ fn verify_lines_inner<E: Unsolvable, C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
 ) -> Result<(), E> {
-    // TODO: this probably could be done fasters
+    // TODO: this probably could be done faster
     let lane_map = &puzzle.geometry.lane_map;
+    let mut gathered = vec![]; // A scratch copy, so skimming it is harmless
     for family in lane_map.families() {
         for lane in puzzle.geometry.lane_map.family(family) {
-            let mut gathered = vec![];
             gather_into(lane_map, lane, grid, &mut gathered);
-            skim_line(&puzzle.lines[lane], &mut gathered.to_vec())
-                .map_err(|e| E::in_lane(lane, e))?;
+            skim_line(&puzzle.lines[lane], &mut gathered).map_err(|e| E::in_lane(lane, e))?;
         }
     }
     Ok(())
@@ -1392,6 +1374,45 @@ mod tests {
     /// Guess, let line logic run with it, then rewind the trail and check that the state is
     /// indistinguishable from the one we guessed in. `unknown_cells` is checked for us: every
     /// `invalidate` debug-asserts it against a full walk of the lane.
+    /// Line logic never looks at a lane again once its crossing lanes have filled it in, so these
+    /// contradictions are only caught by the check at the end.
+    #[test]
+    fn a_lane_filled_in_by_its_crossings_still_has_to_agree_with_its_clues() {
+        let mut palette = HashMap::new();
+        palette.insert(BACKGROUND, ColorInfo::default_bg());
+        palette.insert(Color(1), ColorInfo::default_fg(Color(1)));
+        let clues = |counts: &[u16]| -> Vec<Nono> {
+            counts
+                .iter()
+                .map(|&count| Nono {
+                    color: Color(1),
+                    count,
+                })
+                .collect()
+        };
+        let line_logic = |puzzle: &Puzzle<Nono, crate::geometry::Square>| {
+            let mut grid = vec![Cell::new(&puzzle.palette); puzzle.geometry.cell_count()].into();
+            line_logic_solve(puzzle, &mut None, &SolveOptions::default(), &mut grid)
+        };
+
+        // The rows fill every cell, so it looks solved, but the first column wants only one.
+        let looks_solved = Puzzle::square(
+            palette.clone(),
+            vec![clues(&[2]), clues(&[2])],
+            vec![clues(&[1]), clues(&[2])],
+        );
+        assert!(line_logic(&looks_solved).is_err());
+
+        // The columns fill the bottom row in, but it wants only one. Meanwhile, line logic stalls
+        // on the two diagonals of the top two rows, so it doesn't look solved.
+        let stalls = Puzzle::square(
+            palette,
+            vec![clues(&[1]), clues(&[1]), clues(&[]), clues(&[1])],
+            vec![clues(&[1, 1]), clues(&[1, 1])],
+        );
+        assert!(line_logic(&stalls).is_err());
+    }
+
     #[test]
     fn unwind_restores_the_state_a_guess_started_from() {
         let mut palette = HashMap::new();

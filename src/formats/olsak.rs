@@ -808,12 +808,11 @@ mod malformed_tests {
         assert_eq!(report.cells_left, 0);
     }
 
-    /// This used to crash the line solver. (Line logic calls this "solved" from the rows alone,
-    /// without noticing the columns disagree; only the backtracking solver checks on the way out.)
+    /// This used to crash the line solver.
     #[test]
-    fn zeros_in_a_contradictory_puzzle_dont_crash_the_solver() {
+    fn a_line_of_zeros_is_still_too_few_blocks_for_the_other_direction() {
         let puzzle = olsak_to_puzzle(": rows\n2\n0\n: columns\n0\n0\n").unwrap();
-        let _ = puzzle.line_solve();
+        assert!(puzzle.line_solve().is_err());
     }
 
     #[test]
