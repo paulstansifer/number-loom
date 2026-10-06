@@ -36,8 +36,8 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
     layout.rs - abstract drawing geometry (cell shapes, positions, grid lines, clue gutters)
     puzzle.rs - data structures
     solver_fuzzer.rs - stress test for solver correctness
+    ocr-clue-bot/ - `ocr-clues`, which reads clues out of a picture of a puzzle (has its own DEVELOPING.md)
     bin/bench-pbnsolve.rs - speed comparison against `pbnsolve` (see below)
-    bin/ocr-clues/ - reads clues out of a picture of a puzzle (has its own DEVELOPING.md)
     bin/reddit-bot.rs - runs `ocr-clues` on new posts to r/nonograms (but doesn't reply yet)
   benches/ - benchmarks (currently quite limited)
     (see also src/bin/bench-pbnsolve.rs, below)
@@ -72,7 +72,7 @@ they find.
 # OCR
 
 `ocr-clues` reads the clues out of a picture of a puzzle. It has its own notes, in
-`src/bin/ocr-clues/DEVELOPING.md`.
+`src/ocr-clue-bot/DEVELOPING.md`.
 
 `reddit-bot` watches r/nonograms, and runs `ocr-clues` on the first picture in each new post. For
 now, it only reads: what it would reply is saved, along with the picture, what `ocr-clues` said,

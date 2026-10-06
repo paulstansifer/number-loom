@@ -12,7 +12,7 @@ required-features = ["bench-pbnsolve"]
 # Reads clues out of a picture of a puzzle. Also behind a feature, since the OCR engine is heavy.
 [[bin]]
 name = "ocr-clues"
-path = "src/bin/ocr-clues/main.rs"
+path = "src/ocr-clue-bot/main.rs"
 required-features = ["ocr"]
 
 # Runs `ocr-clues` on pictures posted to r/nonograms.
