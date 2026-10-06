@@ -79,7 +79,8 @@ now, it only reads: what it would reply is saved, along with the picture, what `
 and its debug image, in a directory for each post with a picture. `log.txt` lists each picture,
 with one line on how it went. It only drafts a reply if the clues make sense: at least four rows
 and columns with clues, which don't contradict each other. The reply is the advice from
-`ocr-clues --message` (see `guidance.rs`). Reddit only answers API requests with OAuth,
+`ocr-clues --message` (see `guidance.rs`), signed with the Reddit username in `REDDIT_OPERATOR`
+(without it, there's no sign-off). Reddit only answers API requests with OAuth,
 so it needs `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` from an app registered at
 https://www.reddit.com/prefs/apps (it logs in as the app, not as a user):
 

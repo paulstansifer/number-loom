@@ -32,6 +32,8 @@ const GUESSES: usize = 200;
 const CONTRADICTIONS: usize = 5;
 /// Where the web app lives; a `#WOVEN-...-` after it opens that puzzle.
 const APP_URL: &str = "https://paulstansifer.github.io/number-loom/";
+/// The environment variable with the Reddit username (without the `u/`) of whoever runs the bot.
+const OPERATOR_VAR: &str = "REDDIT_OPERATOR";
 
 /// How the answer was found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +68,7 @@ pub enum Next {
     /// the order the search would have guessed them.
     Contradictions(Vec<(CellIdx, Color)>),
     /// None of this many guesses led anywhere.
-    Stuck(usize),
+    Stuck(),
     /// These lanes can't be completed as they stand. (Mistakes are only caught where the answer
     /// is known, so this is possible when it isn't all known.)
     Broken(Vec<LaneIdx>),
@@ -226,7 +228,7 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
                 res.push_str(&format!(" * >!{loc} can't be {color_str}!<\n"));
             }
         }
-        Next::Stuck(_) => {
+        Next::Stuck() => {
             if g.solved == Solved::Search {
                 res.push_str("This puzzle probably requires nested guesses at this point. It's quite hard!\n");
             } else {
@@ -245,7 +247,10 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
         }
     }
 
-    res.push_str("\n\n^(This is a bot, operated by [u/paul_stansifer](https://www.reddit.com/user/paul_stansifer/))");
+    // (Without an operator to name, there's no sign-off.)
+    if let Ok(operator) = std::env::var(OPERATOR_VAR) {
+        res.push_str(&format!("\n\n^(This is a bot, operated by [u/{operator}](https://www.reddit.com/user/{operator}/))"));
+    }
 
     res
 }
@@ -477,7 +482,7 @@ fn guess<C: Clue, K: GridKind>(
         }
     }
     Ok(if contradictions.is_empty() {
-        Next::Stuck(tried)
+        Next::Stuck()
     } else {
         Next::Contradictions(contradictions)
     })

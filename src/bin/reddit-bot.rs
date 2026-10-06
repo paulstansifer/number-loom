@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! cargo build --release --features ocr --bins
-//! REDDIT_CLIENT_ID=... REDDIT_CLIENT_SECRET=... target/release/reddit-bot bot/
+//! REDDIT_CLIENT_ID=... REDDIT_CLIENT_SECRET=... REDDIT_OPERATOR=... target/release/reddit-bot bot/
 //! ```
 //!
 //! Reddit doesn't answer API requests without OAuth, so it needs the id and secret of an app
