@@ -299,7 +299,7 @@ fn check(puzzle_path: &Path, message: Option<String>) -> anyhow::Result<Outcome>
         return Ok(Outcome::TooSmall { rows, cols });
     }
     let [height, width] = [0, 1].map(|family| lane_map.family(family.into()).count());
-    Ok(match puzzle.plain_solve() {
+    Ok(match puzzle.line_solve() {
         Err(_) => Outcome::Contradictory { width, height },
         Ok(solved) => Outcome::Read {
             width,
@@ -319,7 +319,7 @@ fn draft_reply(outcome: &Outcome) -> Option<String> {
     else {
         return None; // Can't read it, or nothing to say about it; don't reply.
     };
-    Some(format!("{message}\n^(I'm a bot, and I make mistakes.)\n"))
+    Some(message.clone())
 }
 
 /// Where replying to the post will go. For now, the reply is only saved.

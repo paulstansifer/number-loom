@@ -83,12 +83,9 @@ pub struct GuidanceReport {
     pub errors: Vec<CellIdx>,
     /// Where to go from here, once the errors are erased.
     pub next: Next,
-    /// A link that opens the puzzle in the web app, to solve from the beginning. `None` unless
-    /// all of the answer is known, because WOVEN carries the answer, not the clues.
+    /// A link that opens the puzzle in the web app, to solve from the beginning.
     pub start_url: Option<String>,
     /// Like `start_url`, but with the person's progress (with the errors erased) filled in.
-    /// `None` if `start_url` is, or if they're done, or if nothing's left once the errors are
-    /// erased.
     pub progress_url: Option<String>,
 }
 
@@ -109,25 +106,18 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
         Solved::Search => ", only solvable with trial-and-error.",
         Solved::OutOfTime => ", which I was unable to solve!",
     };
-    // TODO: Markdown (Reddit's too) joins lines separated by a single "\n" into one paragraph, so
-    //   everything outside the lists comes out as one run-on paragraph. Paragraphs need "\n\n"
-    //   (and old Reddit needs a blank line before a list starts).
-    // TODO: "8x8" and "18x18" would need "an"; 8x8 is a common size for small puzzles.
     // Fortunately, numbers <80 that start with a vowel sound aren't a multiple of five, so we're unlikely to
     // need to say "an".
     res.push_str(&format!(
-        "I see a {} puzzle{like_what} ",
+        "This looks like a {} puzzle{like_what} ",
         puz.geometry.dims_label()
     ));
-    // TODO: Placeholder wording, written by Claude (at Paul's request) for the number of clue
-    //   repairs; to be rethought.
     if repairs > 0 {
         let pl = if repairs == 1 { "" } else { "s" };
         res.push_str(&format!(
-            "(I couldn't read {repairs} clue{pl}, so I worked them out from your grid.) "
+            "(OCR failed for {repairs} clue{pl}, but they could be extracted from the grid.) "
         ));
     }
-
     if !g.errors.is_empty() {
         let pl = if g.errors.len() == 1 { "" } else { "s" };
         res.push_str("\n"); // Want to start this on its own line.
@@ -136,13 +126,13 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
             g.errors.len(),
         ));
 
-        // TODO: `first = false` is inside `if !first`, so it never runs, and no commas get printed.
         let mut first = true;
         for error in g.errors.iter().take(5) {
             if !first {
                 res.push_str(", ");
-                first = false;
             }
+            first = false;
+
             let loc = K::coord_label(puz.geometry.coord(*error));
             res.push_str(&format!("{loc}"));
         }
@@ -150,8 +140,6 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
         if g.errors.len() > 5 {
             res.push_str(&format!(", and {} more", g.errors.len() - 5));
         }
-        // TODO: `next` is worked out with the mistakes erased, but nothing says so; perhaps "Once
-        //   you fix those, ..." before the next steps.
         res.push_str("!<\n");
     } else if matches!(g.next, Next::Done) {
         match g.solved {
@@ -168,16 +156,30 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
                 res.push_str("Nonetheless, you solved it!\n");
             }
         }
-        // TODO: An empty `if`: unfinished, or left over?
-        if matches!(g.solved, Solved::LineLogic | Solved::Search) {}
     } else if g.filled_cells > 0 {
-        res.push_str(&format!(
-            "You've solved {:.1}% of the puzzle correctly.\n",
-            g.filled_cells as f32 / g.answer.len() as f32 * 100.0
-        ));
+        if matches!(g.solved, Solved::LineLogic | Solved::Search) {
+            res.push_str(&format!(
+                "You've solved {:.1}% of the puzzle correctly.\n",
+                g.filled_cells as f32 / g.answer.len() as f32 * 100.0
+            ));
+        } else {
+            res.push_str(&format!(
+                "You've filled in {:.1}% of the puzzle.\n",
+                g.filled_cells as f32 / g.answer.len() as f32 * 100.0
+            ));
+        }
     }
-    // TODO: This adds nothing (see the TODO about paragraphs above).
-    res.push_str(""); // New paragraph for guidan\nce.
+    res.push_str("\n\n");
+
+    if let Some(s_url) = &g.start_url {
+        res.push_str(&format!("[Start from scratch]({s_url})"));
+        if let Some(c_url) = &g.progress_url {
+            res.push_str(&format!(" or [continue from here]({c_url})"));
+        }
+        res.push_str(&format!(
+            " in [Number Loom](https://paul-stansifer.itch.io/number-loom).\n\n"
+        ))
+    }
 
     match &g.next {
         Next::Done => {} // handled above
@@ -194,13 +196,12 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
             if lhes.len() > 5 {
                 res.push_str(" (here's the first five)");
             }
-            // TODO: There's a trailing space after the colon.
-            res.push_str(": \n");
+            res.push_str(":\n\n");
             for lh in lhes.iter().take(5) {
-                let (fam, cell) = puz.lane_map().split_family(lh.lane);
+                let (fam, lane) = puz.lane_map().split_family(lh.lane);
                 // This would be badly wrong for triddlers!
                 let fam_str = if fam == FamilyIdx(0) { "R" } else { "C" };
-                let idx = cell + 1;
+                let idx = lane + 1;
                 let pl = if lh.resolves.len() == 1 { "" } else { "s" };
                 res.push_str(&format!(
                     " * >!{fam_str}{idx}, which can resolve {} cell{pl}!<\n",
@@ -214,7 +215,7 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
             } else {
                 res.push_str(&format!("There are at least {} cells ", cons.len()));
             }
-            res.push_str("that can be guessed and disproven:\n");
+            res.push_str("that can be guessed and disproven:\n\n");
             for (cell, color) in cons {
                 let loc = K::coord_label(puz.geometry.coord(*cell));
                 let color_str = if *color == BACKGROUND {
@@ -222,26 +223,29 @@ pub fn guidance_to_message<C: Clue, K: GridKind>(
                 } else {
                     "colored-in" // currently, we don't handle multicolor puzzles
                 };
-                // TODO: "can't be colored-in" pretty much gives the cell away. Wording like "try supposing
-                //   R3C4 is filled in, and see what breaks" would teach the technique, with a softer spoiler.
                 res.push_str(&format!(" * >!{loc} can't be {color_str}!<\n"));
             }
         }
         Next::Stuck(_) => {
-            // TODO: For `Ambiguous`, it may help more to say there's more than one solution, so the person
-            //   has to pick one; and for `OutOfTime`, that I couldn't tell where to go.
             if g.solved == Solved::Search {
                 res.push_str("This puzzle probably requires nested guesses at this point. It's quite hard!\n");
             } else {
                 res.push_str("There's also no obvious way to make progress.\n");
             }
         }
-        Next::Broken(_) => {
-            // TODO: Name the lanes that are broken (the field is unused, and the compiler warns about it).
-            // This can happen if the puzzle is unsolved
-            res.push_str("The current grid is already contradictory.\n");
+        Next::Broken(bad_lanes) => {
+            res.push_str("The current grid is already contradictory in the following lanes:\n\n");
+            for bad_lane in bad_lanes.iter().take(5) {
+                let (fam, cell) = puz.lane_map().split_family(*bad_lane);
+                // This would be badly wrong for triddlers!
+                let fam_str = if fam == FamilyIdx(0) { "R" } else { "C" };
+                let idx = cell + 1;
+                res.push_str(&format!(" * {fam_str}{idx}\n"));
+            }
         }
     }
+
+    res.push_str("\n\n^(This is a bot, operated by [u/paul_stansifer](https://www.reddit.com/user/paul_stansifer/))");
 
     res
 }

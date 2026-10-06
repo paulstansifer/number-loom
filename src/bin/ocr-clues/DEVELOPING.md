@@ -1,5 +1,7 @@
 # `ocr-clues`
 
+This part was almost entirely LLM-developed, with the exception of the actual text generation in `guidance.rs`.
+
 `ocr-clues` extracts the clues from a screenshot or photo of a (black-and-white, square) puzzle:
 
 ```
