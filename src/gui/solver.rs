@@ -153,7 +153,7 @@ impl SolveGui {
             },
             render_style: UserSettings::get(consts::SOLVER_RENDER_STYLE)
                 .and_then(|name| RenderStyle::from_setting_name(&name))
-                .unwrap_or(RenderStyle::Experimental),
+                .unwrap_or(RenderStyle::TraditionalXes),
             last_inferred_version: u32::MAX,
             hovered_cell: None,
             replay: None,
