@@ -90,7 +90,8 @@ target/release/reddit-bot bot/          # --once to check once and stop
 ```
 
 `--listing` reads a listing saved from `/r/nonograms/new.json` instead, for trying it out without
-credentials. The first time it runs, every post in the listing it gets (the newest 25) counts as
+credentials `--one-image` reads a single picture (a file or a URL), prints the reply it
+would get (if any), and keeps the rest in a directory named after the picture. The first time it runs, every post in the listing it gets (the newest 25) counts as
 new.
 
 # The `WOVEN` format

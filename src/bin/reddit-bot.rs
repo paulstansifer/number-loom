@@ -10,8 +10,8 @@
 //!
 //! Reddit doesn't answer API requests without OAuth, so it needs the id and secret of an app
 //! registered at <https://www.reddit.com/prefs/apps>. Since it only reads, it logs in as the app
-//! itself, not as any user. (`--listing` reads a saved listing instead, for trying it out
-//! without credentials.)
+//! itself, not as any user. (`--listing` reads a saved listing instead, and `--one-image` reads
+//! just one picture, for trying it out without credentials.)
 
 use std::collections::HashSet;
 use std::fs;
@@ -53,6 +53,11 @@ struct Args {
     /// been seen or not, instead of asking Reddit
     #[arg(long)]
     listing: Option<PathBuf>,
+
+    /// Read just this picture (a file, or a URL), and print the reply it would get, instead of
+    /// asking Reddit. Everything else goes in a directory named after it, in `dir`.
+    #[arg(long)]
+    one_image: Option<String>,
 }
 
 const USER_AGENT: &str = concat!(
@@ -239,14 +244,8 @@ impl Outcome {
     }
 }
 
-/// Download the picture at `url`, and read it, keeping everything in `dir`. Returns where the
-/// picture went.
-fn read_picture(
-    http: &Client,
-    ocr_clues: &Path,
-    url: &str,
-    dir: &Path,
-) -> anyhow::Result<(PathBuf, Outcome)> {
+/// Download the picture at `url` into `dir`. Returns where it went.
+fn download(http: &Client, url: &str, dir: &Path) -> anyhow::Result<PathBuf> {
     let ext = picture_extension(url).unwrap_or_else(|| "png".into());
     let picture = dir.join(format!("picture.{ext}"));
     let bytes = http
@@ -256,13 +255,17 @@ fn read_picture(
         .with_context(|| format!("downloading {url}"))?
         .bytes()?;
     fs::write(&picture, bytes)?;
+    Ok(picture)
+}
 
+/// Read `picture`, keeping everything in `dir`.
+fn read_picture(ocr_clues: &Path, picture: &Path, dir: &Path) -> anyhow::Result<Outcome> {
     let puzzle_path = dir.join("puzzle.xml");
     let message_path = dir.join("message.md");
     // (So a failed rerun can't leave an old one behind.)
     let _ = fs::remove_file(&message_path);
     let output = Command::new(ocr_clues)
-        .arg(&picture)
+        .arg(picture)
         .arg(&puzzle_path)
         .arg("--debug-image")
         .arg(dir.join("debug.png"))
@@ -274,10 +277,10 @@ fn read_picture(
     fs::write(dir.join("ocr.txt"), &report)?;
     if !output.status.success() {
         let why = report.lines().last().unwrap_or("").to_string();
-        return Ok((picture, Outcome::Unreadable(why)));
+        return Ok(Outcome::Unreadable(why));
     }
     let message = fs::read_to_string(&message_path).ok();
-    Ok((picture, check(&puzzle_path, message)?))
+    check(&puzzle_path, message)
 }
 
 /// Whether the clues `ocr-clues` wrote to `puzzle_path` make sense.
@@ -345,7 +348,8 @@ fn handle(http: &Client, ocr_clues: &Path, post: &Value, root: &Path) -> anyhow:
     fs::create_dir_all(&dir).with_context(|| format!("creating {dir:?}"))?;
     fs::write(dir.join("post.json"), serde_json::to_string_pretty(post)?)?;
 
-    let (picture, outcome) = read_picture(http, ocr_clues, &url, &dir)?;
+    let picture = download(http, &url, &dir)?;
+    let outcome = read_picture(ocr_clues, &picture, &dir)?;
     let status = outcome.status();
     eprintln!("    {status}");
     let picture = fs::canonicalize(&picture).unwrap_or(picture);
@@ -361,6 +365,37 @@ fn handle(http: &Client, ocr_clues: &Path, post: &Value, root: &Path) -> anyhow:
         reply(post, &dir, &text)?;
     } else {
         // (So an earlier run's draft doesn't look like this one's.)
+        let _ = fs::remove_file(dir.join("reply.md"));
+    }
+    Ok(())
+}
+
+/// Read one picture (a file, or a URL), keeping everything in a directory named after it in
+/// `root`, and print the reply it would get, if any.
+fn one_image(http: &Client, ocr_clues: &Path, source: &str, root: &Path) -> anyhow::Result<()> {
+    let is_url = source.starts_with("http://") || source.starts_with("https://");
+    let path = if is_url {
+        source.split(['?', '#']).next().unwrap_or(source)
+    } else {
+        source
+    };
+    let name = Path::new(path)
+        .file_stem()
+        .with_context(|| format!("no name for a directory in {source:?}"))?;
+    let dir = root.join(name);
+    fs::create_dir_all(&dir).with_context(|| format!("creating {dir:?}"))?;
+
+    let picture = if is_url {
+        download(http, source, &dir)?
+    } else {
+        PathBuf::from(source)
+    };
+    let outcome = read_picture(ocr_clues, &picture, &dir)?;
+    eprintln!("{}", outcome.status());
+    if let Some(text) = draft_reply(&outcome) {
+        fs::write(dir.join("reply.md"), &text)?;
+        println!("{text}");
+    } else {
         let _ = fs::remove_file(dir.join("reply.md"));
     }
     Ok(())
@@ -416,6 +451,9 @@ fn main() -> anyhow::Result<()> {
         .timeout(Duration::from_secs(60))
         .build()?;
 
+    if let Some(source) = &args.one_image {
+        return one_image(&http, &ocr_clues, source, &args.dir);
+    }
     if let Some(path) = &args.listing {
         let text = fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
         let listing: Value = serde_json::from_str(&text)?;
