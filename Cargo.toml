@@ -9,18 +9,6 @@ name = "bench-pbnsolve"
 path = "src/bin/bench-pbnsolve.rs"
 required-features = ["bench-pbnsolve"]
 
-# Reads clues out of a picture of a puzzle. Also behind a feature, since the OCR engine is heavy.
-[[bin]]
-name = "ocr-clues"
-path = "src/ocr-clue-bot/main.rs"
-required-features = ["ocr"]
-
-# Runs `ocr-clues` on pictures posted to r/nonograms.
-[[bin]]
-name = "reddit-bot"
-path = "src/bin/reddit-bot.rs"
-required-features = ["ocr"]
-
 [package]
 name = "number-loom"
 description = "Multipurpose GUI and CLI tool for constructing nonograms"
