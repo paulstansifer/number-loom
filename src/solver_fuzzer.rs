@@ -8,6 +8,7 @@ mod tests {
         BACKGROUND, Clue, ClueStyle, Color, ColorInfo, Corner, Puzzle, Solution,
     };
     use number_loom::solve::grid_solve::{SolveOptions, solve};
+    use number_loom::solve::human_line_solver::{Technique, rule_out_finished_colors};
     use number_loom::solve::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
     use rand::{Rng, SeedableRng};
 
@@ -58,6 +59,28 @@ mod tests {
             partial_solution.push(cell);
         }
         partial_solution
+    }
+
+    /// Most of the line is solved already, which gives techniques that look at what's been
+    /// painted something to look at.
+    fn generate_mostly_solved_partial_solution(
+        solution_line: &[Color],
+        num_colors: u8,
+    ) -> Vec<Cell> {
+        let mut rng = rand::thread_rng();
+        let solved_fraction = rng.gen_range(0.3..0.9);
+
+        generate_consistent_partial_solution(solution_line, num_colors)
+            .into_iter()
+            .zip(solution_line)
+            .map(|(cell, &actual_color)| {
+                if rng.gen_bool(solved_fraction) {
+                    Cell::from_color(actual_color)
+                } else {
+                    cell
+                }
+            })
+            .collect()
     }
 
     fn dummy_color(color: Color) -> (Color, ColorInfo) {
@@ -160,6 +183,46 @@ mod tests {
                 );
             }
         }
+
+        let mut human: Vec<(&str, Box<dyn Fn(&mut [Cell]) -> anyhow::Result<()>>)> = vec![(
+            "rule_out_finished_colors",
+            Box::new(|lane| rule_out_finished_colors(clues, lane).map(|_| ())),
+        )];
+        for technique in Technique::all() {
+            human.push((
+                technique.name(),
+                Box::new(|lane| technique.apply(clues, lane).map(|_| ())),
+            ));
+        }
+
+        for (name, apply) in human {
+            let mut human_partial_solution = partial.clone();
+            match apply(&mut human_partial_solution) {
+                Ok(_) => {
+                    for j in 0..line.len() {
+                        if !human_partial_solution[j].can_be(line[j]) {
+                            panic!(
+                                "Fuzz case {case}: {name} inconsistent at {j}.  Clues: {:?}. Orig: {line:?}, Partial: {partial:?}, Partial solution after {name}: {:?}",
+                                clues, human_partial_solution
+                            );
+                        }
+                        // Nothing gets to know more than `exhaust_line` does.
+                        if !sc_partial_solution[j].is_within(human_partial_solution[j]) {
+                            panic!(
+                                "Fuzz case {case}: {name} outdid exhaust_line at {j}.  Clues: {:?}. Orig: {line:?}, Partial: {partial:?}, Partial solution after {name}: {:?}",
+                                clues, human_partial_solution
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    panic!(
+                        "Fuzz case {case}: {name} error: {}. Orig: {line:?}, Partial: {partial:?}",
+                        e
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -175,22 +238,24 @@ mod tests {
                 let line_length = rng.gen_range(1..=max_line_length.min((i + 1) * 2));
                 let solution_line = generate_random_line(line_length, max_colors);
 
-                let original_partial_solution =
-                    generate_consistent_partial_solution(&solution_line, max_colors);
+                for original_partial_solution in [
+                    generate_consistent_partial_solution(&solution_line, max_colors),
+                    generate_mostly_solved_partial_solution(&solution_line, max_colors),
+                ] {
+                    validate_solver(
+                        i,
+                        solution_line.clone(),
+                        original_partial_solution.clone(),
+                        solution_to_puzzle,
+                    );
 
-                validate_solver(
-                    i,
-                    solution_line.clone(),
-                    original_partial_solution.clone(),
-                    solution_to_puzzle,
-                );
-
-                validate_solver(
-                    i,
-                    solution_line,
-                    original_partial_solution,
-                    solution_to_triano_puzzle,
-                );
+                    validate_solver(
+                        i,
+                        solution_line.clone(),
+                        original_partial_solution,
+                        solution_to_triano_puzzle,
+                    );
+                }
             }
         }
     }

@@ -271,7 +271,7 @@ pub struct ScrubReport {
     pub affected_cells: Vec<usize>,
 }
 
-fn learn_cell(
+pub fn learn_cell(
     color: Color,
     lane: &mut [Cell],
     idx: usize,
@@ -283,7 +283,7 @@ fn learn_cell(
     Ok(())
 }
 
-fn learn_cell_intersect(
+pub fn learn_cell_intersect(
     possibilities: Cell,
     lane: &mut [Cell],
     idx: usize,
@@ -295,7 +295,7 @@ fn learn_cell_intersect(
     Ok(())
 }
 
-fn learn_cell_not(
+pub fn learn_cell_not(
     color: Color,
     lane: &mut [Cell],
     idx: usize,
@@ -513,13 +513,14 @@ fn clue_is_fixed<C: Clue>(
         && (left_extent..=right_extent).all(|i| lane[i].is_known())
 }
 
-/// Returns indices of clues that are fully located by skim logic
-pub fn skim_to_find_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<usize> {
+/// Where each clue starts, for the clues that are fully located by skim logic (the rest are
+/// `None`).
+pub fn skim_to_place_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<Option<usize>> {
     let (Ok(left_packed_right_extents), Ok(right_packed_left_extents)) = (
         packed_extents(clues, lane, false),
         packed_extents(clues, lane, true),
     ) else {
-        return vec![];
+        return vec![None; clues.len()];
     };
 
     let mut fixed_clues = vec![];
@@ -528,12 +529,20 @@ pub fn skim_to_find_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<usiz
         let left_extent = right_packed_left_extents[clue_idx];
         let right_extent = left_packed_right_extents[clue_idx];
 
-        if clue_is_fixed(clue, left_extent, right_extent, lane) {
-            fixed_clues.push(clue_idx);
-        }
+        fixed_clues
+            .push(clue_is_fixed(clue, left_extent, right_extent, lane).then_some(left_extent));
     }
 
     fixed_clues
+}
+
+/// Returns indices of clues that are fully located by skim logic
+pub fn skim_to_find_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<usize> {
+    skim_to_place_fixed_clues(clues, lane)
+        .iter()
+        .enumerate()
+        .filter_map(|(clue_idx, start)| start.map(|_| clue_idx))
+        .collect()
 }
 
 /// Packs all clues to their leftmost and rightmost possible locations. If any squares are

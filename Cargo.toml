@@ -9,6 +9,12 @@ name = "bench-pbnsolve"
 path = "src/bin/bench-pbnsolve.rs"
 required-features = ["bench-pbnsolve"]
 
+# This is used to evaluate different "human-like" solve techniques, also hidden.
+[[bin]]
+name = "eval-techniques"
+path = "src/bin/eval-techniques.rs"
+required-features = ["eval-techniques"]
+
 [package]
 name = "number-loom"
 description = "Multipurpose GUI and CLI tool for constructing nonograms"
@@ -25,6 +31,7 @@ exclude = ["examples/"]
 # (See the [[bin]] section)
 [features]
 bench-pbnsolve = []
+eval-techniques = []
 ocr = ["dep:ocrs", "dep:rten", "dep:rten-tensor", "dep:rten-imageproc"]
 
 [dependencies]
