@@ -11,6 +11,7 @@ use crate::{
         BACKGROUND, Clue, Color, ColorInfo, DynSolution, PartialSolution, Puzzle, Solution,
         UNSOLVED,
     },
+    solve::human_line_solver::{Technique, rule_out_finished_colors},
     solve::line_solve::{
         Cell, ClueSummary, ModeMap, ScrubReport, SolveMode, count_lane, exhaust_line, score_counts,
         skim_line, skim_to_find_fixed_clues, verify_line,
@@ -46,7 +47,31 @@ impl Default for SolveOptions {
     }
 }
 
-pub type LineStatus = anyhow::Result<Option<SolveMode>>;
+/// How hard it is to get anywhere on a line: what the easiest technique that learns something
+/// about it is.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum LineDifficulty {
+    /// One of the techniques in this tranche of `Technique::tranches()` will do.
+    Tranche(usize),
+    Skim,
+    Scrub,
+}
+
+impl LineDifficulty {
+    /// A grade: "A" for the easiest tranche, on up through the tranches, to skimming, and then
+    /// to scrubbing.
+    pub fn letter(self) -> char {
+        let tranches = Technique::tranches().len();
+        let rank = match self {
+            LineDifficulty::Tranche(tranche) => tranche,
+            LineDifficulty::Skim => tranches,
+            LineDifficulty::Scrub => tranches + 1,
+        };
+        (b'A' + rank as u8) as char
+    }
+}
+
+pub type LineStatus = anyhow::Result<Option<LineDifficulty>>;
 
 /// This trait exists because human users want explanations, but the constraint propagator wants
 /// to know which line failed.
@@ -978,18 +1003,36 @@ fn analyze_line<C: Clue>(clues: &[C], lane: &[Cell]) -> LineStatus {
             .any(|(orig, new)| !orig.is_known() && new.is_known())
     };
 
+    // Running out of clues is as easy as it gets
+    let mut finished_lane = lane.to_vec();
+    rule_out_finished_colors(clues, &mut finished_lane)?;
+    if any_newly_known(lane, &finished_lane) {
+        return Ok(Some(LineDifficulty::Tranche(0)));
+    }
+
+    // Try the things that are easier than skimming
+    for (tranche, techniques) in Technique::tranches().iter().enumerate() {
+        for technique in *techniques {
+            let mut human_lane = lane.to_vec();
+            technique.apply(clues, &mut human_lane)?;
+            if any_newly_known(lane, &human_lane) {
+                return Ok(Some(LineDifficulty::Tranche(tranche)));
+            }
+        }
+    }
+
     // Try skimming
     let mut skim_lane = lane.to_vec();
     skim_line(clues, &mut skim_lane)?;
     if any_newly_known(lane, &skim_lane) {
-        return Ok(Some(SolveMode::Skim));
+        return Ok(Some(LineDifficulty::Skim));
     }
 
     // Try scrubbing
     let mut scrub_lane = lane.to_vec();
     exhaust_line(clues, &mut scrub_lane)?;
     if any_newly_known(lane, &scrub_lane) {
-        return Ok(Some(SolveMode::Scrub));
+        return Ok(Some(LineDifficulty::Scrub));
     }
 
     Ok(None)
@@ -1140,10 +1183,64 @@ mod tests {
 
         assert_eq!(
             row_tech.iter().map(|r| r.as_ref().ok()).collect::<Vec<_>>(),
-            vec![Some(&Some(SolveMode::Skim)), Some(&Some(SolveMode::Skim))]
+            vec![
+                Some(&Some(LineDifficulty::Tranche(0))),
+                Some(&Some(LineDifficulty::Tranche(0)))
+            ]
         );
         assert!(col_tech[LaneIdx(0)].as_ref().is_ok());
         assert!(col_tech[LaneIdx(1)].is_err());
+    }
+
+    #[test]
+    fn test_line_difficulty() {
+        // `x` is background, `#` is foreground, and `?` could be either.
+        let grade = |clues: &[u16], lane: &str| {
+            let clues: Vec<Nono> = clues
+                .iter()
+                .map(|&count| Nono {
+                    color: Color(1),
+                    count,
+                })
+                .collect();
+            let lane: Vec<Cell> = lane
+                .chars()
+                .map(|c| match c {
+                    'x' => Cell::from_color(BACKGROUND),
+                    '#' => Cell::from_color(Color(1)),
+                    _ => {
+                        let mut unknown = Cell::from_color(BACKGROUND);
+                        unknown.actually_could_be(Color(1));
+                        unknown
+                    }
+                })
+                .collect();
+            analyze_line(&clues, &lane).map(|difficulty| difficulty.map(LineDifficulty::letter))
+        };
+
+        // Nothing left to paint:
+        assert_eq!(grade(&[1, 1], "?#??#?").unwrap(), Some('A'));
+        // Solved in from the edge:
+        assert_eq!(grade(&[4], "xx#?????").unwrap(), Some('A'));
+        // A block as long as the longest clue:
+        assert_eq!(
+            grade(&[1, 1], "??x#?????x?x??????????xx?").unwrap(),
+            Some('B')
+        );
+        // A block that has to be the 5:
+        assert_eq!(grade(&[1, 1, 5], "??????##?x????").unwrap(), Some('C'));
+        // A clue that's been pinned down, but not closed off:
+        assert_eq!(
+            grade(&[6, 4, 1], "x?#####?x####??x?xxx").unwrap(),
+            Some('D')
+        );
+        assert_eq!(
+            grade(&[2, 2, 2, 1, 1, 1], "????????xx?#?x#??xx?#??").unwrap(),
+            Some('E')
+        );
+
+        assert_eq!(grade(&[1], "????").unwrap(), None);
+        assert!(grade(&[1], "#?#?").is_err());
     }
 
     #[test]

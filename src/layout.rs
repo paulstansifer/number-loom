@@ -273,7 +273,7 @@ pub const CLUE_BOX_SHORT: f32 = 0.95;
 pub const CLUE_GAP: f32 = 0.18;
 /// Breathing room between the grid and the nearest clue: the strip the solve view's per-line
 /// indicator lives in. As wide as a clue box, so it can hold a bare (box-less) number the size of
-/// a clue's own label; that also leaves the analysis mark (skim dot, scrub diamond, error cross —
+/// a clue's own label; that also leaves the analysis mark (a letter grade, or an error cross —
 /// radius `ANALYSIS_MARK_RADIUS`) room to sit at the strip's midpoint without touching either the
 /// grid or the first clue box.
 pub const CLUE_PAD: f32 = 0.9;

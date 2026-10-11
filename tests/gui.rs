@@ -1281,6 +1281,73 @@ mod tests {
         assert!(clue_counts.iter().sum::<usize>() > 0);
     }
 
+    /// "Analyze Lines" writes a letter grade in the gutter of each line that can be progressed:
+    /// one per line the analysis found something for, and none anywhere else.
+    #[test]
+    fn test_analyze_lines_draws_grades() {
+        fn painted_text(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => into.push(text.galley.text().to_string()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        painted_text(shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let grades_drawn = |harness: &Harness<NonogramGui>| -> Vec<String> {
+            let mut texts = vec![];
+            for clipped in &harness.output().shapes {
+                painted_text(&clipped.shape, &mut texts);
+            }
+            // (Nothing else in the solve view is labelled with a single capital letter.)
+            texts.retain(|text| ["A", "B", "C", "D", "E"].contains(&text.as_str()));
+            texts.sort();
+            texts
+        };
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+
+        // Set directly rather than clicking the checkbox, which would persist the setting into
+        // the real user preferences.
+        harness
+            .state_mut()
+            .solve_gui
+            .as_mut()
+            .unwrap()
+            .analyze_lines = true;
+        harness.run();
+
+        let mut grades_found: Vec<String> = harness
+            .state()
+            .solve_gui
+            .as_ref()
+            .unwrap()
+            .line_analysis
+            .val
+            .as_ref()
+            .expect("the aid is on, so it should have run")
+            .iter()
+            .filter_map(|status| Some(status.as_ref().ok()?.as_ref()?.letter().to_string()))
+            .collect();
+        grades_found.sort();
+
+        // Nothing is painted yet, so the only way to get anywhere is from the clues alone, and
+        // the easiest techniques can do that.
+        assert!(!grades_found.is_empty());
+        assert!(grades_found.iter().all(|grade| grade == "A"));
+        assert_eq!(grades_drawn(&harness), grades_found);
+    }
+
     #[test]
     fn test_solve_replay() {
         use number_loom::gui::{Action, ActionMood};

@@ -86,10 +86,14 @@ look for the next technique to write. A new technique only needs an entry in `Te
 gets it fuzzed (by `solver_fuzzer.rs`), and evaluated both alone and as part of `human*` (all of
 the techniques in `human_line_solver.rs`, taking turns until they stop getting anywhere).
 
-`--tranches` groups techniques by difficulty (easiest first, like
-`contig-skim/done-by-size,extend/find-a-home,cannot-merge`; `--help` shows the default), and 
-reports how far each tranche gets on top of the easier ones, and how much it would miss without 
-each of its techniques.
+`Technique::tranches()` groups the techniques by difficulty, easiest first. The solve view's
+"Analyze Lines" grades each line by the easiest thing that gets anywhere on it: "A" for the first
+tranche, and so on through the tranches, then one more letter for a skim, and another for a scrub
+(`LineDifficulty` in `grid_solve.rs`).
+
+`--tranches` tries out a different grouping (like `contig-skim/done-by-size,extend/find-a-home`),
+and reports how far each tranche gets on top of the easier ones, and how much it would miss
+without each of its techniques.
 
 `rule_out_finished_colors` is a "freebie" that's applied before anything is measured.
 

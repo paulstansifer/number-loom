@@ -38,6 +38,20 @@ impl Technique {
         ]
     }
 
+    /// Techniques grouped by how hard they are to do by eye, easiest first. All of them are
+    /// easier than a whole skim. (A technique that isn't here hasn't been sorted yet.)
+    pub fn tranches() -> &'static [&'static [Technique]] {
+        &[
+            &[Technique::ContigSkim],
+            &[Technique::DoneBySize, Technique::Extend],
+            &[
+                Technique::FindAHome,
+                Technique::CannotMerge,
+                Technique::LongGetLonger,
+            ],
+        ]
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Technique::BackgroundSkim => "bg-skim",

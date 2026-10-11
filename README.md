@@ -113,7 +113,7 @@ Shift-click to delete annotations, or add a single-cell annotation.
 
 There's also count of the current contiguous line (in each direction) in the "clue gutter", and a widget (a "rosette") that breaks it down by direction from the cursor. There are also some toggleable assistance features (which can either be invoked immediately or automatically after each change):
 
-* Indicators on the clue gutter of lines that can be progressed (circle for "skim", diamond for "scrub")
+* Indicators on the clue gutter of lines that can be progressed, graded by how hard it is to do: "A" through "C" for things that are easy to spot, "D" for "skim", and "E" for "scrub"
 * Inference of which clues have been "finished" (or you can manually click on a clue to toggle it)
 * Detection of errors
 * Inference of "obvious" background squares

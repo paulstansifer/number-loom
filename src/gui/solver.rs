@@ -710,10 +710,8 @@ pub struct GutterMarks<'a> {
     pub hover: Option<BlockHint>,
 }
 
-use crate::solve::line_solve::SolveMode;
-
-/// The little mark showing which technique will crack a line: a dot for skimming, a diamond for
-/// scrubbing, a red cross for a contradiction.
+/// The little mark showing how hard a line is to crack: a letter grade (see
+/// `LineDifficulty::letter`), or a red cross for a contradiction.
 pub(crate) fn draw_analysis_mark(
     painter: &egui::Painter,
     center: Pos2,
@@ -729,21 +727,16 @@ pub(crate) fn draw_analysis_mark(
     };
 
     match status {
-        Ok(Some(SolveMode::Skim)) => {
-            painter.circle_filled(center, radius, color);
-        }
-        Ok(Some(SolveMode::Scrub)) => {
-            let points = vec![
-                center + Vec2::new(0.0, -radius),
-                center + Vec2::new(radius, 0.0),
-                center + Vec2::new(0.0, radius),
-                center + Vec2::new(-radius, 0.0),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                points,
+        Ok(Some(difficulty)) => {
+            // Capital letters fill about 0.7 of a font's height, so this is about as tall as
+            // the cross.
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                difficulty.letter(),
+                egui::FontId::proportional(radius * 2.0 / 0.7),
                 color,
-                egui::Stroke::NONE,
-            ));
+            );
         }
         Err(_) => {
             let stroke = egui::Stroke::new((radius * 0.4).max(1.0), Color32::RED);

@@ -59,11 +59,20 @@ struct Args {
     examples: usize,
 
     /// Techniques grouped by difficulty, easiest first: `/` between tranches, `,` inside them
-    #[arg(
-        long,
-        default_value = "contig-skim/done-by-size,extend/find-a-home,cannot-merge,long-get-longer"
-    )]
+    #[arg(long, default_value_t = default_tranches())]
     tranches: String,
+}
+
+/// The tranches that the GUI's line analysis grades lines by.
+fn default_tranches() -> String {
+    let tranches: Vec<String> = Technique::tranches()
+        .iter()
+        .map(|tranche| {
+            let names: Vec<&str> = tranche.iter().map(|technique| technique.name()).collect();
+            names.join(",")
+        })
+        .collect();
+    tranches.join("/")
 }
 
 type LineSolver = Box<dyn Fn(&[Nono], &mut [Cell]) -> anyhow::Result<()>>;
