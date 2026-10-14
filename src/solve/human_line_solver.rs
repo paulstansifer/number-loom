@@ -22,6 +22,9 @@ pub enum Technique {
     FindAHome,
     CannotMerge,
     LongGetLonger,
+    GapTooSmall,
+    CannotReach,
+    HopUp,
 }
 
 impl Technique {
@@ -35,6 +38,9 @@ impl Technique {
             Technique::FindAHome,
             Technique::CannotMerge,
             Technique::LongGetLonger,
+            Technique::GapTooSmall,
+            Technique::CannotReach,
+            Technique::HopUp,
         ]
     }
 
@@ -42,12 +48,17 @@ impl Technique {
     /// easier than a whole skim. (A technique that isn't here hasn't been sorted yet.)
     pub fn tranches() -> &'static [&'static [Technique]] {
         &[
-            &[Technique::ContigSkim],
+            &[
+                Technique::ContigSkim,
+                Technique::GapTooSmall,
+                Technique::CannotReach,
+            ],
             &[Technique::DoneBySize, Technique::Extend],
             &[
                 Technique::FindAHome,
                 Technique::CannotMerge,
                 Technique::LongGetLonger,
+                Technique::HopUp,
             ],
         ]
     }
@@ -62,6 +73,9 @@ impl Technique {
             Technique::FindAHome => "find-a-home",
             Technique::CannotMerge => "cannot-merge",
             Technique::LongGetLonger => "long-get-longer",
+            Technique::GapTooSmall => "gap-too-small",
+            Technique::CannotReach => "cannot-reach",
+            Technique::HopUp => "hop-up",
         }
     }
 
@@ -75,6 +89,9 @@ impl Technique {
             Technique::FindAHome => find_a_home_line(clues, lane),
             Technique::CannotMerge => cannot_merge_line(clues, lane),
             Technique::LongGetLonger => long_get_longer_line(clues, lane),
+            Technique::GapTooSmall => gap_too_small_line(clues, lane),
+            Technique::CannotReach => cannot_reach_line(clues, lane),
+            Technique::HopUp => hop_up_line(clues, lane),
         }
     }
 }
@@ -147,6 +164,90 @@ pub fn extend_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<Sc
     Ok(ScrubReport { affected_cells })
 }
 
+/// A lane and its clues, counted from one edge or the other, so that whatever works from the
+/// start of a lane works from the end of it, too.
+struct FromEdge<'a, C> {
+    clues: &'a [C],
+    len: usize,
+    reversed: bool,
+}
+
+impl<C: Clue> FromEdge<'_, C> {
+    fn lane_idx(&self, idx: usize) -> usize {
+        if self.reversed {
+            self.len - 1 - idx
+        } else {
+            idx
+        }
+    }
+
+    fn clue(&self, idx: usize) -> &C {
+        if self.reversed {
+            &self.clues[self.clues.len() - 1 - idx]
+        } else {
+            &self.clues[idx]
+        }
+    }
+
+    fn clue_color_at(&self, clue: &C, idx: usize) -> Color {
+        if self.reversed {
+            clue.color_at(clue.len() - 1 - idx)
+        } else {
+            clue.color_at(idx)
+        }
+    }
+
+    /// Whether two clues that are next to each other need background between them.
+    fn must_be_separated(&self, nearer: &C, farther: &C) -> bool {
+        if self.reversed {
+            farther.must_be_separated_from(nearer)
+        } else {
+            nearer.must_be_separated_from(farther)
+        }
+    }
+
+    /// Where the unsolved part of the lane starts, and which clue is the first one in it. Cells
+    /// that are solved all the way from the edge, up to the last background one, are the solved
+    /// part, and they use up the clues that they account for.
+    fn unsolved_part(&self, lane: &[Cell]) -> anyhow::Result<(usize, usize)> {
+        let mut start = 0;
+        let mut first_clue_idx = 0;
+
+        let mut clue_idx = 0;
+        let mut idx_in_clue = None; // in between clues
+        for idx in 0..self.len {
+            let Some(color) = lane[self.lane_idx(idx)].known_or() else {
+                break;
+            };
+            if color == BACKGROUND {
+                if idx_in_clue.is_some() {
+                    bail!("background in the middle of a clue");
+                }
+                start = idx + 1;
+                first_clue_idx = clue_idx;
+                continue;
+            }
+            if clue_idx >= self.clues.len() {
+                bail!("foreground colors after last clue");
+            }
+
+            let clue = self.clue(clue_idx);
+            let really_idx_in_clue = idx_in_clue.unwrap_or(0);
+            if color != self.clue_color_at(clue, really_idx_in_clue) {
+                bail!("incorrect color");
+            }
+            if really_idx_in_clue + 1 >= clue.len() {
+                idx_in_clue = None;
+                clue_idx += 1;
+            } else {
+                idx_in_clue = Some(really_idx_in_clue + 1);
+            }
+        }
+
+        Ok((start, first_clue_idx))
+    }
+}
+
 fn extend_from_edge<C: Clue>(
     clues: &[C],
     lane: &mut [Cell],
@@ -154,65 +255,19 @@ fn extend_from_edge<C: Clue>(
     affected: &mut Vec<usize>,
 ) -> anyhow::Result<()> {
     // Everything below counts from the edge we're working from.
-    let len = lane.len();
-    let lane_idx = |idx: usize| -> usize { if reversed { len - 1 - idx } else { idx } };
-    let clue_at = |idx: usize| -> &C {
-        if reversed {
-            &clues[clues.len() - 1 - idx]
-        } else {
-            &clues[idx]
-        }
-    };
-    let clue_color_at = |clue: &C, idx: usize| -> Color {
-        if reversed {
-            clue.color_at(clue.len() - 1 - idx)
-        } else {
-            clue.color_at(idx)
-        }
+    let edge = FromEdge {
+        clues,
+        len: lane.len(),
+        reversed,
     };
 
-    // -- Find the edge of the unsolved part, and the first clue that isn't used up --
-
-    let mut start = 0;
-    let mut first_clue_idx = 0;
-
-    let mut clue_idx = 0;
-    let mut idx_in_clue = None; // in between clues
-    for idx in 0..len {
-        let Some(color) = lane[lane_idx(idx)].known_or() else {
-            break;
-        };
-        if color == BACKGROUND {
-            if idx_in_clue.is_some() {
-                bail!("background in the middle of a clue");
-            }
-            start = idx + 1;
-            first_clue_idx = clue_idx;
-            continue;
-        }
-        if clue_idx >= clues.len() {
-            bail!("foreground colors after last clue");
-        }
-
-        let clue = clue_at(clue_idx);
-        let really_idx_in_clue = idx_in_clue.unwrap_or(0);
-        if color != clue_color_at(clue, really_idx_in_clue) {
-            bail!("incorrect color");
-        }
-        if really_idx_in_clue + 1 >= clue.len() {
-            idx_in_clue = None;
-            clue_idx += 1;
-        } else {
-            idx_in_clue = Some(really_idx_in_clue + 1);
-        }
-    }
-
+    let (start, first_clue_idx) = edge.unsolved_part(lane)?;
     if first_clue_idx >= clues.len() {
         return Ok(()); // Not our job to fill in the leftover background.
     }
-    let clue = clue_at(first_clue_idx);
-    if start + clue.len() > len {
-        if start == len {
+    let clue = edge.clue(first_clue_idx);
+    if start + clue.len() > edge.len {
+        if start == edge.len {
             bail!("some clues unused");
         }
         bail!("clue {clue:?} doesn't fit in the rest of the lane");
@@ -221,7 +276,7 @@ fn extend_from_edge<C: Clue>(
     // -- Is there a painted cell close enough to the edge? --
 
     let Some(first_painted) =
-        (0..clue.len()).find(|offset| !lane[lane_idx(start + offset)].can_be(BACKGROUND))
+        (0..clue.len()).find(|offset| !lane[edge.lane_idx(start + offset)].can_be(BACKGROUND))
     else {
         return Ok(());
     };
@@ -232,12 +287,98 @@ fn extend_from_edge<C: Clue>(
     for offset in first_painted..clue.len() {
         let mut clue_cell = Cell::new_impossible();
         for clue_start in 0..=first_painted {
-            clue_cell.actually_could_be(clue_color_at(clue, offset - clue_start));
+            clue_cell.actually_could_be(edge.clue_color_at(clue, offset - clue_start));
         }
-        learn_cell_intersect(clue_cell, lane, lane_idx(start + offset), affected)?;
+        learn_cell_intersect(clue_cell, lane, edge.lane_idx(start + offset), affected)?;
     }
 
     Ok(())
+}
+
+/// If the first clue started right at the edge, it would stop just short of the cell that's as
+/// far from the edge as the clue is long. So if that cell is painted, the clue would run into
+/// it and be too long. It must start later, which leaves the cell at the edge as background:
+/// with a 3 clue, `???#??` becomes `x??#??`.
+///
+/// (As for `extend_line`, "the edge" is wherever the unsolved part of the lane starts.)
+pub fn hop_up_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
+    let mut affected_cells = vec![];
+    hop_up_from_edge(clues, lane, false, &mut affected_cells)?;
+    hop_up_from_edge(clues, lane, true, &mut affected_cells)?;
+    Ok(ScrubReport { affected_cells })
+}
+
+fn hop_up_from_edge<C: Clue>(
+    clues: &[C],
+    lane: &mut [Cell],
+    reversed: bool,
+    affected: &mut Vec<usize>,
+) -> anyhow::Result<()> {
+    let edge = FromEdge {
+        clues,
+        len: lane.len(),
+        reversed,
+    };
+
+    let (start, first_clue_idx) = edge.unsolved_part(lane)?;
+    if first_clue_idx >= clues.len() {
+        return Ok(());
+    }
+    let clue = edge.clue(first_clue_idx);
+    let just_past = start + clue.len();
+    if clue.len() == 0 || just_past >= edge.len {
+        return Ok(());
+    }
+    let painted = lane[edge.lane_idx(just_past)];
+    if painted.can_be(BACKGROUND) {
+        return Ok(());
+    }
+
+    // A clue of another color can sit right up against this one, so the painted cell might be
+    // the start of that, instead.
+    if first_clue_idx + 1 < clues.len() {
+        let next_clue = edge.clue(first_clue_idx + 1);
+        if !edge.must_be_separated(clue, next_clue)
+            && painted.can_be(edge.clue_color_at(next_clue, 0))
+        {
+            return Ok(());
+        }
+    }
+
+    learn_cell(BACKGROUND, lane, edge.lane_idx(start), affected)
+}
+
+/// An empty stretch of the lane, with background (or an edge) at both ends, can't have anything
+/// in it if it's shorter than every clue that isn't fixed.
+pub fn gap_too_small_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
+    let mut affected_cells = vec![];
+
+    // (If every clue is fixed, no gap is big enough.)
+    let shortest = clues
+        .iter()
+        .zip(skim_to_place_fixed_clues(clues, lane))
+        .filter(|(_, fixed_at)| fixed_at.is_none())
+        .map(|(clue, _)| clue.len())
+        .min()
+        .unwrap_or(usize::MAX);
+
+    let mut gap_start = 0;
+    for idx in 0..=lane.len() {
+        if idx < lane.len() && !lane[idx].is_known_to_be(BACKGROUND) {
+            continue;
+        }
+        let gap = gap_start..idx;
+        gap_start = idx + 1;
+
+        let empty = gap.clone().all(|i| lane[i].can_be(BACKGROUND));
+        if empty && gap.len() < shortest {
+            for i in gap {
+                learn_cell(BACKGROUND, lane, i, &mut affected_cells)?;
+            }
+        }
+    }
+
+    Ok(ScrubReport { affected_cells })
 }
 
 /// A skim that only pays attention to what's been solved all the way out from an edge. Anything
@@ -553,6 +694,43 @@ pub fn cannot_merge_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Res
             || block_before + 1 + block_after > unfixed.longest(color).0;
         if too_long {
             learn_cell_not(color, lane, idx, &mut affected_cells)?;
+        }
+    }
+
+    Ok(ScrubReport { affected_cells })
+}
+
+/// When only one clue of a color isn't fixed, every painted cell of that color (outside of the
+/// fixed clues) is part of it. It's only so long, so anything that's too far from the farthest of
+/// them isn't that color. (With a 3 clue, `????#?????` becomes `xx??#??xxx`.)
+pub fn cannot_reach_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
+    let mut affected_cells = vec![];
+    let Some(unfixed) = Unfixed::find(clues, lane) else {
+        return Ok(ScrubReport { affected_cells });
+    };
+
+    for color in unfixed.colors() {
+        let mut of_color = unfixed.segments.iter().filter(|s| s.color == color);
+        let (Some(only), None) = (of_color.next(), of_color.next()) else {
+            continue;
+        };
+
+        let mut painted =
+            (0..lane.len()).filter(|i| !unfixed.fixed_cells[*i] && lane[*i].is_known_to_be(color));
+        let Some(first) = painted.next() else {
+            continue;
+        };
+        let last = painted.last().unwrap_or(first);
+        if last + 1 - first > only.len {
+            bail!("painted cells are too far apart to be one clue");
+        }
+
+        // It starts in time to cover `last`, and stops before it leaves `first` behind.
+        let reach = (last + 1).saturating_sub(only.len)..first + only.len;
+        for idx in 0..lane.len() {
+            if !reach.contains(&idx) && !unfixed.fixed_cells[idx] {
+                learn_cell_not(color, lane, idx, &mut affected_cells)?;
+            }
         }
     }
 
@@ -950,6 +1128,97 @@ mod tests {
         );
 
         assert!(long_get_longer_line(&n("#1 #4"), &mut bw("x##x????")).is_err());
+    }
+
+    #[test]
+    fn gap_too_small_test() {
+        assert_eq!(
+            test(Technique::GapTooSmall, n("#3"), bw("??x?????")),
+            bw("xxx?????")
+        );
+        // A gap that's just big enough stays:
+        assert_eq!(
+            test(Technique::GapTooSmall, n("#2 #3"), bw("?x????x??")),
+            bw("xx????x??")
+        );
+        // The 1 would fit, but it's fixed:
+        assert_eq!(
+            test(Technique::GapTooSmall, n("#1 #3"), bw("#x??x?????")),
+            bw("#xxxx?????")
+        );
+        // With every clue fixed, nothing fits anywhere:
+        assert_eq!(
+            test(Technique::GapTooSmall, n("#2"), bw("?x##x??")),
+            bw("xx##xxx")
+        );
+
+        // It has to be empty, with background at both ends:
+        assert_eq!(
+            test(Technique::GapTooSmall, n("#3 #3"), bw("?#x?????")),
+            bw("?#x?????")
+        );
+    }
+
+    #[test]
+    fn cannot_reach_test() {
+        assert_eq!(
+            test(Technique::CannotReach, n("#3"), bw("????#?????")),
+            bw("xx??#??xxx")
+        );
+        assert_eq!(
+            test(Technique::CannotReach, n("#3"), bw("???#?#????")),
+            bw("xxx#?#xxxx")
+        );
+        // Fixed clues don't count:
+        assert_eq!(
+            test(Technique::CannotReach, n("#1 #3"), bw("#x????#???")),
+            bw("#xxx??#??x")
+        );
+
+        // It could be either clue:
+        assert_eq!(
+            test(Technique::CannotReach, n("#3 #1"), bw("????#?????")),
+            bw("????#?????")
+        );
+        // Nothing to go on:
+        assert_eq!(
+            test(Technique::CannotReach, n("#3"), bw("??????")),
+            bw("??????")
+        );
+
+        // It only says where a color can't be:
+        assert_eq!(
+            test(Technique::CannotReach, n("r2 #1"), l("???r????")),
+            [bw("??"), l("?r?"), bw("???")].concat()
+        );
+    }
+
+    #[test]
+    fn hop_up_test() {
+        assert_eq!(test(Technique::HopUp, n("#3"), l("???#??")), l("x??#??"));
+        assert_eq!(
+            test(Technique::HopUp, n("#3 #1"), l("???#????")),
+            l("x??#????")
+        );
+        // From the other edge:
+        assert_eq!(
+            test(Technique::HopUp, n("#1 #3"), l("???#???")),
+            l("???#??x")
+        );
+        // "The edge" is where the unsolved part starts:
+        assert_eq!(
+            test(Technique::HopUp, n("#1 #3"), l("#x???#??")),
+            l("#xx??#??")
+        );
+
+        // Not in the one place that matters:
+        assert_eq!(test(Technique::HopUp, n("#3"), l("?#?????")), l("?#?????"));
+
+        // The 1 could be right up against a red 2, but another red clue couldn't be:
+        assert_eq!(test(Technique::HopUp, n("r2 #1"), l("??#???")), l("??#???"));
+        assert_eq!(test(Technique::HopUp, n("r2 #1"), l("??r???")), l("x?r???"));
+
+        assert!(hop_up_line(&n("#3"), &mut l("#??#??")).is_err());
     }
 
     #[test]
