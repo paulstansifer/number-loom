@@ -32,6 +32,20 @@ const NEW_SQUARE_SIZE: (usize, usize) = (20, 20);
 const NEW_TRI_SIDE: i32 = 5;
 
 impl NonogramGui {
+    fn share_string(&self) -> String {
+        let woven = share_string(
+            &self.editor_gui.document,
+            self.share_progress.as_ref(),
+            self.save_solve_progress,
+        );
+
+        if self.share_as_link {
+            format!("http://paulstansifer.github.io/number-loom/#{woven}")
+        } else {
+            woven
+        }
+    }
+
     /// The document-wide controls across the top: zoom, the New/Library/Open/Save dialogs, and
     /// the Edit/Puzzle mode toggle. Runs before the sidebar and canvas each frame, so a mode
     /// switched here takes effect on the same frame.
@@ -194,16 +208,15 @@ impl NonogramGui {
 
             if ui.button("Save/share").clicked() {
                 self.share_progress = self.solve_progress();
-                self.share_string = share_string(
-                    &self.editor_gui.document,
-                    self.share_progress.as_ref(),
-                    self.save_solve_progress,
-                );
                 self.quality_warnings = self.editor_gui.document.quality_check();
                 self.show_save_share_window = true;
+                self.share_string.clear(); // needs to be regenerated
             }
 
             if self.show_save_share_window {
+                if self.share_string.is_empty() {
+                    self.share_string = self.share_string();
+                }
                 egui::Window::new("Save/share")
                     .open(&mut self.show_save_share_window)
                     .default_width(780.0)
@@ -219,21 +232,21 @@ impl NonogramGui {
                             }
                             ui.separator();
                         }
-                        let save_progress = ui.add_enabled(
+                        let sh_ui_1 = ui.add_enabled(
                             self.share_progress.is_some(),
                             egui::Checkbox::new(
                                 &mut self.save_solve_progress,
                                 "save solve progress",
                             ),
                         );
-                        if save_progress.changed() {
-                            self.share_string = share_string(
-                                &self.editor_gui.document,
-                                self.share_progress.as_ref(),
-                                self.save_solve_progress,
-                            );
+                        let sh_ui_2 =
+                            ui.radio_value(&mut self.share_as_link, false, "Share string:");
+                        let sh_ui_3 = ui.radio_value(&mut self.share_as_link, true, "Share link:");
+
+                        if sh_ui_1.changed() || sh_ui_2.changed() || sh_ui_3.changed() {
+                            self.share_string.clear();
                         }
-                        ui.label("Share String:");
+
                         ui.add(
                             egui::TextEdit::multiline(&mut self.share_string.clone())
                                 .font(TextStyle::Monospace)

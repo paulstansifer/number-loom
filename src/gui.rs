@@ -394,6 +394,7 @@ pub struct NonogramGui {
     solve_report_version: Option<Version>,
     pub solve_gui: Option<SolveGui>,
     show_save_share_window: bool,
+    share_as_link: bool,
     share_string: String,
     /// The solve progress there was when the Save/share window was opened, if there was any.
     share_progress: Option<PartialSolution>,
@@ -738,6 +739,7 @@ impl NonogramGui {
             solve_report_version: None,
             solve_gui: None,
             show_save_share_window: false,
+            share_as_link: false,
             share_string: "".to_string(),
             share_progress: None,
             save_solve_progress: false,
