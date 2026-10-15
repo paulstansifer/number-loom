@@ -328,7 +328,17 @@ that round-trips a session, undo stack included.
 
 ## Phase 3: input that isn't a mouse
 
-### [ ] 3.1 Put pencil, line and flood fill behind an input struct
+### [x] 3.1 Put pencil, line and flood fill behind an input struct
+
+**Done**: `PaintPointer` in `gui/tools.rs`. The buttons themselves don't go into it, only what
+they mean: a `PaintIntent` of `Current` (primary), `Background` (secondary) or `Erase` (middle).
+`pointer_tool_input` works out the color from that, just as it did from the buttons, so touch
+input in Phase 4 can say "rule this out" without pretending to be a right-click. New tests drive
+the tools through it directly. Checked with a mouse (and a touch) in headless Chrome as well.
+
+One oddity, kept as it was: flood fill acts on the click, which arrives once the button is up,
+when no intent is left to report. So a right-click flood fills with the current color, not with
+background.
 
 The lasso and annotate tools already take their input as small structs (`LassoPointer`,
 `AnnotatePointer`) rather than `egui::PointerState`. `pointer_tool_input` in `gui/tools.rs` still
@@ -340,7 +350,11 @@ tools knowing about touch.
 
 **Verify:** the existing tests pass, and the tools behave the same with a mouse.
 
-### [ ] 3.2 Track the input mode
+### [x] 3.2 Track the input mode
+
+**Done**: `InputMode` in `gui/input_mode.rs`, updated at the start of `main_ui` and read through
+`NonogramGui::input_mode()`. It isn't saved with the session. A test in `tests/gui.rs` feeds it
+a finger going down, dragging and lifting (as eframe's web backend reports them), then a hover.
 
 Implement the touch/mouse switch described under "Decisions already made". Store it on
 `NonogramGui`. Nothing reads it yet.

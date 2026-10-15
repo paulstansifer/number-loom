@@ -2,6 +2,7 @@ mod annotate;
 mod auto_button;
 mod canvas;
 pub mod gallery;
+mod input_mode;
 mod outline_text;
 mod palette;
 mod resize;
@@ -17,6 +18,7 @@ pub use crate::geometry::{CellIdx, FamilyIdx, LaneIdx, LanePos};
 pub use annotate::{AnnotateDrag, Annotation};
 pub use auto_button::{AutoButton, auto_button};
 pub use canvas::{ClueId, ClueOverlay, HoverBlocks};
+pub use input_mode::InputMode;
 pub use palette::default_color;
 pub use selection::{Selection, cells_in_lasso};
 pub use toolbar::LibraryStatus;
@@ -506,6 +508,10 @@ pub struct NonogramGui {
     /// Mousewheel motion that hasn't yet added up to a whole step through the palette.
     #[serde(skip)]
     wheel_remainder: f32,
+    /// Mouse or touch, by whichever was used last. Not saved: the first touch or hover after a
+    /// restore says which.
+    #[serde(skip)]
+    input_mode: InputMode,
     /// How the last save of the session went. (Sessions are only saved on the web.)
     #[serde(skip)]
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -853,6 +859,7 @@ impl NonogramGui {
             pannable: false,
             panning: false,
             wheel_remainder: 0.0,
+            input_mode: InputMode::default(),
             saving: session::SaveState::default(),
         }
     }
@@ -1032,6 +1039,11 @@ impl NonogramGui {
         } else {
             self.scale
         }
+    }
+
+    /// Mouse or touch, by whichever was used last (see `InputMode::after`).
+    pub fn input_mode(&self) -> InputMode {
+        self.input_mode
     }
 
     /// The canvas the user is working in right now.
@@ -1239,6 +1251,8 @@ impl eframe::App for NonogramGui {
 impl NonogramGui {
     /// The whole window, panel by panel. Separate from `eframe::App::update` for testing.
     pub fn main_ui(&mut self, ctx: &egui::Context) {
+        self.input_mode = ctx.input(|i| self.input_mode.after(i));
+
         // Styling. Has to be here instead of `edit_image` to take effect on the Web.
         let spacing = egui::Spacing {
             interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons

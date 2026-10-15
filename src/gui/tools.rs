@@ -18,6 +18,46 @@ pub enum Tool {
     Annotate,
 }
 
+/// For a mouse, this is what the mouse buttons mean; other kinds of input have to specify some other way.
+/// There may also be fallback behavior if the current cell is already the color that matches the intent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum PaintIntent {
+    /// Currently selected palette color (primary button)
+    #[default]
+    Current,
+    Background,
+    /// UNSOLVED, if we're in solve mode, or BACKGROUND if we're in edit mode
+    Erase,
+}
+
+/// What pencil, line and flood fill need to know about the pointer in a frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct PaintPointer {
+    pub(super) pressed: bool,
+    pub(super) down: bool,
+    pub(super) released: bool,
+    pub(super) clicked: bool,
+    pub(super) intent: PaintIntent,
+}
+
+impl PaintPointer {
+    pub(super) fn from_egui(pointer: &egui::PointerState) -> PaintPointer {
+        PaintPointer {
+            pressed: pointer.any_pressed(),
+            down: pointer.any_down(),
+            released: pointer.any_released(),
+            clicked: pointer.any_click(),
+            intent: if pointer.middle_down() {
+                PaintIntent::Erase
+            } else if pointer.secondary_down() {
+                PaintIntent::Background
+            } else {
+                PaintIntent::Current
+            },
+        }
+    }
+}
+
 /// The icon, bare-key shortcut, and tooltip key-name for each tool.
 fn tool_appearance(tool: Tool) -> (&'static str, egui::Key, char) {
     match tool {
@@ -181,34 +221,26 @@ impl CanvasGui {
     ///
     /// The lasso never arrives here: it has to keep tracking the pointer once it leaves the
     /// grid, so `canvas_with_clues` deals with it before there is a cell to speak of.
-    pub(super) fn pointer_tool_input(&mut self, cell: CellIdx, pointer: &egui::PointerState) {
+    pub(super) fn pointer_tool_input(&mut self, cell: CellIdx, pointer: PaintPointer) {
         let picture = self.document.solution_mut();
-        // What "no idea yet" looks like: the solver's own marker where there is one, and plain
-        // background in the editor, whose palette has no such entry.
-        let unknown = if picture.palette().contains_key(&UNSOLVED) {
+        // The meaning of "erase" differs depending on the mode:
+        let erased = if picture.palette().contains_key(&UNSOLVED) {
             UNSOLVED
         } else {
             BACKGROUND
         };
         let under_pointer = picture.cells()[cell];
-        let paint_color = if pointer.middle_down() {
-            unknown
-        } else if pointer.secondary_down() {
+        let paint_color = match pointer.intent {
+            PaintIntent::Erase => erased,
             // While solving, a cell that's already been ruled out goes back to undecided, so the
             // same button both makes and unmakes the mark. In the editor there's nothing to go
             // back to: `unknown` is background there, which is what this said all along.
-            if self.solving && under_pointer == BACKGROUND {
-                unknown
-            } else {
-                BACKGROUND
-            }
-        } else if under_pointer != self.current_color {
-            self.current_color
-        } else if self.solving {
+            PaintIntent::Background if self.solving && under_pointer == BACKGROUND => erased,
+            PaintIntent::Background => BACKGROUND,
+            PaintIntent::Current if under_pointer != self.current_color => self.current_color,
             // Likewise for the color the user is painting with — undecided, not ruled out.
-            unknown
-        } else {
-            BACKGROUND
+            PaintIntent::Current if self.solving => erased,
+            PaintIntent::Current => BACKGROUND,
         };
         // Paranoia, since it would cause a crash.
         debug_assert!(
@@ -223,7 +255,7 @@ impl CanvasGui {
 
         match self.current_tool {
             Tool::Pencil => {
-                let mood = if pointer.any_pressed() {
+                let mood = if pointer.pressed {
                     self.drag_start_color = paint_color;
                     ActionMood::Normal
                 } else {
@@ -238,7 +270,7 @@ impl CanvasGui {
                 );
             }
             Tool::FloodFill => {
-                if pointer.any_click() {
+                if pointer.clicked {
                     let original_color = self.current_color;
                     self.current_color = paint_color;
                     self.flood_fill(cell);
@@ -246,7 +278,7 @@ impl CanvasGui {
                 }
             }
             Tool::LineAlongLane => {
-                if pointer.any_pressed() {
+                if pointer.pressed {
                     self.drag_start_color = paint_color;
                     self.line_tool_state = Some(cell);
 
@@ -256,12 +288,12 @@ impl CanvasGui {
                         },
                         ActionMood::Normal,
                     );
-                } else if pointer.any_down() {
+                } else if pointer.down {
                     if let Some(start) = self.line_tool_state {
                         let changes = self.line_between(start, cell);
                         self.perform(Action::ChangeColor { changes }, ActionMood::ReplaceAction);
                     }
-                } else if pointer.any_released() {
+                } else if pointer.released {
                     self.line_tool_state = None;
                 }
             }
@@ -500,5 +532,145 @@ mod line_tool_tests {
                 );
             }
         }
+    }
+}
+
+/// The painting tools driven through `PaintPointer` directly, with no egui in between: what a
+/// press, a drag, a release and a click each do, and what each `PaintIntent` paints.
+#[cfg(test)]
+mod paint_pointer_tests {
+    use super::*;
+    use crate::puzzle::Solution;
+
+    fn at(x: usize, y: usize) -> CellIdx {
+        CellIdx((y * 5 + x) as u32)
+    }
+
+    fn press(intent: PaintIntent) -> PaintPointer {
+        PaintPointer {
+            pressed: true,
+            down: true,
+            intent,
+            ..Default::default()
+        }
+    }
+
+    fn drag(intent: PaintIntent) -> PaintPointer {
+        PaintPointer {
+            down: true,
+            intent,
+            ..Default::default()
+        }
+    }
+
+    /// What a click ends with. (The button is already up, so there's no intent left to report.)
+    fn release() -> PaintPointer {
+        PaintPointer {
+            released: true,
+            clicked: true,
+            ..Default::default()
+        }
+    }
+
+    fn editor(tool: Tool) -> CanvasGui {
+        let mut gui = NonogramGui::new(Document::from_solution(
+            DynSolution::Square(Solution::blank_bw(5, 5)),
+            "test".to_string(),
+        ))
+        .editor_gui;
+        gui.current_tool = tool;
+        gui.current_color = Color(1);
+        gui
+    }
+
+    /// A 5×5 whose top row is filled, being solved, with nothing known yet.
+    fn solver() -> CanvasGui {
+        let mut solution = Solution::blank_bw(5, 5);
+        for x in 0..5 {
+            solution.cells[at(x, 0)] = Color(1);
+        }
+        let doc = Document::from_solution(DynSolution::Square(solution), "test".to_string());
+        let mut canvas = NonogramGui::new_solving(doc).solve_gui.unwrap().canvas;
+        canvas.current_color = Color(1);
+        canvas
+    }
+
+    fn cell(gui: &CanvasGui, cell: CellIdx) -> Color {
+        gui.document.try_solution().unwrap().cells()[cell]
+    }
+
+    /// The pencil paints with whatever the press found to do, for the whole drag, and a press on
+    /// a cell that already has the current color takes it back off.
+    #[test]
+    fn the_pencil_paints_a_stroke_and_toggles() {
+        let mut gui = editor(Tool::Pencil);
+        gui.pointer_tool_input(at(0, 0), press(PaintIntent::Current));
+        gui.pointer_tool_input(at(1, 0), drag(PaintIntent::Current));
+        gui.pointer_tool_input(at(1, 0), release());
+        assert_eq!(cell(&gui, at(0, 0)), Color(1));
+        assert_eq!(cell(&gui, at(1, 0)), Color(1));
+        assert_eq!(gui.undo_stack.len(), 1, "one stroke is one undo step");
+
+        gui.pointer_tool_input(at(0, 0), press(PaintIntent::Current));
+        assert_eq!(cell(&gui, at(0, 0)), BACKGROUND);
+    }
+
+    /// While solving, ruling out a cell and doing it again goes back to undecided, as does
+    /// pressing with the current color on a cell that already has it. `Erase` always does.
+    #[test]
+    fn solving_marks_toggle_back_to_unknown() {
+        let mut gui = solver();
+        let corner = at(4, 4);
+        assert_eq!(cell(&gui, corner), UNSOLVED);
+
+        for (intent, want) in [
+            (PaintIntent::Background, BACKGROUND),
+            (PaintIntent::Background, UNSOLVED),
+            (PaintIntent::Current, Color(1)),
+            (PaintIntent::Current, UNSOLVED),
+            (PaintIntent::Current, Color(1)),
+            (PaintIntent::Erase, UNSOLVED),
+        ] {
+            gui.pointer_tool_input(corner, press(intent));
+            gui.pointer_tool_input(corner, release());
+            assert_eq!(cell(&gui, corner), want, "after {intent:?}");
+        }
+    }
+
+    /// Flood fill acts on the click, not on the press, and `Background` fills with background.
+    #[test]
+    fn flood_fill_waits_for_the_click() {
+        let mut gui = editor(Tool::FloodFill);
+        gui.pointer_tool_input(at(2, 2), press(PaintIntent::Current));
+        assert_eq!(cell(&gui, at(2, 2)), BACKGROUND);
+        gui.pointer_tool_input(at(2, 2), release());
+        assert!(
+            gui.document
+                .try_solution()
+                .unwrap()
+                .cells()
+                .iter()
+                .all(|c| *c == Color(1))
+        );
+
+        let mut ruling_out = release();
+        ruling_out.intent = PaintIntent::Background;
+        gui.pointer_tool_input(at(0, 0), ruling_out);
+        assert_eq!(cell(&gui, at(4, 4)), BACKGROUND);
+    }
+
+    /// The line tool paints from where the press landed to wherever the drag has got to, and the
+    /// release ends the line.
+    #[test]
+    fn the_line_tool_follows_the_drag() {
+        let mut gui = editor(Tool::LineAlongLane);
+        gui.pointer_tool_input(at(0, 1), press(PaintIntent::Current));
+        gui.pointer_tool_input(at(2, 1), drag(PaintIntent::Current));
+        gui.pointer_tool_input(at(3, 1), drag(PaintIntent::Current));
+        gui.pointer_tool_input(at(3, 1), release());
+        let row: Vec<Color> = (0..5).map(|x| cell(&gui, at(x, 1))).collect();
+        assert_eq!(row, [Color(1), Color(1), Color(1), Color(1), BACKGROUND]);
+        assert!(gui.line_tool_state.is_none());
+        assert_eq!(gui.undo_stack.len(), 1);
     }
 }

@@ -1611,4 +1611,74 @@ mod tests {
         press_key(&mut harness, egui::Key::Escape);
         assert!(annotations(&harness).is_empty());
     }
+
+    /// Mouse or touch follows whatever was used last: a touch event means a finger, and only a
+    /// pointer that moves with nothing pressed (a hover, which a finger can't do) means a mouse.
+    /// egui moves its imitation pointer for a dragging finger too, which mustn't count.
+    #[test]
+    fn the_input_mode_follows_the_last_input() {
+        use egui::{TouchDeviceId, TouchId, TouchPhase};
+        use number_loom::gui::InputMode;
+
+        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+        assert_eq!(harness.state().input_mode(), InputMode::Mouse);
+
+        let start = canvas_point(harness.state());
+        let elsewhere = start + egui::vec2(10.0, 10.0);
+        let touch = |phase, pos| Event::Touch {
+            device_id: TouchDeviceId(0),
+            id: TouchId(0),
+            phase,
+            pos,
+            force: None,
+        };
+
+        // A finger goes down, as eframe's web backend reports it: a press and a touch.
+        harness.input_mut().events.extend([
+            Event::PointerButton {
+                pos: start,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            touch(TouchPhase::Start, start),
+        ]);
+        harness.step();
+        assert_eq!(harness.state().input_mode(), InputMode::Touch);
+
+        // It drags: the imitation pointer moves too, but the button is down. (The pointer move
+        // comes last here, so that it, and not the touch, is what the frame ends on.)
+        harness.input_mut().events.extend([
+            touch(TouchPhase::Move, elsewhere),
+            Event::PointerMoved(elsewhere),
+        ]);
+        harness.step();
+        assert_eq!(harness.state().input_mode(), InputMode::Touch);
+
+        // It lifts.
+        harness.input_mut().events.extend([
+            Event::PointerButton {
+                pos: elsewhere,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerGone,
+            touch(TouchPhase::End, elsewhere),
+        ]);
+        harness.step();
+        assert_eq!(harness.state().input_mode(), InputMode::Touch);
+
+        // Then something hovers.
+        harness.input_mut().events.push(Event::PointerMoved(start));
+        harness.step();
+        assert_eq!(harness.state().input_mode(), InputMode::Mouse);
+    }
 }

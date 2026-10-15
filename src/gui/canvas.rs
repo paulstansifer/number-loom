@@ -6,6 +6,7 @@
 
 use super::annotate::AnnotatePointer;
 use super::selection::{LassoPointer, marching_ants, selection_outline};
+use super::tools::PaintPointer;
 use super::*;
 
 /// The contiguous block of one color under the pointer, as the clue gutters need it: which lane
@@ -185,8 +186,8 @@ impl CanvasGui {
             && !matches!(tool, Tool::Lasso | Tool::Annotate)
             && let Some(cell) = cell_under(self.document.solution_mut(), pointer_pos)
         {
-            let pointer = ui.input(|i| i.pointer.clone());
-            self.pointer_tool_input(cell, &pointer);
+            let pointer = PaintPointer::from_egui(&ui.input(|i| i.pointer.clone()));
+            self.pointer_tool_input(cell, pointer);
         }
 
         let mut shapes = vec![];
