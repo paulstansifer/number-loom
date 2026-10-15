@@ -149,8 +149,13 @@ Both HTML files register `sw.js`, which doesn't exist (it's left over from the e
 
 - `manifest.json`: `name`, `short_name`, `start_url: "./"`, `scope: "./"`,
   `display: "standalone"`, `orientation: "portrait"`, `theme_color`, `background_color`, icons.
-- Icons at 192×192 and 512×512, plus a maskable variant. `icon.png` is only 64×64, so these need
-  to be made, not just referenced.
+- Icons at 192×192 and 512×512. For now, use placeholders: `icon.png` scaled up (it's only
+  64×64, so they'll be blurry). Paul will make real ones later.
+- Leave out the maskable icon until the real icons exist. A maskable icon (`"purpose":
+  "maskable"` in the manifest) is a full-bleed, opaque square that Android crops to whatever
+  shape the launcher uses (circle, rounded square…), so anything important has to sit inside the
+  central circle, 80% of the icon's width across. Without one, Android shrinks the ordinary icon
+  onto a white shape, which is fine for placeholders.
 - `sw.js`: cache the app shell (the HTML, the JS glue, the wasm) for offline use. Prefer
   network-first for those, so a new deploy reaches people without a hard refresh. Pages redeploys
   on every push to `main`. Keep the existing `#dev` bypass.
@@ -189,16 +194,42 @@ canvases' undo and redo stacks. Probably the current tool and color too.
   (`visibilitychange`), on `beforeunload`, and every `auto_save_interval`. See `AppRunner::save`
   in eframe's `web/app_runner.rs`. Check whether eframe's `persistence` feature is needed for
   `Frame::storage` on the web. Saving natively too would be nice but isn't required.
-- `Document` isn't `Serialize`, but WOVEN already serializes it, including solve progress
-  (`set_in_progress`). Store documents as WOVEN strings.
-- `Action` needs a serializable mirror, in which `ReplaceDocument` holds a WOVEN string.
-  `CellIdx`, `Color` and `LaneIdx` already derive serde.
-- Give the session format its own version number. It is *not* covered by WOVEN's golden-test
-  compatibility promise. If a saved session won't decode, drop it and say so in a toast; never
-  panic.
-- Size: `ReplaceDocument` entries are whole documents, and `localStorage` holds about 5MB per
-  origin. Brotli-compress the session, as WOVEN does. If a save still fails, show an error toast.
-  Don't silently drop undo history (see the decisions above).
+- **Serialize the GUI state structs directly** (`NonogramGui`, `CanvasGui`, `SolveGui`, `Action`)
+  by deriving serde on them, rather than keeping a separate session struct in sync with them. A
+  field that is purely transient gets `#[serde(skip)]` and comes back as its default. A new field
+  then has to be either serializable or explicitly skipped, or the build fails, so nothing gets
+  forgotten.
+- What that takes, from a look at the current code:
+  - `Document` isn't `Serialize`, and neither are `DynSolution` and `DynPuzzle`. Rather than
+    deriving serde on the puzzle types (they have frozen mirrors in `formats/woven.rs` for good
+    reason), serialize these fields as WOVEN strings with `#[serde(with = ...)]`. WOVEN already
+    covers solve progress (`set_in_progress`). This includes `Action::ReplaceDocument`.
+  - `SolveGui::clues` and `intended_solution` can be skipped and rebuilt after loading, from
+    `editor_gui.document`, the way `enter_solve_mode` / `SolveGui::new` build them. (Not from
+    the solver canvas's own document: `SolveGui::new` overwrites that copy's cells with the
+    progress, so the answer isn't in it.)
+  - The `mpsc::Receiver` fields are skipped. Each dialog makes a fresh channel when it starts
+    its work, and `NonogramGui::new` already fills them with `mpsc::channel().1`, so a
+    `#[serde(skip, default = ...)]` function that does the same is enough.
+  - `Staleable` has no `Default`; give it one (empty, never fresh), and skip the cached results
+    (`solved_mask`, `disambiguator`, `backtrack_solver`, `line_analysis`, `fixed_clues`, `id`).
+  - `status` and `progress` are `Rc`s *shared* between the editor's canvas and the solver's (see
+    `main_ui`'s status bar). Skip them, and after loading, point the solver's canvas back at the
+    editor's, the way `SolveGui` gets them when it's created. A deserialize that leaves them
+    separate compiles fine and quietly loses messages, so test it.
+  - `Replay` can be skipped: it's recaptured from the undo stack when the puzzle is next
+    seen to be solved.
+  - In-flight state (`line_tool_state`, `annotate_drag`, the lasso's `selection`, `panning`)
+    can be skipped. `annotations` and `checked_clues` are worth keeping.
+  - JSON map keys have to be strings, which `HashMap<CellIdx, Color>` keys aren't. Check that
+    serde_json accepts them (it converts integer keys, but the newtype may need help), or
+    serialize the map as a list of pairs.
+- Brotli-compress the session unconditionally, as WOVEN does.
+- Versioning: none for now. If a saved session won't decode (because the structs changed in an
+  update, say), drop it and say so in a toast; never panic. A session format that survives
+  updates can come later, if it turns out to matter. Saved sessions are not covered by WOVEN's
+  golden tests.
+- Size: `localStorage` holds about 5MB per origin. If a save fails, show a warning toast and drop the undo history.
 - On startup, a WOVEN link in the URL hash takes precedence over the saved session, since opening
   a link is deliberate. Show a toast saying so.
 
