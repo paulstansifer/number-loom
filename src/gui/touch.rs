@@ -212,7 +212,9 @@ impl TouchSample {
                 .then(|| pointer.press_origin())
                 .flatten()
                 .filter(|at| area.contains(*at)),
-            down: pointer.any_down(),
+            // When the browser cancels a touch (`touchcancel`), eframe tells egui about the touch
+            // but never lets go of the pointer, so ask both.
+            down: pointer.any_down() && input.any_touches(),
             pos: pointer.latest_pos(),
             several: input.multi_touch().is_some(),
             time: input.time,
@@ -254,9 +256,20 @@ fn cell_center(picture: &DynSolution, cell: CellIdx) -> Point {
 
 /// A short buzz, where the device can do that, to say that a hold has put the tool down.
 fn buzz() {
+    // Not `Navigator::vibrate_with_duration`: in a browser with no `vibrate` (Firefox and Safari
+    // have none), that throws, and an exception thrown out through eframe leaves it unable to
+    // handle any event ever again. `Function::call1` catches it instead.
     #[cfg(target_arch = "wasm32")]
-    if let Some(window) = web_sys::window() {
-        let _ = window.navigator().vibrate_with_duration(15);
+    {
+        use wasm_bindgen::JsCast as _;
+        let Some(navigator) = web_sys::window().map(|window| window.navigator()) else {
+            return;
+        };
+        if let Ok(vibrate) = js_sys::Reflect::get(&navigator, &"vibrate".into())
+            && let Ok(vibrate) = vibrate.dyn_into::<js_sys::Function>()
+        {
+            let _ = vibrate.call1(&navigator, &15.into());
+        }
     }
 }
 

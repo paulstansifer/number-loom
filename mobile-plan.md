@@ -382,7 +382,13 @@ The mouse handling moved, unchanged, into `CanvasGui::mouse_input`.
 - Clue check-offs are ignored in touch mode, and the scroll area's drag-to-scroll is off (the
   drag belongs to the cursor). The view scrolls to keep the cursor in sight whenever it changes
   cells, which covers part of 6.3.
-- A hold buzzes (`navigator.vibrate`, 15ms).
+- A hold buzzes (`navigator.vibrate`, 15ms), where the browser has `vibrate`. Firefox and Safari
+  don't, and calling it there threw an exception out through eframe, which then never handled
+  another event: the first hold froze the app on a real phone. It's now called through
+  `js_sys::Function::call1`, which catches exceptions.
+- A finger only counts as down while egui also has an active touch, since eframe never releases
+  its imitation pointer when the browser cancels a touch.
+- Two fingers pan the view, as well as zooming it (`main_ui`, from `multi_touch`).
 - The tunable numbers are constants at the top of `touch.rs`: `TAP_SLOP` (8 points),
   `HOLD_DELAY` (0.35s) and `CURSOR_GAIN` (1, no acceleration).
 

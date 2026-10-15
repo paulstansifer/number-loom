@@ -1393,6 +1393,12 @@ impl NonogramGui {
                         if panning {
                             ui.scroll_with_delta(pointer_delta);
                         }
+                        // One finger steers the cursor, so two pan (as well as zooming, below).
+                        if touch_area.is_some()
+                            && let Some(touch) = ui.input(|i| i.multi_touch())
+                        {
+                            ui.scroll_with_delta(touch.translation_delta);
+                        }
                         if let Some(solve_gui) = &mut self.solve_gui {
                             solve_gui.canvas.middle_pans = pannable;
                             solve_gui.canvas.touch_area = touch_area;
