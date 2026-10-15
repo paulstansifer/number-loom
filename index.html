@@ -108,6 +108,32 @@
         <div class="lds-dual-ring"></div>
     </div>
 
+    <!-- On a touchscreen, eframe hears about every tap twice, as a touch event and as a pointer
+         event, and each one presses egui's primary button: a tap would paint a cell and then
+         immediately unpaint it, and a checkbox would toggle twice. So keep the pointer version of
+         a touch away from eframe. Its listeners are on the canvas and the document, so stopping
+         the event while it's being captured at `window` is early enough. Mouse and pen input
+         only arrive as pointer events, so they're left alone.
+
+         What this gives up: eframe's pointer handlers run a frame on the spot, because Safari
+         only allows things like clipboard writes and downloads during a user's event. If those
+         stop working from a tap on iOS, this is why. -->
+    <script>
+        for (const type of ['pointerdown', 'pointerup']) {
+            window.addEventListener(type, (event) => {
+                if (event.pointerType !== 'touch') {
+                    return;
+                }
+                event.stopPropagation();
+                // eframe's `pointerup` handler also focuses the canvas, which it says iOS needs
+                // for the on-screen keyboard to work. Its touch handlers don't, so do that here.
+                if (type === 'pointerup' && event.target instanceof HTMLCanvasElement) {
+                    event.target.focus();
+                }
+            }, { capture: true });
+        }
+    </script>
+
     <!--Register Service Worker. this will cache the wasm / js scripts for offline use (for PWA functionality). -->
     <!-- Force refresh (Ctrl + F5) to load the latest files instead of cached files  -->
     <script>

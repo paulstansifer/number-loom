@@ -181,6 +181,21 @@
         </aside>
     </main>
 
+    <!-- Keeps eframe from seeing every tap twice; see `index.html` for the whole story. -->
+    <script>
+        for (const type of ['pointerdown', 'pointerup']) {
+            window.addEventListener(type, (event) => {
+                if (event.pointerType !== 'touch') {
+                    return;
+                }
+                event.stopPropagation();
+                if (type === 'pointerup' && event.target instanceof HTMLCanvasElement) {
+                    event.target.focus();
+                }
+            }, { capture: true });
+        }
+    </script>
+
     <!--Register Service Worker. this will cache the wasm / js scripts for offline use (for PWA functionality). -->
     <!-- Force refresh (Ctrl + F5) to load the latest files instead of cached files  -->
     <script>
