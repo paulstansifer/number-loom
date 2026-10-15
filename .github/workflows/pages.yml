@@ -43,7 +43,9 @@ jobs:
         with:
           version: 'v0.21.14'
       - name: Build the app
-        run: trunk build --release --dist _site
+        # `pages.html` frames the app with some explanation; trunk still names the result
+        # `index.html`. (itch.io gets the bare `index.html` instead.)
+        run: trunk build --release --dist _site pages.html
       - name: Create zip archive
         # Zipped from inside `puzzles/`, so entries are bare filenames with no directory prefix.
         run: (cd puzzles && zip -r ../_site/puzzles.zip .)

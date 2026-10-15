@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<!-- The GitHub Pages version of `index.html`: the app in a frame, alongside some explanation.
+     `index.html` (the whole window, no text) is still what itch.io gets. -->
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+
+<!-- Disable zooming: -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
+<head>
+    <title>Number Loom</title>
+
+    <!-- config for our rust wasm binary. go to https://trunkrs.dev/assets/#rust for more customization -->
+    <link data-trunk rel="rust" data-wasm-opt="2" data-bin="number-loom" />
+
+    <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
+    <base data-trunk-public-url />
+
+    <meta name="theme-color" content="#e8e8e8">
+
+    <style>
+        html {
+            /* Remove touch delay: */
+            touch-action: manipulation;
+        }
+
+        html,
+        body {
+            margin: 0 !important;
+            padding: 0 !important;
+            height: 100%;
+        }
+
+        body {
+            background: #e8e8e8;
+            color: #202020;
+            font-family: Ubuntu, Helvetica, Arial, sans-serif;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+
+        /* The app beside the explanation on a wide screen; the explanation underneath on a
+           narrow one. */
+        .layout {
+            box-sizing: border-box;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 320px;
+            gap: 24px;
+            height: 100%;
+            max-width: 1400px;
+            max-height: 800px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        /* eframe sizes the canvas's drawing buffer to however big CSS makes it, so this box is
+           what decides how big the app is. */
+        .app-frame {
+            position: relative;
+            min-height: 0;
+            border: 1px solid #b0b0b0;
+            border-radius: 6px;
+            overflow: hidden;
+            background: #909090;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .about {
+            min-height: 0;
+            overflow-y: auto;
+        }
+
+        .about h1 {
+            margin: 0 0 12px;
+            font-size: 28px;
+            font-weight: 500;
+        }
+
+        .about h2 {
+            margin: 20px 0 8px;
+            font-size: 18px;
+            font-weight: 500;
+        }
+
+        .about p {
+            margin: 0 0 12px;
+        }
+
+        @media (max-width: 900px) {
+            .layout {
+                grid-template-columns: minmax(0, 1fr);
+                height: auto;
+                padding: 16px;
+                gap: 16px;
+            }
+
+            .app-frame {
+                height: 80vh;
+                height: 80svh;
+            }
+
+            .about {
+                overflow-y: visible;
+            }
+        }
+
+        .centered {
+            margin-right: auto;
+            margin-left: auto;
+            display: block;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #f0f0f0;
+            font-size: 24px;
+            font-family: Ubuntu-Light, Helvetica, sans-serif;
+            text-align: center;
+        }
+
+        /* ---------------------------------------------- */
+        /* Loading animation from https://loading.io/css/ */
+        .lds-dual-ring {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+        }
+
+        .lds-dual-ring:after {
+            content: " ";
+            display: block;
+            width: 24px;
+            height: 24px;
+            margin: 0px;
+            border-radius: 50%;
+            border: 3px solid #fff;
+            border-color: #fff transparent #fff transparent;
+            animation: lds-dual-ring 1.2s linear infinite;
+        }
+
+        @keyframes lds-dual-ring {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <main class="layout">
+        <div class="app-frame">
+            <!-- The WASM code will resize the canvas dynamically -->
+            <!-- the id is hardcoded in gui.rs -->
+            <canvas id="the_canvas_id"></canvas>
+
+            <!-- loading spinner -->
+            <div class="centered" id="loading_text">
+                <p style="font-size:16px">
+                    Loading…
+                </p>
+                <div class="lds-dual-ring"></div>
+            </div>
+        </div>
+
+        <aside class="about">
+            Number Loom is normally hosted on <a
+                href="https://paul-stansifer.itch.io/number-loom">itch.io</a>, but for boring
+            technical reasons it's not possible to make a URL linking to a specific puzzle there, so
+            this is the GitHub Pages version. It's also a live view of the latest changes ("trunk"),
+            rather than merely the most recent release.
+        </aside>
+    </main>
+
+    <!--Register Service Worker. this will cache the wasm / js scripts for offline use (for PWA functionality). -->
+    <!-- Force refresh (Ctrl + F5) to load the latest files instead of cached files  -->
+    <script>
+        // We disable caching during development so that we always view the latest version.
+        if ('serviceWorker' in navigator && window.location.hash !== "#dev") {
+            window.addEventListener('load', function () {
+                navigator.serviceWorker.register('sw.js');
+            });
+        }
+    </script>
+</body>
+
+</html>
