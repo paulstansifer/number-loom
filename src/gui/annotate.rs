@@ -35,7 +35,7 @@ struct Border {
 /// otherwise lose: `from` is the border past the origin cell on the far side from where the drag
 /// was heading, and the wave goes on the right-hand side of `from -> to`. So the two ends are
 /// deliberately not sorted.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Annotation {
     lane: LaneIdx,
     /// Borders, not positions; see [`Border::index`].

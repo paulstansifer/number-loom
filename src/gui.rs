@@ -6,6 +6,7 @@ mod outline_text;
 mod palette;
 mod resize;
 mod selection;
+mod session;
 pub mod solver;
 mod toolbar;
 mod tools;
@@ -31,6 +32,7 @@ use std::{
     time::Duration,
 };
 
+use serde::{Deserialize, Serialize};
 use web_time::Instant;
 
 #[derive(Clone)]
@@ -171,6 +173,11 @@ pub fn edit_image(document: Document) {
             .expect("the_canvas_id was not a HtmlCanvasElement");
 
         let linked = woven_from_url_hash();
+        if linked.is_some() {
+            // Clear the puzzle link so it doesn't get stuck in the user's browser history!
+            clear_url_hash();
+        }
+        let saved = session::load();
 
         let start_result = eframe::WebRunner::new()
             .start(
@@ -178,17 +185,43 @@ pub fn edit_image(document: Document) {
                 web_options,
                 Box::new(|cc| {
                     egui_material_icons::initialize(&cc.egui_ctx);
-                    let gui = match linked {
-                        None => NonogramGui::new(document),
-                        Some(Ok(linked_document)) => NonogramGui::new_solving(linked_document),
-                        Some(Err(e)) => {
-                            let gui = NonogramGui::new(document);
-                            gui.editor_gui.status.set(StatusMessage::error(format!(
-                                "Error loading the puzzle in the link: {e}"
-                            )));
+                    let (link_document, link_error) = match linked {
+                        Some(Ok(document)) => (Some(document), None),
+                        Some(Err(e)) => (None, Some(e)),
+                        None => (None, None),
+                    };
+                    let mut errors = vec![];
+                    // A link opens on top of the saved session, which stays behind it in the
+                    // editor's undo history (see `open_linked`).
+                    let gui = match (link_document, saved) {
+                        (Some(link_document), Some(Ok(mut gui))) => {
+                            if gui.open_linked(link_document) {
+                                gui.editor_gui
+                                    .status
+                                    .set(StatusMessage::info("Opened the puzzle at the link; 'undo' will restore your previous edits."));
+                            }
                             gui
                         }
+                        (Some(link_document), None) => NonogramGui::new_solving(link_document),
+                        (None, Some(Ok(gui))) => gui,
+                        (link_document, Some(Err(e))) => {
+                            errors.push(format!("Unable to resume: {e}"));
+                            match link_document {
+                                Some(link_document) => NonogramGui::new_solving(link_document),
+                                None => NonogramGui::new(document),
+                            }
+                        }
+                        (None, None) => NonogramGui::new(document),
                     };
+                    if let Some(e) = link_error {
+                        errors.push(format!("Error loading the puzzle in the link: {e}"));
+                    }
+                    // The status bar holds one message, and both of these can happen at once.
+                    if !errors.is_empty() {
+                        gui.editor_gui
+                            .status
+                            .set(StatusMessage::error(errors.join("\n")));
+                    }
                     Ok(Box::new(gui))
                 }),
             )
@@ -226,6 +259,25 @@ fn woven_from_url_hash() -> Option<anyhow::Result<Document>> {
         woven,
         "linked.woven".to_string(),
     ))
+}
+
+/// Take the `#...` off the address in the address bar, without reloading or adding to history.
+#[cfg(target_arch = "wasm32")]
+fn clear_url_hash() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let location = window.location();
+    let (Ok(path), Ok(search)) = (location.pathname(), location.search()) else {
+        return;
+    };
+    if let Ok(history) = window.history() {
+        let _ = history.replace_state_with_url(
+            &wasm_bindgen::JsValue::NULL,
+            "",
+            Some(&format!("{path}{search}")),
+        );
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -298,6 +350,17 @@ pub struct Staleable<T> {
     pub version: Version,
 }
 
+/// Never fresh, so the first `get_or_refresh` computes it. (What a skipped `Staleable` comes back
+/// as when the session is restored.)
+impl<T: Default> Default for Staleable<T> {
+    fn default() -> Self {
+        Staleable {
+            val: T::default(),
+            version: session::never(),
+        }
+    }
+}
+
 impl<T> Staleable<T> {
     pub fn update(&mut self, val: T, version: Version) {
         self.val = val;
@@ -328,7 +391,11 @@ impl<T> Staleable<T> {
     }
 }
 
+/// Saved with the session (see `session.rs`), except for the fields marked `#[serde(skip)]`, which
+/// are either in the middle of something or worked out again from the rest.
+#[derive(Serialize, Deserialize)]
 pub struct CanvasGui {
+    #[serde(with = "session::document")]
     pub document: Document,
     pub version: Version,
     pub current_color: Color,
@@ -339,6 +406,7 @@ pub struct CanvasGui {
     /// Whatever was current before `current_tool`, so that a tool's own key, pressed again, goes
     /// back to it. Starts out equal to `current_tool`, which makes that first press a no-op.
     pub previous_tool: Tool,
+    #[serde(skip)]
     pub line_tool_state: Option<CellIdx>,
     /// The lasso tool's selection, if any. Outlives switching tools only long enough to be
     /// flattened; see `flatten_selection`.
@@ -351,6 +419,7 @@ pub struct CanvasGui {
     /// doesn't bump `version` and the solve replay steps straight past it.
     pub checked_clues: HashSet<ClueId>,
     /// The annotation being dragged out right now, if any.
+    #[serde(skip)]
     pub annotate_drag: Option<AnnotateDrag>,
     /// Whether this canvas is solving a puzzle rather than editing one. That decides which tools
     /// it offers (annotate is solver-only, the way flood fill and the lasso are editor-only),
@@ -359,74 +428,103 @@ pub struct CanvasGui {
     pub solving: bool,
     /// Whether the view has somewhere to pan to, in which case a middle-drag pans it and so must
     /// not also reach a tool. `main_ui` sets this from the scroll area's own measurements.
+    #[serde(skip)]
     pub middle_pans: bool,
     /// Indexed by dense cell index, like `Solution::cells`.
+    #[serde(skip)]
     pub solved_mask: Staleable<(String, TiVec<CellIdx, bool>)>,
+    #[serde(skip)]
     pub disambiguator: Staleable<Disambiguator>,
+    #[serde(skip)]
     pub backtrack_solver: Staleable<BacktrackSolver>,
+    #[serde(skip)]
     pub id: Staleable<String>,
+    /// Shared with the solver's canvas, which `NonogramGui::reconnect` takes care of after a
+    /// restore.
+    #[serde(skip, default = "StatusCell::new")]
     pub status: SharedStatus,
+    #[serde(skip)]
     pub progress: SharedProgress,
-    /// Where the picture itself (not counting any clue gutters) landed on screen, as of the last
-    /// frame that drew it. `pub` for tests/gui.rs, which needs a point that's reliably on the
-    /// canvas to aim a click at — a hardcoded one goes stale the moment the layout around it
-    /// moves.
+    /// Where the picture itself (not counting any clue gutters) was placed on screen, as of the
+    /// last frame that drew it.
+    #[serde(skip)]
     pub picture_rect: Option<Rect>,
 }
 
+/// The whole app's state. Saved as the session (see `session.rs`), apart from what's marked
+/// `#[serde(skip)]`: mostly dialogs, which a restored session starts with closed.
+#[derive(Serialize, Deserialize)]
 pub struct NonogramGui {
     // The `pub`s are solely for tests/gui.rs
     pub editor_gui: CanvasGui,
     scale: f32,
+    #[serde(skip, default = "session::dead_receiver")]
     opened_file_receiver: mpsc::Receiver<anyhow::Result<Document>>,
+    #[serde(skip, default = "session::dead_receiver")]
     save_result_receiver: mpsc::Receiver<anyhow::Result<()>>,
+    #[serde(skip, default = "session::dead_receiver")]
     library_receiver: mpsc::Receiver<anyhow::Result<Vec<Document>>>,
+    #[serde(skip)]
     library_dialog: Option<LibraryStatus>,
+    #[serde(skip)]
     new_dialog: Option<NewPuzzleDialog>,
     auto_solve: bool,
     lines_to_affect_string: String,
+    #[serde(skip)]
     solve_report: String,
     /// The `editor_gui.version` `solve_report` was computed for, if any — independent of
     /// `editor_gui.solved_mask`'s own freshness, which the backtracking solve also writes to
     /// (see `BacktrackSolver::widget`). Without this, `solved_mask.get_or_refresh` would see
     /// backtracking's fresher write and skip re-running line logic, leaving `solve_report`
     /// showing backtracking's text under the `Solve` button.
+    #[serde(skip)]
     solve_report_version: Option<Version>,
     pub solve_gui: Option<SolveGui>,
+    #[serde(skip)]
     show_save_share_window: bool,
+    #[serde(skip)]
     share_as_link: bool,
+    #[serde(skip)]
     share_string: String,
     /// The solve progress there was when the Save/share window was opened, if there was any.
+    #[serde(skip)]
     share_progress: Option<PartialSolution>,
     /// Whether to put `share_progress` in what the Save/share window saves and shares.
+    #[serde(skip)]
     save_solve_progress: bool,
+    #[serde(skip)]
     pasted_string: String,
+    #[serde(skip)]
     quality_warnings: Vec<String>,
     /// Whether the picture is too big for the space it's shown in, and so has somewhere to pan
     /// to. Measured from the scroll area as it was drawn last frame.
+    #[serde(skip)]
     pannable: bool,
     /// Whether a middle-drag pan is in flight right now.
+    #[serde(skip)]
     panning: bool,
-    /// Wheel motion that hasn't yet added up to a whole step through the palette.
+    /// Mousewheel motion that hasn't yet added up to a whole step through the palette.
+    #[serde(skip)]
     wheel_remainder: f32,
+    /// How the last save of the session went. (Sessions are only saved on the web.)
+    #[serde(skip)]
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    saving: session::SaveState,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Action {
     /// Keyed by dense cell index rather than by coordinate: every consumer wants a cell, and
     /// indices make undo, the tools, and merging work for any shape with no dispatch at all.
     /// Coordinates appear only at the hit-test boundary, as `DynCoord`.
-    ChangeColor {
-        changes: HashMap<CellIdx, Color>,
-    },
+    ChangeColor { changes: HashMap<CellIdx, Color> },
     ReplaceDocument {
+        #[serde(with = "session::boxed_document")]
         document: Box<Document>,
     },
     /// Check a clue off in the solver's gutters, or un-check it. Its own inverse, so undo and
     /// redo are both just the same toggle again.
-    ToggleClue {
-        clue: ClueId,
-    },
+    ToggleClue { clue: ClueId },
 }
 
 #[derive(PartialEq, Eq)]
@@ -473,6 +571,13 @@ impl CanvasGui {
     pub fn perform(&mut self, action: Action, mood: ActionMood) {
         use Action::*;
         use ActionMood::*;
+
+        // A lifted selection's cells exist only in its floating layer, which replacing the
+        // document drops (below). Stamp them back into this picture first, so that the copy of it
+        // that undo keeps still has them.
+        if mood == Normal && matches!(action, ReplaceDocument { .. }) {
+            self.flatten_selection();
+        }
 
         let mood = if mood == Merge || mood == ReplaceAction {
             match (self.undo_stack.last_mut(), &action) {
@@ -748,6 +853,7 @@ impl NonogramGui {
             pannable: false,
             panning: false,
             wheel_remainder: 0.0,
+            saving: session::SaveState::default(),
         }
     }
 
@@ -947,6 +1053,30 @@ impl NonogramGui {
         gui
     }
 
+    /// Open `document` (from a link) in solve mode, the way choosing it from the Library does:
+    /// the editor's document is replaced with an undoable `ReplaceDocument`, so undoing in the
+    /// editor brings back whatever was there before. Any solving progress on that earlier puzzle
+    /// is lost, just as it is when the Library replaces it.
+    ///
+    /// Returns whether it opened; if not, it has said why.
+    pub fn open_linked(&mut self, mut document: Document) -> bool {
+        // `perform` checks this too, but it records an undo step even when it refuses.
+        if !matches!(document.has_complete_solution(), Ok(true)) {
+            self.editor_gui
+                .status
+                .set(StatusMessage::error("That puzzle has no solution"));
+            return false;
+        }
+        self.editor_gui.perform(
+            Action::ReplaceDocument {
+                document: Box::new(document),
+            },
+            ActionMood::Normal,
+        );
+        self.enter_solve_mode();
+        true
+    }
+
     fn enter_solve_mode(&mut self) {
         self.solve_gui = Some(SolveGui::new(
             self.editor_gui.document.clone(),
@@ -1085,6 +1215,24 @@ fn take_wheel_notches(ctx: &egui::Context) -> f32 {
 impl eframe::App for NonogramGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.main_ui(ctx);
+
+        self.saving.dirty = true;
+        // The restored session came out of storage as it was loaded (see `session::load`). Now
+        // that a frame has been drawn from it without incident, put it back.
+        #[cfg(target_arch = "wasm32")]
+        if !self.saving.attempted {
+            self.save_session();
+        }
+    }
+
+    /// On the web, eframe calls this every `auto_save_interval` and whenever the page loses
+    /// focus. (It means to call it before the page unloads, too, but listens for an event called
+    /// `onbeforeunload`, which never fires: the event is `beforeunload`.) eframe's own `storage`
+    /// is no use here: it throws away the error when a write fails, and running out of room is
+    /// exactly the failure that needs handling.
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        #[cfg(target_arch = "wasm32")]
+        self.save_session();
     }
 }
 

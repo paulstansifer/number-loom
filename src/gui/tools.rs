@@ -6,7 +6,7 @@
 
 use super::*;
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum Tool {
     Pencil,
     /// Editor-only

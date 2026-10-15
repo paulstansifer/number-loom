@@ -3,6 +3,14 @@
 Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI capabilities). `trunk serve` builds and serves the wasm
 
 
+# Text that users will read
+
+If you're an LLM, don't write the final wording of anything a user of Number Loom will
+read. Instead, write "HUMANIZE: <draft>", and a human will replace it. Please report how many places remain.
+
+This covers labels, tooltips, status messages, dialog text, the README and the changelog. It
+doesn't cover code comments, documentation for developers (like this file), or plans.
+
 # File tree
   examples/ - various puzzles for testing purposes (filenames are spoilers for "puzzles/")
     woven/ - frozen `WOVEN` share strings; see the README there before touching them
@@ -23,6 +31,7 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
       triano.rs - special trianogram drawing: half-square "cap" colors and clue silhouettes
       gallery.rs - for chosing a puzzle to solve
       outline_text.rs - overengineered halos for text readability on arbitrary backgrounds
+      session.rs - (web only) saving all the GUI state, so closing the app doesn't lose work.
     import.rs - read files and extract clues from grids
     export.rs - write files 
     formats/

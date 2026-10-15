@@ -9,33 +9,43 @@ use crate::{
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use typed_index_collections::TiVec;
 use web_time::Instant;
 
 use crate::puzzle::{Document, DynSolution};
+/// Saved with the session (see `session.rs`). `clues` and `intended_solution` aren't: they come
+/// from the editor's document, which can't change while solving, so `NonogramGui::reconnect`
+/// rebuilds them from there.
+#[derive(Serialize, Deserialize)]
 pub struct SolveGui {
     pub canvas: CanvasGui,
+    #[serde(skip, default = "super::session::placeholder_puzzle")]
     pub clues: DynPuzzle,
+    #[serde(skip, default = "super::session::placeholder_solution")]
     pub intended_solution: DynSolution,
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
     /// Per lane, parallel to `LaneMap::lanes`: can line-logic fully solve any cells?
+    #[serde(skip)]
     pub line_analysis: Staleable<Option<TiVec<LaneIdx, LineStatus>>>,
     pub mark_fixed_clues: bool,
     /// Per lane, indexed like `line_analysis`: which of that lane's clues are "done"
+    #[serde(skip)]
     pub fixed_clues: Staleable<Option<TiVec<LaneIdx, Vec<usize>>>>,
     pub render_style: RenderStyle,
+    #[serde(skip, default = "super::session::never")]
     last_inferred_version: u32,
+    #[serde(skip)]
     pub hovered_cell: Option<CellIdx>,
-    /// The solve, played back in the sidebar. Captured the first time the picture comes out
-    /// right, and frozen there: whatever the user does to the grid afterwards isn't part of the
-    /// solve they just finished.
+    /// Just for fun, a replay of the solve process, reconstructed from the undo history.
+    #[serde(skip)]
     pub replay: Option<Replay>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderStyle {
     TraditionalDots,
     TraditionalXes,

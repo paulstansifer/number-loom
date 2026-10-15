@@ -11,6 +11,11 @@ use super::*;
 /// The mask is stored at an *anchor* position and displaced by `offset`, rather than being
 /// rewritten on every drag frame: that keeps a move reversible (drag back off the grid edge and
 /// nothing is lost) and makes the whole thing one translation away from where it started.
+///
+/// Saved with the session, because lifting a selection takes its cells out of the picture: the
+/// floating layer is the only place they exist until it's flattened. The loop being drawn and the
+/// drag in progress aren't saved.
+#[derive(Serialize, Deserialize)]
 pub struct Selection {
     /// Indexed by dense cell index, like `Solution::cells` — so it is only meaningful for a grid
     /// of the same size, which `canvas_with_clues` checks before using it.
@@ -21,10 +26,13 @@ pub struct Selection {
     /// Content lifted off the grid, as `(anchor cell, color)`. `None` until the first move drag.
     pub(super) floating: Option<Vec<(CellIdx, Color)>>,
     /// The lasso path in abstract units, while one is being drawn.
+    #[serde(skip)]
     pub(super) drawing: Option<Vec<crate::layout::Point>>,
     /// Where the move drag was grabbed, and the offset at that moment.
+    #[serde(skip)]
     dragging: Option<(crate::layout::Point, (i32, i32))>,
     /// Time origin for the marching ants' dash phase.
+    #[serde(skip, default = "Instant::now")]
     pub(super) since: Instant,
 }
 
@@ -657,6 +665,75 @@ mod lasso_tests {
             .map(|(i, _)| i)
             .collect();
         // The block moved by (+2, +1): (1,1)..(2,2) became (3,2)..(4,3).
+        let want: Vec<CellIdx> = [(3, 2), (4, 2), (3, 3), (4, 3)]
+            .iter()
+            .map(|(x, y)| at(*x, *y))
+            .collect();
+        assert_eq!(lit, want);
+    }
+
+    /// A lifted selection's cells exist only in the floating layer, so a saved session has to
+    /// carry it: restored mid-move, then dropped, the block lands where it would have anyway.
+    #[test]
+    fn a_floating_selection_survives_a_save() {
+        let mut gui = canvas_with_a_block();
+        press(&mut gui, Point::new(0.5, 0.5));
+        for p in [
+            Point::new(3.5, 0.5),
+            Point::new(3.5, 3.5),
+            Point::new(0.5, 3.5),
+        ] {
+            drag(&mut gui, p);
+        }
+        release(&mut gui, Point::new(0.5, 3.5));
+        press(&mut gui, Point::new(1.5, 1.5));
+        drag(&mut gui, Point::new(3.5, 2.5));
+        release(&mut gui, Point::new(3.5, 2.5));
+
+        let json = serde_json::to_string(&gui).unwrap();
+        let mut restored: CanvasGui = serde_json::from_str(&json).unwrap();
+
+        gui.clear_selection();
+        restored.clear_selection();
+        let cells = |gui: &CanvasGui| gui.document.try_solution().unwrap().cells().raw.to_vec();
+        assert_eq!(cells(&restored), cells(&gui));
+        assert!(cells(&restored).contains(&Color(1)));
+    }
+
+    /// Replacing the document while a selection is lifted (opening a link, say) stamps it down
+    /// first, so undoing the replacement brings the block back, where it had been dragged to.
+    #[test]
+    fn replacing_the_document_keeps_a_floating_selection() {
+        let mut gui = canvas_with_a_block();
+        press(&mut gui, Point::new(0.5, 0.5));
+        for p in [
+            Point::new(3.5, 0.5),
+            Point::new(3.5, 3.5),
+            Point::new(0.5, 3.5),
+        ] {
+            drag(&mut gui, p);
+        }
+        release(&mut gui, Point::new(0.5, 3.5));
+        press(&mut gui, Point::new(1.5, 1.5));
+        drag(&mut gui, Point::new(3.5, 2.5));
+        release(&mut gui, Point::new(3.5, 2.5));
+
+        let other = Document::from_solution(square(4, 4), "other".to_string());
+        gui.perform(
+            Action::ReplaceDocument {
+                document: Box::new(other),
+            },
+            ActionMood::Normal,
+        );
+        assert!(gui.selection.is_none());
+
+        gui.un_or_re_do(true);
+        let cells = gui.document.try_solution().unwrap().cells();
+        let lit: Vec<CellIdx> = cells
+            .iter_enumerated()
+            .filter(|(_, c)| **c == Color(1))
+            .map(|(i, _)| i)
+            .collect();
         let want: Vec<CellIdx> = [(3, 2), (4, 2), (3, 3), (4, 3)]
             .iter()
             .map(|(x, y)| at(*x, *y))

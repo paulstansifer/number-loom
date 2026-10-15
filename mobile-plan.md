@@ -211,7 +211,63 @@ Android phone, opens full-screen in portrait, and loads offline.
 
 ## Phase 2: nothing is lost when the phone kills the app
 
-### [ ] 2.1 Save and restore the session
+### [x] 2.1 Save and restore the session
+
+**Done**, in `gui/session.rs`. It mostly follows the notes below. Where it differs, and what
+turned up along the way:
+
+- Documents are saved as WOVEN's serializable form (`WovenDocument`, plus the filename, which
+  WOVEN leaves out), not as share strings. The whole session is compressed once at the end, so
+  compressing each document separately as well would only add base-64 bloat.
+- `CellIdx` and `LaneIdx` didn't derive serde after all (the notes below said they did). Now they
+  do. serde_json handles them as map keys, so `HashMap<CellIdx, Color>` needed nothing more.
+- A lifted lasso selection *is* saved (`mask`, `offset`, `floating`). Lifting takes the cells out
+  of the picture, so skipping the selection would have lost them.
+- eframe's `Storage` is no use for this: its web `set_string` discards the error when a write
+  fails, which is exactly the failure this needs to see. So the session goes straight to
+  `localStorage` through `gloo_storage`, under `number-loom.session`. Every GitHub Pages site of
+  the same user shares that origin's `localStorage` (and its quota), hence the prefix.
+- A save that fails is retried without either canvas's undo and redo history. The first time
+  that happens, there's a warning; the history in memory is untouched. If even that fails,
+  there's an error message. A fingerprint of the last session written means an unchanged
+  session isn't written again, and a failure isn't repeated every 30 seconds.
+- eframe's "save before the page unloads" never runs: it listens for an event called
+  `onbeforeunload`, which doesn't exist (the event is `beforeunload`). Saving still happens when
+  the page loses focus (which includes being hidden, and navigating away) and every 30 seconds.
+- After opening a link, the `#WOVEN-...` is taken off the address bar
+  (`history.replaceState`). Otherwise reloading the tab, which a phone does to a tab it put to
+  sleep, would open the link again over the saved session and lose the user's progress.
+
+Tested natively: round trips of the editor with its history (including a `ReplaceDocument`), of
+a solve in progress (progress, checked-off clues, clues, answer, the shared status bar), of a
+floating selection, and of a session without history; and damaged sessions. Tested in headless
+Chrome: work and undo history survive a reload, in the editor and in solve mode. A link opens in
+solve mode with a message, and leaves the address bar clean. Simulating full storage (by making
+`setItem` throw) saves without history and warns. A damaged session gives a message and a fresh
+start.
+
+Still to check on a real phone: killing the app from the recent-apps screen.
+
+Fixed after a review:
+
+- A session that *panics* when restored (rather than failing with an error) would have been
+  left in storage to panic again on every load. `session::load` now takes it out of storage
+  before decoding it, and `update` puts it back with a save after the first frame. Tested in
+  headless Chrome with a session whose picture uses a character the palette doesn't have: that
+  load panics, and the next one starts afresh.
+- Replacing the document (`perform` with `ReplaceDocument`) stamps a lifted selection back into
+  the picture first, so undo doesn't bring back a picture with a hole in it. This applies to
+  opening a link over a restored session, and also to the Library, Open, resizing and palette
+  edits.
+- Saving skips serialization when no frame has run since the last save, and WOVEN conversion no
+  longer clones each document.
+
+**Known problem: more than one tab.** Every tab saves its whole session under the same key, so
+with two tabs open (as happens on a desktop when a second share link opens a new tab), whichever
+saved last is the only one a reload will find, and the other tab's work is lost without a
+word. Possible fixes: a key per tab (in `sessionStorage`, which is per tab), with some rule for
+which one a fresh start picks up; or listening for the `storage` event and warning, or deferring
+to the newest tab. Phones mostly have one tab per app, so this matters most on desktop.
 
 Phones kill background apps freely. Right now only settings survive (`UserSettings`), so leaving
 the app to answer a message can lose a half-solved puzzle.

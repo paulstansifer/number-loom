@@ -1,7 +1,7 @@
 {
     "name": "Number Loom",
     "short_name": "Number Loom",
-    "description": "Make and solve nonograms",
+    "description": "Edit and solve nonograms",
     "start_url": "./",
     "scope": "./",
     "display": "standalone",

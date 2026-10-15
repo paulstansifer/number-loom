@@ -141,8 +141,20 @@ impl SerializableSolution {
 impl TryFrom<&mut Document> for WovenVersion0 {
     type Error = anyhow::Error;
     fn try_from(doc: &mut Document) -> anyhow::Result<Self> {
+        doc.solution()?; // Solve for the picture, if there isn't one yet.
+        let doc = &*doc;
+        Ok(WovenVersion0::with_solution(
+            doc,
+            doc.try_solution().unwrap(),
+        ))
+    }
+}
+
+impl WovenVersion0 {
+    /// `doc`, whose picture is `solution`. Separate from `try_from` so that a document that
+    /// already has its picture can be converted without `&mut` (and so without a clone).
+    fn with_solution(doc: &Document, solution: &DynSolution) -> Self {
         let in_progress = doc.in_progress().cloned();
-        let solution = doc.solution()?;
         let in_progress = in_progress
             .filter(|ip| partial_cells::has_progress(&ip.raw, solution.palette().keys().copied()));
 
@@ -159,7 +171,7 @@ impl TryFrom<&mut Document> for WovenVersion0 {
             .and_then(|ip| solution.spell_in_progress(&ip))
             .unwrap_or_default();
 
-        Ok(WovenVersion0 {
+        WovenVersion0 {
             title: doc.title.clone(),
             description: doc.description.clone(),
             author: doc.author.clone(),
@@ -175,24 +187,35 @@ impl TryFrom<&mut Document> for WovenVersion0 {
             },
             solution,
             in_progress,
-        })
+        }
     }
+}
+
+/// Brotli-compress `bytes` at `quality` (0 to 11), then base-64 them: what a WOVEN string
+/// carries between its `WOVEN-` and `-`, and also how the GUI stores its saved session.
+pub fn compress_and_encode(bytes: &[u8], quality: u32) -> anyhow::Result<String> {
+    let mut compressor = brotli::CompressorWriter::new(Vec::new(), 4096, quality, 22);
+    compressor.write_all(bytes)?;
+    Ok(general_purpose::STANDARD_NO_PAD.encode(compressor.into_inner()))
+}
+
+/// The counterpart to `compress_and_encode`. Whitespace is ignored, since WOVEN strings get
+/// wrapped.
+pub fn decode_and_decompress(s: &str) -> anyhow::Result<Vec<u8>> {
+    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    let compressed = general_purpose::STANDARD_NO_PAD.decode(s.as_bytes())?;
+
+    let mut bytes = Vec::new();
+    brotli::Decompressor::new(&compressed[..], 4096).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// The share string for an already-serializable document. Split out from `to_woven` so that
 /// `golden_tests` can encode a `WovenDocument` it read from a file, rather than one that has
 /// been round-tripped through a `Document` and normalized on the way.
 fn encode_woven(s_doc: &WovenDocument) -> anyhow::Result<String> {
-    let buf = std::io::BufWriter::new(Vec::new());
-    let mut encoder = brotli::CompressorWriter::new(buf, 4096, 11, 22);
     let bytes = serde_json::to_vec(s_doc)?;
-
-    encoder.write_all(&bytes)?;
-    let compressed = encoder.into_inner().into_inner().unwrap();
-    let encoded = format!(
-        "WOVEN-{}-",
-        general_purpose::STANDARD_NO_PAD.encode(compressed) // base-64
-    );
+    let encoded = format!("WOVEN-{}-", compress_and_encode(&bytes, 11)?);
 
     let mut result = String::new();
     for (i, c) in encoded.chars().enumerate() {
@@ -212,14 +235,7 @@ fn decode_woven(s: &str) -> anyhow::Result<WovenDocument> {
         .ok_or_else(|| anyhow::anyhow!("Missing 'WOVEN-' prefix"))?
         .strip_suffix("-")
         .ok_or_else(|| anyhow::anyhow!("Must end in a '-'"))?;
-    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    let compressed = general_purpose::STANDARD_NO_PAD.decode(s.as_bytes())?; // base-64
-
-    let mut decoder = brotli::Decompressor::new(&compressed[..], 4096);
-    let mut bytes = Vec::new();
-    decoder.read_to_end(&mut bytes)?;
-
-    Ok(serde_json::from_slice(&bytes)?)
+    Ok(serde_json::from_slice(&decode_and_decompress(s)?)?)
 }
 
 pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
@@ -227,12 +243,27 @@ pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
 }
 
 pub fn from_woven(s: &str, filename: String) -> anyhow::Result<Document> {
-    let mut doc: Document = match decode_woven(s)? {
-        WovenDocument::V0(s_doc_v0) => s_doc_v0.try_into()?,
-    };
-
+    let mut doc = from_woven_document(decode_woven(s)?)?;
     doc.file = filename;
     Ok(doc)
+}
+
+/// `doc` in WOVEN's serializable form, without the compression and base-64 that make it a share
+/// string. For saving a document inside something bigger that gets compressed as a whole (the
+/// GUI's saved session). Leaves out `doc.file`, as WOVEN always does.
+pub fn to_woven_document(doc: &Document) -> anyhow::Result<WovenDocument> {
+    Ok(WovenDocument::V0(match doc.try_solution() {
+        Some(solution) => WovenVersion0::with_solution(doc, solution),
+        // Solving for the picture needs `&mut`. (The GUI's documents always have theirs.)
+        None => (&mut doc.clone()).try_into()?,
+    }))
+}
+
+/// The counterpart to `to_woven_document`. The result's `file` is empty.
+pub fn from_woven_document(s_doc: WovenDocument) -> anyhow::Result<Document> {
+    match s_doc {
+        WovenDocument::V0(s_doc_v0) => s_doc_v0.try_into(),
+    }
 }
 
 /// The `c` field spells cells with each color's `ch`, which only works if the palette actually

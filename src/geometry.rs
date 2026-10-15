@@ -52,7 +52,7 @@ pub type IdxRange<K> = std::iter::Map<std::ops::Range<u32>, fn(u32) -> K>;
 macro_rules! typed_index {
     ($(#[$doc:meta])* $name:ident, $tag:literal) => {
         $(#[$doc])*
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         pub struct $name(pub u32);
 
         impl $name {
