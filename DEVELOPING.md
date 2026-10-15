@@ -31,6 +31,7 @@ doesn't cover code comments, documentation for developers (like this file), or p
       triano.rs - special trianogram drawing: half-square "cap" colors and clue silhouettes
       gallery.rs - for chosing a puzzle to solve
       input_mode.rs - mouse or touch: whichever the user used last
+      touch.rs - in touch mode, a finger steers a cursor on the grid, and the tools act there
       outline_text.rs - overengineered halos for text readability on arbitrary backgrounds
       session.rs - (web only) saving all the GUI state, so closing the app doesn't lose work.
     import.rs - read files and extract clues from grids

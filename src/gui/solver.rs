@@ -127,6 +127,8 @@ impl SolveGui {
                 checked_clues: HashSet::new(),
                 solving: true,
                 middle_pans: false,
+                touch_area: None,
+                touch: Default::default(),
                 picture_rect: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
@@ -438,7 +440,10 @@ impl SolveGui {
                 self.canvas
                     .canvas_with_clues(ui, scale, self.render_style, Some(overlay));
             self.hovered_cell = hovered;
-            if let Some(id) = clicked {
+            // A finger's tap belongs to the cursor, which can't reach the clues.
+            if let Some(id) = clicked
+                && self.canvas.touch_area.is_none()
+            {
                 self.toggle_checked_clue(id);
             }
             return;
@@ -512,7 +517,10 @@ impl SolveGui {
                 });
         });
 
-        if let Some(id) = clicked_clue {
+        // A finger's tap belongs to the cursor, which can't reach the clues.
+        if let Some(id) = clicked_clue
+            && self.canvas.touch_area.is_none()
+        {
             self.toggle_checked_clue(id);
         }
     }

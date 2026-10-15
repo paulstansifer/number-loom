@@ -11,6 +11,7 @@ mod session;
 pub mod solver;
 mod toolbar;
 mod tools;
+mod touch;
 mod triano;
 mod triddler;
 
@@ -432,6 +433,14 @@ pub struct CanvasGui {
     /// not also reach a tool. `main_ui` sets this from the scroll area's own measurements.
     #[serde(skip)]
     pub middle_pans: bool,
+    /// In touch mode, where on screen the canvas takes touches from: the whole central panel,
+    /// not just the picture, since the finger steers a cursor rather than pointing. `None` in
+    /// mouse mode. `main_ui` sets this, as it does `middle_pans`.
+    #[serde(skip)]
+    pub touch_area: Option<Rect>,
+    /// The touch cursor (see `touch.rs`).
+    #[serde(skip)]
+    pub(crate) touch: touch::TouchState,
     /// Indexed by dense cell index, like `Solution::cells`.
     #[serde(skip)]
     pub solved_mask: Staleable<(String, TiVec<CellIdx, bool>)>,
@@ -812,6 +821,8 @@ impl NonogramGui {
                 checked_clues: HashSet::new(),
                 solving: false,
                 middle_pans: false,
+                touch_area: None,
+                touch: Default::default(),
                 picture_rect: None,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
@@ -1364,24 +1375,34 @@ impl NonogramGui {
 
                 let (pannable, panning) = (self.pannable, self.panning);
 
+                // In touch mode, a finger anywhere in this panel steers the canvas's cursor (see
+                // `touch.rs`), so the panel's whole area is the canvas's to take touches from.
+                let touch_area = (self.input_mode == InputMode::Touch).then(|| ui.max_rect());
+
                 // Read out here, because the closure below borrows `self` mutably.
                 let scale = self.render_scale();
 
                 // A zoomed-in puzzle is routinely bigger than the window in both directions.
                 // `animated(false)` because the only thing that scrolls this programmatically is
-                // the pan below, which has to keep up with the pointer exactly.
-                let scrolled = egui::ScrollArea::both().animated(false).show(ui, |ui| {
-                    if panning {
-                        ui.scroll_with_delta(pointer_delta);
-                    }
-                    if let Some(solve_gui) = &mut self.solve_gui {
-                        solve_gui.canvas.middle_pans = pannable;
-                        solve_gui.body(ui, scale);
-                    } else {
-                        self.editor_gui.middle_pans = pannable;
-                        self.editor_gui.canvas(ui, scale, RenderStyle::Experimental);
-                    }
-                });
+                // the pan below, which has to keep up with the pointer exactly. A finger's drag
+                // belongs to the cursor, not to scrolling.
+                let scrolled = egui::ScrollArea::both()
+                    .animated(false)
+                    .drag_to_scroll(touch_area.is_none())
+                    .show(ui, |ui| {
+                        if panning {
+                            ui.scroll_with_delta(pointer_delta);
+                        }
+                        if let Some(solve_gui) = &mut self.solve_gui {
+                            solve_gui.canvas.middle_pans = pannable;
+                            solve_gui.canvas.touch_area = touch_area;
+                            solve_gui.body(ui, scale);
+                        } else {
+                            self.editor_gui.middle_pans = pannable;
+                            self.editor_gui.touch_area = touch_area;
+                            self.editor_gui.canvas(ui, scale, RenderStyle::Experimental);
+                        }
+                    });
 
                 // What the scroll area just measured decides whether the *next* frame's
                 // middle-drag pans. A frame of lag is invisible beside how long a zoom lasts.

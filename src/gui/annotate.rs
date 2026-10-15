@@ -117,12 +117,12 @@ pub struct AnnotateDrag {
 /// What the annotate tool needs to know about the pointer in a frame. It doesn't care *which*
 /// button: annotating never paints, so every button can drive it.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct AnnotatePointer {
-    pressed: bool,
-    down: bool,
-    released: bool,
+pub struct AnnotatePointer {
+    pub pressed: bool,
+    pub down: bool,
+    pub released: bool,
     /// egui's own verdict on whether this has become a drag rather than a click.
-    dragging: bool,
+    pub dragging: bool,
 }
 
 impl AnnotatePointer {

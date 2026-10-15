@@ -82,7 +82,7 @@ fn hue_name(hue: f32) -> &'static str {
 /// and from the rest of the puzzle — a solver has to read them off a grid of small cells. So:
 /// the two ends of the range first, then the three primaries, and after that whichever hue the
 /// picture has the most room left for.
-fn suggested_color(palette: &Palette) -> ((u8, u8, u8), &'static str) {
+pub fn suggested_color(palette: &Palette) -> ((u8, u8, u8), &'static str) {
     let hsv = |(r, g, b): (u8, u8, u8)| {
         egui::ecolor::hsv_from_rgb([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
     };

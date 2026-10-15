@@ -73,10 +73,10 @@ impl Selection {
 
 /// What the lasso tool needs to know about the pointer in a frame.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct LassoPointer {
-    pressed: bool,
-    down: bool,
-    released: bool,
+pub struct LassoPointer {
+    pub pressed: bool,
+    pub down: bool,
+    pub released: bool,
 }
 
 impl LassoPointer {

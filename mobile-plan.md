@@ -363,7 +363,38 @@ Implement the touch/mouse switch described under "Decisions already made". Store
 
 ## Phase 4: the touch cursor
 
-### [ ] 4.1 The cursor and its gestures
+### [x] 4.1 The cursor and its gestures
+
+**Done**, in `gui/touch.rs`: `Gesture` is the state machine, and `CanvasGui::touch_frame` drives
+the tools at the cursor with it. `main_ui` hands the canvas its `touch_area` (the whole central
+panel, so a drag can start anywhere there, not only on the picture) when the input mode is touch.
+The mouse handling moved, unchanged, into `CanvasGui::mouse_input`.
+
+- The cursor moves smoothly within a cell, so that slow movements still add up, but it's drawn,
+  and the painting tools act, on whichever cell it's in. Pushed past the edge of the picture, it
+  stops at the edge. Around a triddler's corners (where the bounding box has no cells) it slides
+  along whichever direction of the move it can.
+- Touch mode always paints with `PaintIntent::Current`: ruling a cell out means picking the
+  background color.
+- A second finger during a stroke undoes it and drops it from the redo stack. The lasso is only
+  let go of, since undoing a lift would leave the selection floating over cells it no longer
+  came from.
+- Clue check-offs are ignored in touch mode, and the scroll area's drag-to-scroll is off (the
+  drag belongs to the cursor). The view scrolls to keep the cursor in sight whenever it changes
+  cells, which covers part of 6.3.
+- A hold buzzes (`navigator.vibrate`, 15ms).
+- The tunable numbers are constants at the top of `touch.rs`: `TAP_SLOP` (8 points),
+  `HOLD_DELAY` (0.35s) and `CURSOR_GAIN` (1, no acceleration).
+
+Tested: unit tests for the state machine (tap, a shaky tap, drag, hold-then-drag, hold without
+moving, a hold noticed late, a second finger before and during a stroke), and for the canvas
+(painting at the cursor, steering, the edge, strokes, cancelling, flood fill, solving and
+annotating by touch). In headless Chrome with touch emulation: a tap below the grid painted the
+middle cell and showed the cursor; a drag moved the cursor four cells; a hold-then-drag painted a
+four-cell stroke as one undo step.
+
+Still to do on a real phone: tune the numbers, and play a whole puzzle. Note that the very first
+touch, the one that switches to touch mode, already acts: a tap paints at the cursor.
 
 In touch mode, the canvas ignores where the finger is and only uses how far it moves:
 

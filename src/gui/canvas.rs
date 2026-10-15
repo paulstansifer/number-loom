@@ -116,17 +116,6 @@ impl CanvasGui {
             Vec2::new(extent.x, extent.y),
         )));
 
-        let cell_under = |picture: &crate::puzzle::DynSolution, pos: Pos2| -> Option<CellIdx> {
-            let p = from_screen * pos;
-            picture
-                .cell_at(crate::layout::Point::new(p.x, p.y))
-                .and_then(|coord| picture.cell_of(coord))
-        };
-
-        let hovered_cell = response
-            .hover_pos()
-            .and_then(|pos| cell_under(self.document.solution_mut(), pos));
-
         // A mask is a dense-cell-index array, so it means nothing once the grid is a different
         // size. Checking here rather than at every resize/load site means there's no call site
         // to forget.
@@ -140,55 +129,15 @@ impl CanvasGui {
         // started it, so nothing below this line may consult `current_tool` directly.
         let tool = self.effective_tool(ui);
 
-        // While there's room to pan, a middle-drag belongs to the scroll area (see `main_ui`),
-        // so it mustn't also reach whatever tool happens to be selected.
-        let panning = self.middle_pans && ui.input(|i| i.pointer.middle_down());
-
-        if tool == Tool::Lasso {
-            // The lasso is the one tool that must keep tracking the pointer once it leaves the
-            // grid — a loop drawn around the outside of a shape is perfectly ordinary — so it
-            // works from the abstract-unit position directly, not from a cell.
-            if !panning && let Some(pointer_pos) = response.interact_pointer_pos() {
-                let p = from_screen * pointer_pos;
-                let pointer = LassoPointer::from_egui(&ui.input(|i| i.pointer.clone()));
-                self.lasso_input(pointer, Point::new(p.x, p.y));
+        let hovered_cell = match self.touch_area {
+            // A finger steers a cursor instead (see `touch.rs`).
+            Some(area) => self.touch_input(ui, area, &to_screen, tool),
+            None => {
+                // Should the mouse turn up in the middle of a finger's gesture.
+                self.touch.gesture = Default::default();
+                self.mouse_input(ui, &response, &from_screen, tool)
             }
-            self.lasso_keys(ui);
-            self.lasso_cursor(ui, hovered_cell);
-        } else if tool == Tool::Annotate {
-            // A mark is anchored on the cell the drag started from, but it swings around that
-            // cell as the pointer moves — so, like the lasso, this wants the abstract-unit
-            // position and not just a cell index.
-            if !panning && let Some(pointer_pos) = response.interact_pointer_pos() {
-                let p = from_screen * pointer_pos;
-                let pointer = AnnotatePointer::from_egui(&ui.input(|i| i.pointer.clone()));
-                self.annotate_input(pointer, Point::new(p.x, p.y));
-            }
-            if hovered_cell.is_some() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-            }
-        } else if hovered_cell.is_some() {
-            // There's no brush or paint-bucket in the standard cursor set, so the best these can
-            // do is say how precise the tool is: the two that paint a cell the pointer is exactly
-            // on get a crosshair, and flood fill — which acts on a whole region — gets the
-            // blockier `Cell` instead, just so it doesn't look identical to them.
-            ui.ctx().set_cursor_icon(match tool {
-                Tool::Pencil | Tool::LineAlongLane => egui::CursorIcon::Crosshair,
-                Tool::FloodFill => egui::CursorIcon::Cell,
-                Tool::Lasso | Tool::Annotate => unreachable!("handled above"),
-            });
-        }
-
-        // The lasso and the annotate tool are handled above, where the pointer is still allowed
-        // to be somewhere other than on a cell.
-        if !panning
-            && let Some(pointer_pos) = response.interact_pointer_pos()
-            && !matches!(tool, Tool::Lasso | Tool::Annotate)
-            && let Some(cell) = cell_under(self.document.solution_mut(), pointer_pos)
-        {
-            let pointer = PaintPointer::from_egui(&ui.input(|i| i.pointer.clone()));
-            self.pointer_tool_input(cell, pointer);
-        }
+        };
 
         let mut shapes = vec![];
         let disambiguator = self.disambiguator.get_if_fresh(self.version);
@@ -322,9 +271,87 @@ impl CanvasGui {
         // and the lasso's ants.
         self.draw_annotations(ui, &painter, scale, &to_screen);
 
+        // Last of all, so that nothing covers it.
+        if self.touch_area.is_some() {
+            painter.extend(self.touch_cursor_shapes(&to_screen));
+        }
+
         response.mark_changed();
 
         (hovered_cell, clicked_clue)
+    }
+
+    /// The canvas's input from a mouse (or anything else that hovers): the tools act wherever the
+    /// pointer is. Returns the hovered cell.
+    fn mouse_input(
+        &mut self,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+        from_screen: &egui::emath::RectTransform,
+        tool: Tool,
+    ) -> Option<CellIdx> {
+        let cell_under = |picture: &crate::puzzle::DynSolution, pos: Pos2| -> Option<CellIdx> {
+            let p = *from_screen * pos;
+            picture
+                .cell_at(crate::layout::Point::new(p.x, p.y))
+                .and_then(|coord| picture.cell_of(coord))
+        };
+
+        let hovered_cell = response
+            .hover_pos()
+            .and_then(|pos| cell_under(self.document.solution_mut(), pos));
+
+        // While there's room to pan, a middle-drag belongs to the scroll area (see `main_ui`),
+        // so it mustn't also reach whatever tool happens to be selected.
+        let panning = self.middle_pans && ui.input(|i| i.pointer.middle_down());
+
+        if tool == Tool::Lasso {
+            // The lasso is the one tool that must keep tracking the pointer once it leaves the
+            // grid — a loop drawn around the outside of a shape is perfectly ordinary — so it
+            // works from the abstract-unit position directly, not from a cell.
+            if !panning && let Some(pointer_pos) = response.interact_pointer_pos() {
+                let p = *from_screen * pointer_pos;
+                let pointer = LassoPointer::from_egui(&ui.input(|i| i.pointer.clone()));
+                self.lasso_input(pointer, Point::new(p.x, p.y));
+            }
+            self.lasso_keys(ui);
+            self.lasso_cursor(ui, hovered_cell);
+        } else if tool == Tool::Annotate {
+            // A mark is anchored on the cell the drag started from, but it swings around that
+            // cell as the pointer moves — so, like the lasso, this wants the abstract-unit
+            // position and not just a cell index.
+            if !panning && let Some(pointer_pos) = response.interact_pointer_pos() {
+                let p = *from_screen * pointer_pos;
+                let pointer = AnnotatePointer::from_egui(&ui.input(|i| i.pointer.clone()));
+                self.annotate_input(pointer, Point::new(p.x, p.y));
+            }
+            if hovered_cell.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
+        } else if hovered_cell.is_some() {
+            // There's no brush or paint-bucket in the standard cursor set, so the best these can
+            // do is say how precise the tool is: the two that paint a cell the pointer is exactly
+            // on get a crosshair, and flood fill — which acts on a whole region — gets the
+            // blockier `Cell` instead, just so it doesn't look identical to them.
+            ui.ctx().set_cursor_icon(match tool {
+                Tool::Pencil | Tool::LineAlongLane => egui::CursorIcon::Crosshair,
+                Tool::FloodFill => egui::CursorIcon::Cell,
+                Tool::Lasso | Tool::Annotate => unreachable!("handled above"),
+            });
+        }
+
+        // The lasso and the annotate tool are handled above, where the pointer is still allowed
+        // to be somewhere other than on a cell.
+        if !panning
+            && let Some(pointer_pos) = response.interact_pointer_pos()
+            && !matches!(tool, Tool::Lasso | Tool::Annotate)
+            && let Some(cell) = cell_under(self.document.solution_mut(), pointer_pos)
+        {
+            let pointer = PaintPointer::from_egui(&ui.input(|i| i.pointer.clone()));
+            self.pointer_tool_input(cell, pointer);
+        }
+
+        hovered_cell
     }
 }
 
