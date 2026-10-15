@@ -16,6 +16,16 @@
     <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
     <base data-trunk-public-url />
 
+    <!-- What makes this an installable PWA; see `web/`. -->
+    <link data-trunk rel="copy-file" href="web/manifest.json" />
+    <link data-trunk rel="copy-file" href="web/sw.js" />
+    <link data-trunk rel="copy-file" href="web/icon-192.png" />
+    <link data-trunk rel="copy-file" href="web/icon-512.png" />
+    <link rel="manifest" href="manifest.json" />
+
+    <!-- The first one that matches wins: on a phone, the app fills the screen (see below), so the
+         browser's bar should match the app's own bar rather than the page around it. -->
+    <meta name="theme-color" media="(max-width: 599px)" content="#f8f8f8">
     <meta name="theme-color" content="#e8e8e8">
 
     <style>
@@ -107,6 +117,34 @@
 
             .about {
                 overflow-y: visible;
+            }
+        }
+
+        /* On a phone, the app gets the whole screen, and the explanation is left out. This is
+           also what the installed PWA shows. 600px is the same width at which the app switches
+           to its own compact layout. */
+        @media (max-width: 599px) {
+            html,
+            body {
+                overflow: hidden;
+            }
+
+            .layout {
+                display: block;
+                padding: 0;
+            }
+
+            .app-frame {
+                position: fixed;
+                inset: 0;
+                height: auto;
+                border: 0;
+                border-radius: 0;
+                box-shadow: none;
+            }
+
+            .about {
+                display: none;
             }
         }
 

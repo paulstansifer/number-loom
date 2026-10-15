@@ -14,6 +14,13 @@
     <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
     <base data-trunk-public-url />
 
+    <!-- What makes this an installable PWA; see `web/`. -->
+    <link data-trunk rel="copy-file" href="web/manifest.json" />
+    <link data-trunk rel="copy-file" href="web/sw.js" />
+    <link data-trunk rel="copy-file" href="web/icon-192.png" />
+    <link data-trunk rel="copy-file" href="web/icon-512.png" />
+    <link rel="manifest" href="manifest.json" />
+
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="white">
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#404040">
 

@@ -143,7 +143,21 @@ phone.
 
 ## Phase 1: installable
 
-### [ ] 1.1 Manifest, icons and service worker
+### [x] 1.1 Manifest, icons and service worker
+
+**Done**, in `web/`. The placeholder icons are `icon.png` scaled up 3× and 8× with
+nearest-neighbour scaling, so they're pixelated rather than blurry. Two things beyond plain
+network-first in `sw.js`:
+
+- On install, it caches the page and whatever trunk links from it. The page that registered the
+  worker loaded before the worker existed, so otherwise going offline right after the first visit
+  would find nothing cached.
+- When a newly built file arrives, it deletes the old build's copy. Trunk puts a hash of the build
+  in the names of the wasm, the JS glue and the snippet directories, so old builds would
+  otherwise pile up in the cache.
+
+`index.html` (itch.io) has all of this too. It can't be installed from inside itch.io's iframe,
+but the offline caching still applies.
 
 Both HTML files register `sw.js`, which doesn't exist (it's left over from the eframe template).
 
@@ -165,7 +179,22 @@ Both HTML files register `sw.js`, which doesn't exist (it's left over from the e
 It has to be the Pages build: itch.io serves the app in an iframe on its own domain, which can't
 be installed.
 
-### [ ] 1.2 Full-screen on narrow screens in `pages.html`
+### [x] 1.2 Full-screen on narrow screens in `pages.html`
+
+**Done.** Below 600px, `pages.html` also switches its `theme-color` to egui's panel color, so the
+browser's bar matches the app's. The share links are `https://` now.
+
+Phase 1 was tested in headless Chrome over the DevTools protocol, at 390×844:
+
+- Chrome reported no manifest errors and no installability errors.
+- The service worker was active and controlled the page on the first visit, and the page, JS,
+  wasm and snippet were cached by then.
+- With the server stopped, the app loaded and ran.
+- After a second build with new hashes was served from the same address, only the new build's
+  files were left in the cache.
+- The desktop layout of `pages.html` is unchanged.
+
+Still to check on a real phone: installing from Pages, opening in portrait, and loading offline.
 
 Pages serves `pages.html`, which frames the app beside some explanatory text. Below the 600px
 breakpoint, make the app frame fill the viewport and hide the text, so phone visitors (and the

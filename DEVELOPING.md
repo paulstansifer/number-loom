@@ -7,6 +7,7 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
   examples/ - various puzzles for testing purposes (filenames are spoilers for "puzzles/")
     woven/ - frozen `WOVEN` share strings; see the README there before touching them
   puzzles/ - puzzles for human entertainment; filenames are oblique references to the solution
+  web/ - installable PWA stuff: manifest, service worker, and icons
   src/
     gui.rs - the core of the GUI: app state, the undo stack, the sidebar, and `main_ui`
     gui/

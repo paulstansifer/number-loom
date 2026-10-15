@@ -40,7 +40,7 @@ impl NonogramGui {
         );
 
         if self.share_as_link {
-            format!("http://paulstansifer.github.io/number-loom/#{woven}")
+            format!("https://paulstansifer.github.io/number-loom/#{woven}")
         } else {
             woven
         }
