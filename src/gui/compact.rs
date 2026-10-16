@@ -16,7 +16,8 @@ pub enum ScreenLayout {
 }
 
 /// Narrower than this, in points, gets the compact layout. egui on the web uses one point per
-/// CSS pixel, so this is the same breakpoint as `pages.html`'s media query.
+/// CSS pixel. (`pages.html` gives the app the whole window from 100px wider than this, so the
+/// page's own framing never pushes the app into this layout.)
 const COMPACT_WIDTH: f32 = 600.0;
 
 impl ScreenLayout {

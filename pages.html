@@ -25,7 +25,7 @@
 
     <!-- The first one that matches wins: on a phone, the app fills the screen (see below), so the
          browser's bar should match the app's own bar rather than the page around it. -->
-    <meta name="theme-color" media="(max-width: 599px)" content="#f8f8f8">
+    <meta name="theme-color" media="(max-width: 699px)" content="#f8f8f8">
     <meta name="theme-color" content="#e8e8e8">
 
     <style>
@@ -102,7 +102,10 @@
             margin: 0 0 12px;
         }
 
-        @media (max-width: 900px) {
+        /* Side by side, the app gets the window less 394px (the explanation's column, the gap,
+           the padding and the border), so this has to stack them while that's still comfortably
+           more than the 600px the app needs for its desktop layout. */
+        @media (max-width: 1099px) {
             .layout {
                 grid-template-columns: minmax(0, 1fr);
                 height: auto;
@@ -121,9 +124,11 @@
         }
 
         /* On a phone, the app gets the whole screen, and the explanation is left out. This is
-           also what the installed PWA shows. 600px is the same width at which the app switches
-           to its own compact layout. */
-        @media (max-width: 599px) {
+           also what the installed PWA shows. The app switches to its own compact layout below
+           600px; this starts 100px before that, so that the framed layout above (whose padding
+           and border take 34px) never squeezes the app into its compact layout. In between, the
+           app's desktop layout fills the window. */
+        @media (max-width: 699px) {
             html,
             body {
                 overflow: hidden;

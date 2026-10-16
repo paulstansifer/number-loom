@@ -181,7 +181,10 @@ be installed.
 
 ### [x] 1.2 Full-screen on narrow screens in `pages.html`
 
-**Done.** Below 600px, `pages.html` also switches its `theme-color` to egui's panel color, so the
+**Done.** (Later moved to 700px, 100px before the app's own 600-point breakpoint: between
+600px and about 634px, the frame's padding and border squeezed the app into its compact layout
+inside the framed page. For the same reason, the explanation moves from beside the app to under
+it below 1100px rather than 900px: side by side, the app gets the window less 394px.) Below 600px, `pages.html` also switches its `theme-color` to egui's panel color, so the
 browser's bar matches the app's. The share links are `https://` now.
 
 Phase 1 was tested in headless Chrome over the DevTools protocol, at 390×844:
