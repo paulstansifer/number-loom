@@ -321,11 +321,7 @@ impl NonogramGui {
                             .font(TextStyle::Monospace)
                             .desired_width(text_width),
                     );
-                    // On a phone, the system's share sheet, where there is one: pasting into an
-                    // egui text field there is unreliable, so a link is handed straight to
-                    // another app instead.
-                    let share_sheet = layout == ScreenLayout::Compact && compact::can_share();
-                    if share_sheet {
+                    if compact::can_share() {
                         if ui.button(icons::ICON_SHARE).clicked() {
                             compact::share(
                                 &self.editor_gui.document.title,
