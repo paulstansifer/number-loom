@@ -326,7 +326,7 @@ impl NonogramGui {
                     // another app instead.
                     let share_sheet = layout == ScreenLayout::Compact && compact::can_share();
                     if share_sheet {
-                        if ui.button("HUMANIZE: Share").clicked() {
+                        if ui.button(icons::ICON_SHARE).clicked() {
                             compact::share(
                                 &self.editor_gui.document.title,
                                 &self.share_string,
@@ -337,9 +337,7 @@ impl NonogramGui {
                         ctx.copy_text(self.share_string.clone());
                         // There's nothing else to show that it happened, on a phone.
                         if layout == ScreenLayout::Compact {
-                            self.editor_gui
-                                .status
-                                .set(StatusMessage::info("HUMANIZE: Copied"));
+                            self.editor_gui.status.set(StatusMessage::info("Copied"));
                         }
                     }
 
