@@ -609,18 +609,53 @@ area, scroll to keep it in view (`scroll_to_rect` on its cell).
 
 ## Phase 7: fitting in on Android
 
-### [ ] 7.1 The back button
+### [x] 7.1 The back button
+
+**Done**, in `gui/back_button.rs`, for every layout (on the desktop, the browser's back button
+closes an open window). Each frame, `NonogramGui::overlays` lists what's open, topmost first: the
+solved window, the color dialog, Metadata, Save/share, Library, New, the drawer, and the Resize
+window. There's one history entry per open thing: opening one pushes an entry; the back button
+pops it, and the `popstate` closes the topmost. Closing one any other way steps history back to
+match (`history.go`), and the `popstate` that causes is expected and ignored.
+
+Tested in headless Chrome (`history.back()` standing in for the button): back closes the drawer,
+and a dialog; closing a dialog with its own back arrow and then opening the drawer, back still
+closes the drawer. Unit tests for the order things close in.
+
+Known gaps: a reload leaves the entries pushed before it in the history, where back does nothing
+visible; and a back press arriving while a `history.go` is still on its way could be mistaken for
+the expected one. Still to check on a real phone, especially as an installed PWA.
 
 In an installed PWA, Android's back button leaves the app. Push a history entry when the drawer
 or a dialog opens, and close it on `popstate`, so that back closes it instead.
 
-### [ ] 7.2 The share sheet
+### [x] 7.2 The share sheet
+
+**Done.** In the compact layout, where the browser has `navigator.share`, Save/share has a Share
+button (in place of "Copy to clipboard") that hands the link, or the share string if that's
+what's chosen, to the system's share sheet. Elsewhere it copies, with a toast to say so. Opening
+Save/share from the drawer chooses the link. `navigator.share` is called through
+`Function::call1`, like `navigator.vibrate`, and the promise it returns (rejected when the user
+cancels) is awaited and ignored.
+
+While there: links had line breaks in them, because WOVEN strings are wrapped every 100
+characters. Now a link has none (reading WOVEN ignores whitespace anyway), on the desktop too.
+
+Tested in headless Chrome with `navigator.share` stubbed (it doesn't exist there): the stub got
+the link, with no whitespace in it. Without the stub, the button copies and shows the toast.
+
+It still needs a real phone: `navigator.share` needs a recent user gesture, and the tap reaches it
+a frame after the touch event, not inside it. Chrome allows a few seconds; Safari may be stricter.
 
 In the compact layout, Save/share's link should open the system share sheet (`navigator.share`)
 where it exists, falling back to copying to the clipboard. Pasting a WOVEN string into an egui
 text field is unreliable on phones, so links matter more there.
 
-### [ ] 7.3 Documentation
+### [x] 7.3 Documentation
+
+**Done**: a "Phones" section in `DEVELOPING.md` (the layouts and breakpoints, the gestures,
+testing on a phone, including `adb reverse` for a secure origin over USB, and remote debugging),
+and HUMANIZE drafts in `CHANGELOG.md`.
 
 Add a section to `DEVELOPING.md`: how to test on a phone (`trunk serve --address 0.0.0.0`, then
 open it from the phone over the LAN; it runs over plain HTTP, but installing needs HTTPS, so test

@@ -35,6 +35,7 @@ doesn't cover code comments, documentation for developers (like this file), or p
       touch.rs - in touch mode, a finger steers a cursor on the grid, and the tools act there
       outline_text.rs - overengineered halos for text readability on arbitrary backgrounds
       session.rs - (web only) saving all the GUI state, so closing the app doesn't lose work.
+      back_button.rs - (web only) the back button closes the topmost dialog, not the app
     import.rs - read files and extract clues from grids
     export.rs - write files 
     formats/
@@ -178,3 +179,54 @@ https://paulstansifer.github.io/number-loom/puzzles.zip; it probably takes aroun
 
 It has to be Pages and not a release asset in order to get
 `Access-Control-Allow-Origin: *`. 
+
+# Phones
+
+The web build is an installable PWA (see `web/`), with a layout of its own for small screens.
+
+## Two layouts
+
+Below 600 points wide (`ScreenLayout::of`), the app uses the compact layout in `gui/compact.rs`:
+a bar across the top, the tools and palette across the bottom, everything else in a drawer, and
+full-screen dialogs. egui on the web uses one point per CSS pixel, so that's 600 CSS pixels, and
+it's picked every frame, so narrowing a desktop browser window switches layouts too. Both layouts
+are built from the same pieces (`edit_sidebar` and `SolveGui::sidebar` are the desktop's
+arrangement of them), so a fix to one of those reaches both. Everything in the compact layout
+that can be tapped is at least 48 points.
+
+`pages.html` has breakpoints of its own, kept clear of the app's so that the page's framing never
+squeezes the app into the compact layout: below 700px it gives the app the whole window, and below
+1100px it puts the explanatory text under the app instead of beside it.
+
+## Touch
+
+The input mode (`gui/input_mode.rs`) follows whatever was used last, independently of the
+layout: a touch means touch mode, and a pointer moving with nothing pressed means a mouse. In touch
+mode, the canvas doesn't care where the finger is, only how it moves (`gui/touch.rs`):
+
+- **Drag** anywhere on the canvas: moves a cursor on the grid, like a trackpad. It snaps to a
+  cell when the finger lifts.
+- **Tap:** a click of the current tool at the cursor.
+- **Hold still, then drag:** the tool goes down at the cursor and is dragged along with it.
+- **Two fingers:** pan and zoom. A second finger arriving cancels whatever the first one started.
+
+Ruling a cell out by touch means picking the background from the palette. The numbers to tune
+(`TAP_SLOP`, `HOLD_DELAY`, `CURSOR_GAIN`) are at the top of `touch.rs`.
+
+## Testing on a phone
+
+`trunk serve --address 0.0.0.0`, then open `http://<this computer's address>:8080` on the phone,
+over the same network. That's plain HTTP, which browsers don't count as secure, so there's no
+service worker there: no installing, and no working offline. Either test those against GitHub
+Pages, or (on Android, with USB debugging on) run `adb reverse tcp:8080 tcp:8080` and open
+`http://localhost:8080` on the phone instead, which does count as secure.
+
+To debug, connect an Android phone by USB with USB debugging on, and open `chrome://inspect` in
+Chrome on the computer: each tab on the phone (and an installed PWA) shows up there, with the
+console and a live view of the screen. The service worker serves cached copies network-first, but
+`#dev` at the end of the address skips registering it.
+
+Without a phone: Chrome's DevTools device emulation sends touch events (pointer and touch events
+both, as a phone does), and so does headless Chrome driven over the DevTools protocol
+(`Emulation.setTouchEmulationEnabled`, then `Input.dispatchTouchEvent`). `tests/gui.rs` has the
+compact layout's tests, which run at 390×844.

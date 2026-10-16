@@ -40,6 +40,9 @@ impl NonogramGui {
         );
 
         if self.share_as_link {
+            // A share string is broken into lines, which a link can't be. (Reading it back
+            // ignores whitespace either way.)
+            let woven: String = woven.split_whitespace().collect();
             format!("https://paulstansifer.github.io/number-loom/#{woven}")
         } else {
             woven
@@ -318,8 +321,26 @@ impl NonogramGui {
                             .font(TextStyle::Monospace)
                             .desired_width(text_width),
                     );
-                    if ui.button("Copy to clipboard").clicked() {
+                    // On a phone, the system's share sheet, where there is one: pasting into an
+                    // egui text field there is unreliable, so a link is handed straight to
+                    // another app instead.
+                    let share_sheet = layout == ScreenLayout::Compact && compact::can_share();
+                    if share_sheet {
+                        if ui.button("HUMANIZE: Share").clicked() {
+                            compact::share(
+                                &self.editor_gui.document.title,
+                                &self.share_string,
+                                self.share_as_link,
+                            );
+                        }
+                    } else if ui.button("Copy to clipboard").clicked() {
                         ctx.copy_text(self.share_string.clone());
+                        // There's nothing else to show that it happened, on a phone.
+                        if layout == ScreenLayout::Compact {
+                            self.editor_gui
+                                .status
+                                .set(StatusMessage::info("HUMANIZE: Copied"));
+                        }
                     }
 
                     if self.editor_gui.document.license == "CC BY 4.0" {
@@ -537,4 +558,29 @@ fn share_string(
 ) -> String {
     crate::formats::woven::to_woven(&mut document_to_save(document, progress, save_progress))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A link has to survive being shared, which a line break in the middle of it wouldn't.
+    #[test]
+    fn a_link_is_one_unbroken_line_that_opens_the_puzzle() {
+        let woven = include_str!("../../examples/woven/square_color_metadata.0.woven");
+        let doc =
+            crate::formats::woven::from_woven(woven.trim(), "linked.woven".to_string()).unwrap();
+        let mut gui = NonogramGui::new(doc.clone());
+        gui.share_as_link = true;
+
+        let link = gui.share_string();
+        assert!(!link.contains(char::is_whitespace), "{link:?}");
+        let (_, hash) = link.split_once('#').unwrap();
+        let opened = crate::formats::woven::from_woven(hash, "linked.woven".to_string()).unwrap();
+        assert_eq!(opened.title, doc.title);
+        assert_eq!(
+            opened.try_solution().unwrap().cells(),
+            doc.try_solution().unwrap().cells()
+        );
+    }
 }

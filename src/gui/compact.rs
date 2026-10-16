@@ -300,6 +300,72 @@ pub(super) struct CompactState {
     color_dialog: Option<Color>,
 }
 
+/// Whether the browser can hand things to the system's share sheet (`navigator.share`).
+pub(super) fn can_share() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        share_function().is_some()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    false
+}
+
+#[cfg(target_arch = "wasm32")]
+fn share_function() -> Option<(web_sys::Navigator, js_sys::Function)> {
+    use wasm_bindgen::JsCast as _;
+    let navigator = web_sys::window()?.navigator();
+    let share = js_sys::Reflect::get(&navigator, &"share".into())
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    Some((navigator, share))
+}
+
+/// Open the system's share sheet, with `shared` as a link if `is_link`, and otherwise as text.
+/// Does nothing where there isn't one (see `can_share`).
+pub(super) fn share(title: &str, shared: &str, is_link: bool) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast as _;
+        let Some((navigator, share)) = share_function() else {
+            return;
+        };
+        let data = js_sys::Object::new();
+        let set = |key: &str, value: &str| {
+            let _ = js_sys::Reflect::set(&data, &key.into(), &value.into());
+        };
+        if !title.is_empty() {
+            set("title", title);
+        }
+        set(if is_link { "url" } else { "text" }, shared);
+        // Called through `Function::call1`, which catches what it throws, like `touch::buzz`.
+        // What it returns is a promise, which is rejected when the user changes their mind;
+        // that's nothing to complain about.
+        if let Ok(promise) = share.call1(&navigator, &data)
+            && let Ok(promise) = promise.dyn_into::<js_sys::Promise>()
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+            });
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (title, shared, is_link);
+}
+
+/// Something open on top of the canvas, which the back button closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Overlay {
+    Solved,
+    ColorDialog,
+    Metadata,
+    SaveShare,
+    Library,
+    New,
+    Drawer,
+    Resize,
+}
+
 /// Something chosen from the drawer's "File" section.
 #[derive(Clone, Copy)]
 enum FileItem {
@@ -310,6 +376,48 @@ enum FileItem {
 }
 
 impl NonogramGui {
+    /// What's open on top of the canvas, topmost first: the order they're drawn in, backwards.
+    pub(super) fn overlays(&self, layout: ScreenLayout) -> Vec<Overlay> {
+        let compact = &self.compact;
+        // Only the compact layout announces a solve with a window.
+        let solved = layout == ScreenLayout::Compact
+            && self.solve_gui.as_ref().is_some_and(|solve_gui| {
+                !solve_gui.solved_announced
+                    && solve_gui.replay.is_some()
+                    && solve_gui.is_correctly_solved()
+            });
+        [
+            (Overlay::Solved, solved),
+            (Overlay::ColorDialog, compact.color_dialog.is_some()),
+            (Overlay::Metadata, compact.metadata_open),
+            (Overlay::SaveShare, self.show_save_share_window),
+            (Overlay::Library, self.library_dialog.is_some()),
+            (Overlay::New, self.new_dialog.is_some()),
+            (Overlay::Drawer, compact.drawer_open),
+            (Overlay::Resize, compact.resize_open),
+        ]
+        .into_iter()
+        .filter_map(|(overlay, open)| open.then_some(overlay))
+        .collect()
+    }
+
+    pub(super) fn close_overlay(&mut self, overlay: Overlay) {
+        match overlay {
+            Overlay::Solved => {
+                if let Some(solve_gui) = &mut self.solve_gui {
+                    solve_gui.solved_announced = true;
+                }
+            }
+            Overlay::ColorDialog => self.compact.color_dialog = None,
+            Overlay::Metadata => self.compact.metadata_open = false,
+            Overlay::SaveShare => self.show_save_share_window = false,
+            Overlay::Library => self.library_dialog = None,
+            Overlay::New => self.new_dialog = None,
+            Overlay::Drawer => self.compact.drawer_open = false,
+            Overlay::Resize => self.compact.resize_open = false,
+        }
+    }
+
     /// The whole window, in the compact layout.
     pub(super) fn compact_ui(&mut self, ctx: &egui::Context) {
         let editing = self.solve_gui.is_none();
@@ -573,7 +681,11 @@ impl NonogramGui {
                     FileItem::New => self.open_new_dialog(),
                     FileItem::Library => self.open_library(),
                     FileItem::Open => self.open_file(),
-                    FileItem::SaveShare => self.open_save_share(),
+                    FileItem::SaveShare => {
+                        self.open_save_share();
+                        // A link is the easiest thing to share from a phone.
+                        self.share_as_link = true;
+                    }
                 }
                 close = true;
             }
@@ -831,5 +943,63 @@ impl NonogramGui {
         if shown.inner || shown.should_close() {
             solve_gui.solved_announced = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gui() -> NonogramGui {
+        NonogramGui::new(Document::from_solution(
+            DynSolution::Square(Solution::blank_bw(5, 5)),
+            "test".to_string(),
+        ))
+    }
+
+    /// The back button closes whatever's on top, one thing at a time.
+    #[test]
+    fn back_closes_the_topmost_thing() {
+        let mut gui = gui();
+        assert!(gui.overlays(ScreenLayout::Compact).is_empty());
+
+        gui.compact.drawer_open = true;
+        gui.compact.resize_open = true;
+        gui.open_save_share();
+        assert_eq!(
+            gui.overlays(ScreenLayout::Compact),
+            vec![Overlay::SaveShare, Overlay::Drawer, Overlay::Resize]
+        );
+
+        for expected in [Overlay::SaveShare, Overlay::Drawer, Overlay::Resize] {
+            let topmost = gui.overlays(ScreenLayout::Compact)[0];
+            assert_eq!(topmost, expected);
+            gui.close_overlay(topmost);
+        }
+        assert!(gui.overlays(ScreenLayout::Compact).is_empty());
+    }
+
+    /// Only the compact layout announces a solve with a window, so only there does back have
+    /// it to close.
+    #[test]
+    fn the_solved_window_is_closed_by_back() {
+        let mut gui = gui();
+        gui.enter_solve_mode();
+        let solve_gui = gui.solve_gui.as_mut().unwrap();
+        let changes = solve_gui
+            .intended_solution
+            .cells()
+            .iter_enumerated()
+            .map(|(cell, color)| (cell, *color))
+            .collect();
+        solve_gui
+            .canvas
+            .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+        solve_gui.solver_frame();
+
+        assert!(gui.overlays(ScreenLayout::Desktop).is_empty());
+        assert_eq!(gui.overlays(ScreenLayout::Compact), vec![Overlay::Solved]);
+        gui.close_overlay(Overlay::Solved);
+        assert!(gui.overlays(ScreenLayout::Compact).is_empty());
     }
 }

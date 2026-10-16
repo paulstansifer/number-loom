@@ -1,5 +1,6 @@
 mod annotate;
 mod auto_button;
+mod back_button;
 mod canvas;
 mod compact;
 pub mod gallery;
@@ -517,6 +518,9 @@ pub struct NonogramGui {
     /// the desktop's toolbar.
     #[serde(skip)]
     compact: compact::CompactState,
+    /// The browser's back button closes what's open, rather than leaving the app.
+    #[serde(skip)]
+    back_button: back_button::BackButton,
     #[serde(skip)]
     show_save_share_window: bool,
     #[serde(skip)]
@@ -942,6 +946,7 @@ impl NonogramGui {
             solve_cells_left: None,
             solve_gui: None,
             compact: Default::default(),
+            back_button: Default::default(),
             show_save_share_window: false,
             share_as_link: false,
             share_string: "".to_string(),
@@ -1458,10 +1463,19 @@ impl NonogramGui {
             None => self.editor_frame(),
         }
 
+        for _ in 0..self.back_button.take_presses(ctx) {
+            if let Some(&topmost) = self.overlays(layout).first() {
+                self.close_overlay(topmost);
+            }
+        }
+
         match layout {
             ScreenLayout::Desktop => self.desktop_ui(ctx),
             ScreenLayout::Compact => self.compact_ui(ctx),
         }
+
+        let open = self.overlays(layout).len();
+        self.back_button.sync(open);
     }
 
     /// The desktop layout: a toolbar, a status bar, a sidebar, and the canvas.
