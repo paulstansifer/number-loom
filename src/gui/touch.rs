@@ -5,8 +5,8 @@
 //! *moves*: a cursor on the grid follows the finger's movements the way a trackpad's pointer does,
 //! from wherever on the canvas the finger happens to be, and the tools act at the cursor.
 //!
-//! - **Drag:** moves the cursor. When the finger lifts, the cursor settles into the middle of its
-//!   cell.
+//! - **Drag:** moves the cursor, smoothly rather than a cell at a time. When the finger lifts,
+//!   the cursor settles into the middle of whichever cell it's in.
 //! - **Tap:** a click of the current tool at the cursor.
 //! - **Hold still, then drag:** the tool goes down at the cursor, and is dragged along with it
 //!   until the finger lifts.
@@ -227,8 +227,9 @@ impl TouchSample {
 pub(crate) struct TouchState {
     pub(super) gesture: Gesture,
     /// Where the cursor is, in abstract units: always on a cell, once it has been placed. It
-    /// moves smoothly within a cell (so that slow movements still add up), but it's drawn, and
-    /// the painting tools act, on whichever cell it's in.
+    /// moves smoothly, and is drawn where it is (see `touch_cursor_outline`), but the painting
+    /// tools act on whichever cell it's in, and it settles into the middle of that cell when the
+    /// finger lifts.
     cursor: Option<Point>,
     /// Whether the tool has moved since it went down. A hold that's let go of without moving is
     /// still a click.
@@ -252,6 +253,22 @@ fn cell_containing(picture: &DynSolution, p: Point) -> Option<CellIdx> {
 
 fn cell_center(picture: &DynSolution, cell: CellIdx) -> Point {
     picture.cell_shape(cell).center(picture.cell_origin(cell))
+}
+
+/// How far from the middle of `cell` to draw its outline, for a cursor at `at` (somewhere in
+/// `cell`): as far as `at` is, except that the outline doesn't leave the picture's bounds.
+fn outline_offset(picture: &DynSolution, cell: CellIdx, at: Point) -> (f32, f32) {
+    let (corners, n) = picture.cell_shape(cell).vertices(picture.cell_origin(cell));
+    let corners = &corners[..n];
+    let center = cell_center(picture, cell);
+    let extent = picture.extent();
+    let low = |pick: fn(&Point) -> f32| corners.iter().map(pick).fold(f32::INFINITY, f32::min);
+    let high = |pick: fn(&Point) -> f32| corners.iter().map(pick).fold(f32::NEG_INFINITY, f32::max);
+    // The cell itself is inside the picture, so these ranges always contain 0.
+    (
+        (at.x - center.x).clamp(-low(|p| p.x), extent.x - high(|p| p.x)),
+        (at.y - center.y).clamp(-low(|p| p.y), extent.y - high(|p| p.y)),
+    )
 }
 
 /// A short buzz, where the device can do that, to say that a hold has put the tool down.
@@ -402,7 +419,19 @@ impl CanvasGui {
         // edge rather than stopping dead: try each direction of the move alone.
         let landing = [to, Point::new(to.x, from.y), Point::new(from.x, to.y)]
             .into_iter()
-            .find(|p| cell_containing(picture, *p).is_some());
+            .find_map(|p| Some((p, cell_containing(picture, p)?)))
+            // And no further than the cursor as it's drawn goes (see `outline_offset`), so that
+            // coming back from the edge moves it straight away.
+            .map(|(p, cell)| {
+                let center = cell_center(picture, cell);
+                let (dx, dy) = outline_offset(picture, cell, p);
+                let kept = Point::new(center.x + dx, center.y + dy);
+                if cell_containing(picture, kept) == Some(cell) {
+                    kept
+                } else {
+                    p
+                }
+            });
         match landing {
             Some(p) if (p.x, p.y) != (from.x, from.y) => {
                 self.touch.cursor = Some(p);
@@ -481,8 +510,7 @@ impl CanvasGui {
         &self,
         to_screen: &egui::emath::RectTransform,
     ) -> Vec<egui::Shape> {
-        let (Some(picture), Some(cell)) = (self.document.try_solution(), self.touch_cursor())
-        else {
+        let Some(picture) = self.document.try_solution() else {
             return vec![];
         };
         let ((r, g, b), _) = super::palette::suggested_color(picture.palette());
@@ -492,27 +520,48 @@ impl CanvasGui {
         } else {
             Color32::WHITE
         };
-        let (corners, n) = picture.cell_shape(cell).vertices(picture.cell_origin(cell));
-        let points: Vec<Pos2> = corners[..n]
-            .iter()
+        let points: Vec<Pos2> = self
+            .touch_cursor_outline()
+            .into_iter()
             .map(|p| to_screen * Pos2::new(p.x, p.y))
             .collect();
+        if points.is_empty() {
+            return vec![];
+        }
         vec![
             egui::Shape::closed_line(points.clone(), egui::Stroke::new(5.0, halo)),
             egui::Shape::closed_line(points, egui::Stroke::new(2.5, Color32::from_rgb(r, g, b))),
         ]
     }
 
-    /// Where on screen the cursor's cell is, for keeping it in view.
+    /// Where on screen the cursor is, for keeping it in view.
     pub(super) fn touch_cursor_rect(&self, to_screen: &egui::emath::RectTransform) -> Option<Rect> {
-        let picture = self.document.try_solution()?;
-        let cell = self.touch_cursor()?;
-        let (corners, n) = picture.cell_shape(cell).vertices(picture.cell_origin(cell));
-        let points: Vec<Pos2> = corners[..n]
-            .iter()
+        let points: Vec<Pos2> = self
+            .touch_cursor_outline()
+            .into_iter()
             .map(|p| to_screen * Pos2::new(p.x, p.y))
             .collect();
-        Some(Rect::from_points(&points))
+        (!points.is_empty()).then(|| Rect::from_points(&points))
+    }
+
+    /// The cursor as it's drawn: the outline of the cell it's in, but centered on where it really
+    /// is, which while a finger is moving it is anywhere at all (and is the middle of a cell
+    /// again once it settles). Pushed back inside the picture where it would stick out of it.
+    /// In abstract units; empty if there's no cursor.
+    fn touch_cursor_outline(&self) -> Vec<Point> {
+        let (Some(picture), Some(cell), Some(at)) = (
+            self.document.try_solution(),
+            self.touch_cursor(),
+            self.touch.cursor,
+        ) else {
+            return vec![];
+        };
+        let (corners, n) = picture.cell_shape(cell).vertices(picture.cell_origin(cell));
+        let (dx, dy) = outline_offset(picture, cell, at);
+        corners[..n]
+            .iter()
+            .map(|p| Point::new(p.x + dx, p.y + dy))
+            .collect()
     }
 }
 
@@ -741,6 +790,36 @@ mod canvas_tests {
 
         tap(&mut gui);
         assert_eq!(painted(&gui), vec![at(4, 1)]);
+    }
+
+    /// While the finger moves it, the cursor is drawn wherever it really is, not on the cell it's
+    /// in; it's only once the finger lifts that it snaps to a cell. Either way, it's drawn
+    /// inside the picture.
+    #[test]
+    fn the_cursor_moves_smoothly_until_it_settles() {
+        // The outline's top-left corner, in cell edges.
+        let corner = |gui: &CanvasGui| {
+            let outline = gui.touch_cursor_outline();
+            let x = outline.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+            let y = outline.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+            (x, y)
+        };
+        let mut gui = editor(Tool::Pencil);
+        let mut finger = Finger::down(&mut gui);
+        // (Far enough to be more than a shaky tap.)
+        finger.slide(&mut gui, (1.25, 0.0));
+        let (x, y) = corner(&gui);
+        assert!((x - 3.25).abs() < 1e-4 && y == 2.0, "drawn at ({x}, {y})");
+
+        // Into the last column, and on past the edge: it stops with its edge on the picture's.
+        finger.slide(&mut gui, (2.0, 0.0));
+        assert!((corner(&gui).0 - 4.0).abs() < 1e-4);
+
+        finger.slide(&mut gui, (-0.6, 0.0));
+        let (x, _) = corner(&gui);
+        assert!(x > 3.0 && x < 4.0, "drawn at {x}, between cells");
+        finger.lift(&mut gui);
+        assert_eq!(corner(&gui), (3.0, 2.0));
     }
 
     /// The cursor can't leave the grid: pushed past an edge, it slides along it.

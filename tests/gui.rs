@@ -1871,7 +1871,7 @@ mod tests {
             ] {
                 assert_tappable(&harness.get_by_label(label));
             }
-            assert_eq!(harness.query_all_by_label("Run once").count(), 4);
+            assert_eq!(harness.query_all_by_label("once").count(), 4);
             assert_all_tappable(&harness);
 
             // Each aid can be run once, or switched on.
@@ -1891,7 +1891,7 @@ mod tests {
                 harness.run();
             }
             assert!(!analysis(&harness));
-            harness.get_all_by_label("Run once").next().unwrap().click();
+            harness.get_all_by_label("once").next().unwrap().click();
             harness.run();
             assert!(analysis(&harness));
             harness.get_by_label("Analyze Lines automatically").click();
@@ -2109,7 +2109,7 @@ mod tests {
             if !auto {
                 harness.get_by_label(icons::ICON_MENU).click();
                 harness.run();
-                harness.get_all_by_label("Run once").nth(2).unwrap().click();
+                harness.get_all_by_label("once").nth(2).unwrap().click();
                 harness.run();
                 harness.get_by_label(icons::ICON_CLOSE).click();
                 harness.run();

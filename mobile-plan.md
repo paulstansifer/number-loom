@@ -373,8 +373,11 @@ the tools at the cursor with it. `main_ui` hands the canvas its `touch_area` (th
 panel, so a drag can start anywhere there, not only on the picture) when the input mode is touch.
 The mouse handling moved, unchanged, into `CanvasGui::mouse_input`.
 
-- The cursor moves smoothly within a cell, so that slow movements still add up, but it's drawn,
-  and the painting tools act, on whichever cell it's in. Pushed past the edge of the picture, it
+- The cursor moves smoothly within a cell, so that slow movements still add up, but the painting
+  tools act on whichever cell it's in. (It was drawn on that cell too, at first; now it's drawn
+  where it really is while a finger moves it, and snaps to its cell when the finger lifts. It
+  stops where its outline meets the picture's edge, so there's no dead zone coming back.) Pushed
+  past the edge of the picture, it
   stops at the edge. Around a triddler's corners (where the bounding box has no cells) it slides
   along whichever direction of the move it can.
 - Touch mode always paints with `PaintIntent::Current`: ruling a cell out means picking the
@@ -570,7 +573,7 @@ area, scroll to keep it in view (`scroll_to_rect` on its cell).
 ### [ ] 7.1 The back button
 
 In an installed PWA, Android's back button leaves the app. Push a history entry when the drawer
-or a full-screen dialog opens, and close it on `popstate`, so that back closes it instead.
+or a dialog opens, and close it on `popstate`, so that back closes it instead.
 
 ### [ ] 7.2 The share sheet
 
