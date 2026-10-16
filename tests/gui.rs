@@ -1612,6 +1612,44 @@ mod tests {
         assert!(annotations(&harness).is_empty());
     }
 
+    /// Ctrl+scroll (which egui reports as a zoom) zooms around the pointer, not the corner.
+    #[test]
+    fn zooming_keeps_the_point_under_the_pointer() {
+        let doc = import::load_path(&"examples/png/tedious_dust_40x40.png".into(), None).unwrap();
+        let mut harness = Harness::new_state(
+            |ctx, nonogram_gui: &mut NonogramGui| {
+                nonogram_gui.main_ui(ctx);
+            },
+            NonogramGui::new(doc),
+        );
+        harness.run();
+
+        let pointer = Pos2::new(500.0, 300.0);
+        let fraction = |harness: &Harness<NonogramGui>| {
+            let picture = harness.state().editor_gui.picture_rect.unwrap();
+            (pointer - picture.min) / picture.size()
+        };
+        harness
+            .input_mut()
+            .events
+            .push(Event::PointerMoved(pointer));
+        harness.run();
+        let before = fraction(&harness);
+        let width = harness.state().editor_gui.picture_rect.unwrap().width();
+
+        for _ in 0..3 {
+            harness.input_mut().events.push(Event::Zoom(1.25));
+            harness.run();
+        }
+
+        assert!(harness.state().editor_gui.picture_rect.unwrap().width() > 1.5 * width);
+        let after = fraction(&harness);
+        assert!(
+            (after - before).length() < 0.01,
+            "the point under the pointer moved from {before:?} to {after:?}"
+        );
+    }
+
     /// Mouse or touch follows whatever was used last: a touch event means a finger, and only a
     /// pointer that moves with nothing pressed (a hover, which a finger can't do) means a mouse.
     /// egui moves its imitation pointer for a dragging finger too, which mustn't count.
@@ -1696,12 +1734,16 @@ mod tests {
         const TARGET: f32 = 48.0;
 
         fn phone(gui: NonogramGui) -> Harness<'static, NonogramGui> {
-            let mut harness = Harness::builder().with_size(PHONE).build_state(
-                |ctx, nonogram_gui: &mut NonogramGui| {
-                    nonogram_gui.main_ui(ctx);
-                },
-                gui,
-            );
+            // Fitting a puzzle to the screen takes a few frames.
+            let mut harness = Harness::builder()
+                .with_size(PHONE)
+                .with_max_steps(20)
+                .build_state(
+                    |ctx, nonogram_gui: &mut NonogramGui| {
+                        nonogram_gui.main_ui(ctx);
+                    },
+                    gui,
+                );
             harness.run();
             harness
         }
@@ -2118,6 +2160,186 @@ mod tests {
                 harness.run();
                 assert!(harness.query_by_label("Error detected").is_none());
             }
+        }
+
+        /// The canvas's viewport on a phone: the screen, less the bars and the canvas's margin.
+        /// Measured from the bars themselves.
+        fn viewport(harness: &Harness<NonogramGui>) -> egui::Rect {
+            let top = harness
+                .get_by_label(icons::ICON_MENU)
+                .bounding_box()
+                .unwrap();
+            // The tool row is the top of the bottom bar in both modes.
+            let bottom = harness
+                .get_by_label(icons::ICON_LINE_START)
+                .bounding_box()
+                .unwrap();
+            egui::Rect::from_min_max(
+                Pos2::new(0.0, top.y1 as f32),
+                Pos2::new(PHONE.x, bottom.y0 as f32),
+            )
+        }
+
+        fn picture(harness: &Harness<NonogramGui>) -> egui::Rect {
+            let gui = harness.state();
+            match &gui.solve_gui {
+                Some(solve_gui) => solve_gui.canvas.picture_rect,
+                None => gui.editor_gui.picture_rect,
+            }
+            .unwrap()
+        }
+
+        /// A puzzle comes up zoomed to fit the screen, clues and all, at a whole number of points
+        /// per cell: zoomed out if it's big, and in if it's small.
+        #[test]
+        fn puzzles_open_zoomed_to_fit() {
+            for (path, across) in [
+                ("examples/png/fire_submarine.png", 40.0),
+                ("examples/png/ladle.png", 5.0),
+            ] {
+                let doc = import::load_path(&path.into(), None).unwrap();
+                for solving in [false, true] {
+                    let gui = if solving {
+                        NonogramGui::new_solving(doc.clone())
+                    } else {
+                        NonogramGui::new(doc.clone())
+                    };
+                    let harness = phone(gui);
+                    let (picture, viewport) = (picture(&harness), viewport(&harness));
+                    let cell = picture.width() / across;
+                    assert!(
+                        (cell - cell.round()).abs() < 0.01,
+                        "{path}: {cell} points per cell"
+                    );
+                    // The clues (when solving) are above and to the left, so the picture is
+                    // inside the viewport only if they are too.
+                    assert!(
+                        viewport.contains_rect(picture),
+                        "{path}, solving: {solving}: {picture:?} isn't inside {viewport:?}"
+                    );
+                    // And it's in the middle. (The solver's clues push its picture off-center.)
+                    if !solving {
+                        let off = picture.center() - viewport.center();
+                        assert!(
+                            off.x.abs() <= 1.0 && off.y.abs() <= 1.0,
+                            "{path}: {picture:?} isn't in the middle of {viewport:?}"
+                        );
+                    }
+                    // Zoomed in as far as it fits (or as far as zooming goes): a point more per
+                    // cell would overflow.
+                    if cell == 50.0 {
+                        continue;
+                    }
+                    let width = viewport.width() - 16.0; // The canvas's margins.
+                    let height = viewport.height() - 16.0;
+                    let content = picture.max - viewport.min;
+                    let grown = content * (cell + 1.0) / cell;
+                    assert!(
+                        grown.x > width || grown.y > height,
+                        "{path}, solving: {solving}: {cell} points per cell leaves room"
+                    );
+                }
+            }
+        }
+
+        /// The editor has no clues to make room for, so going back to it zooms in again.
+        #[test]
+        fn leaving_the_solver_refits() {
+            let doc = import::load_path(&"examples/png/fire_submarine.png".into(), None).unwrap();
+            let mut harness = phone(NonogramGui::new_solving(doc));
+            let solving = picture(&harness).width();
+            harness.get_by_label(icons::ICON_MENU).click();
+            harness.run();
+            harness.get_by_label("Edit").click();
+            harness.run();
+            assert!(picture(&harness).width() > solving);
+        }
+
+        /// Two fingers pinching zoom around the point between them.
+        #[test]
+        fn a_pinch_zooms_around_the_fingers() {
+            use egui::{TouchDeviceId, TouchId, TouchPhase};
+
+            let doc =
+                import::load_path(&"examples/png/tedious_dust_40x40.png".into(), None).unwrap();
+            let mut harness = phone(NonogramGui::new(doc));
+
+            // Two fingers, `spreads` apart in turn, either side of `between`.
+            let pinch = |harness: &mut Harness<NonogramGui>, between: Pos2, spreads: &[f32]| {
+                let touch = |id, phase, x: f32| Event::Touch {
+                    device_id: TouchDeviceId(0),
+                    id: TouchId(id),
+                    phase,
+                    pos: Pos2::new(x, between.y),
+                    force: None,
+                };
+                let both = |phase, spread: f32| {
+                    [
+                        touch(0, phase, between.x - spread / 2.0),
+                        touch(1, phase, between.x + spread / 2.0),
+                    ]
+                };
+                // eframe's web backend moves egui's pointer along with the first finger.
+                harness
+                    .input_mut()
+                    .events
+                    .push(Event::PointerMoved(Pos2::new(
+                        between.x - spreads[0] / 2.0,
+                        between.y,
+                    )));
+                harness
+                    .input_mut()
+                    .events
+                    .extend(both(TouchPhase::Start, spreads[0]));
+                harness.step();
+                for spread in &spreads[1..] {
+                    harness
+                        .input_mut()
+                        .events
+                        .extend(both(TouchPhase::Move, *spread));
+                    harness.step();
+                }
+                let last = *spreads.last().unwrap();
+                harness
+                    .input_mut()
+                    .events
+                    .extend(both(TouchPhase::End, last));
+                harness.run();
+            };
+            // Where `at` is in the picture, as a fraction of its size.
+            let fraction = |harness: &Harness<NonogramGui>, at: Pos2| {
+                let picture = picture(harness);
+                (at - picture.min) / picture.size()
+            };
+            let assert_held = |before: egui::Vec2, after: egui::Vec2| {
+                assert!(
+                    (after - before).length() < 0.01,
+                    "the point between the fingers moved from {before:.4?} to {after:.4?}"
+                );
+            };
+
+            // Fitted to the screen, the picture is centered, with room above and below it, which
+            // it keeps centered until it fills the screen. So a pinch in the middle stays put
+            // the whole way.
+            let middle = viewport(&harness).center();
+            let width = picture(&harness).width();
+            let before = fraction(&harness, middle);
+            pinch(
+                &mut harness,
+                middle,
+                &[60.0, 90.0, 120.0, 180.0, 240.0, 300.0],
+            );
+            assert!(picture(&harness).width() > 2.0 * width, "it didn't zoom in");
+            assert!(picture(&harness).height() > PHONE.y, "not zoomed in enough");
+            assert_held(before, fraction(&harness, middle));
+
+            // Now that it overflows the screen both ways, anywhere stays put.
+            let elsewhere = Pos2::new(120.0, 250.0);
+            let width = picture(&harness).width();
+            let before = fraction(&harness, elsewhere);
+            pinch(&mut harness, elsewhere, &[60.0, 70.0, 80.0, 90.0]);
+            assert!(picture(&harness).width() > 1.2 * width, "it didn't zoom in");
+            assert_held(before, fraction(&harness, elsewhere));
         }
 
         /// A finger on the drawer is the drawer's, not the canvas's.

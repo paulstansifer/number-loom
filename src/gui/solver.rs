@@ -175,6 +175,7 @@ impl SolveGui {
                 touch_area: None,
                 touch: Default::default(),
                 picture_rect: None,
+                needs_fit: true,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
                     version: 0,

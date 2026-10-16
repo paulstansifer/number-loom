@@ -310,11 +310,14 @@ impl CanvasGui {
                 .layer_id_at(*at)
                 .is_none_or(|layer| layer.order == egui::Order::Background)
         });
-        let before = self.touch_cursor();
+        let where_was = |gui: &CanvasGui| gui.touch.cursor.map(|p| (p.x, p.y));
+        let before = where_was(self);
         let step = self.touch_frame(sample, to_screen.scale().x, tool);
 
-        // A finger steering the cursor doesn't scroll anything, so keep the cursor in view.
-        if self.touch_cursor() != before
+        // A finger steering the cursor doesn't scroll anything, so keep the cursor in view, with
+        // a cell to spare, whenever it moves (not when the view does: two fingers can pan away
+        // from it). Scrolling only happens once it's that close to the edge.
+        if where_was(self) != before
             && let Some(rect) = self.touch_cursor_rect(to_screen)
         {
             ui.scroll_to_rect(rect.expand(to_screen.scale().x), None);

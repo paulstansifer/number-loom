@@ -549,19 +549,58 @@ and the solved modal with its replay and description.
 
 ## Phase 6: zoom and panning
 
-### [ ] 6.1 Fit the puzzle when it opens
+### [x] 6.1 Fit the puzzle when it opens
+
+**Done**: `NonogramGui::fit_step`, driven by `CanvasGui::needs_fit`. A canvas wants fitting when
+it's made (a new puzzle, entering solve mode), when a `ReplaceDocument` changes the picture's size
+(loading, resizing, and undoing either), and when going back to the editor (which has no clues to
+make room for). Restoring a session keeps the zoom it had. The desktop clears the flag and keeps
+its own zoom.
+
+- It measures what was drawn rather than predicting it, zooms, and measures again: the first
+  measurement goes straight to the scale it works out, later ones only zoom out, so it can't go
+  back and forth. Scales are whole points per cell, so grid lines land on pixels.
+- A measurement only counts once it's come out the same on two frames running at the same
+  scale. The solver's clue gutters are in an `egui::Grid`, which sizes its columns from the
+  frame before, so the first frame at a new scale can come out bigger than at the old one. (The
+  first version took those at face value, and fitted a 40-wide puzzle at 2 points per cell.)
+- It stops at `MAX_SCALE` (50), which is where a 5×10 puzzle ends up.
+
+Tested at 390×844 with kittest: a 40×15 and a 5×10 puzzle, editing and solving, come up inside
+the viewport at whole points per cell, and a point more per cell wouldn't fit; leaving the solver
+zooms the editor back in. Looked at in headless Chrome too.
 
 Without zoom buttons, the starting zoom has to work: at the default 16 points per cell, a
 30-wide puzzle plus its clues is already wider than a phone. In the compact layout, pick the scale
 that fits the puzzle and its clues into the canvas area whenever a puzzle is loaded.
 
-### [ ] 6.2 Zoom around the pinch
+### [x] 6.2 Zoom around the pinch
 
-`main_ui` applies `zoom_delta` to `self.scale` without adjusting the scroll offset, so the picture
-drifts as you pinch. Keep the point between the fingers fixed on screen. With a mouse,
-ctrl+scroll should keep the point under the pointer fixed. (This bug affects desktop too.)
+**Done**: after a zoom, `zoom_scroll_offset` works out the scroll offset that keeps the anchor
+(the point between the fingers, or the pointer for ctrl+scroll) in place, and the next frame
+applies it, once the canvas is drawn at the new scale. Tested with kittest for ctrl+scroll on the
+desktop and a pinch on a phone.
 
-### [ ] 6.3 Keep the cursor visible
+**Centering:** the anchor can only stay put along a direction in which the picture is bigger
+than the viewport. egui's scroll area keeps smaller content against the top-left corner, so at
+first, pinching a fitted wide puzzle (which leaves much of the screen empty) grew it downwards
+until it filled the height. Now, in the compact layout, a drawing smaller than the viewport is
+centered (`centering_pad`: a margin before it, inside the scroll area), which also splits the
+fitted view's spare room evenly. `zoom_scroll_offset` accounts for the margin before and after.
+While the drawing is still smaller than the viewport in some direction, a pinch holds only
+along the others, but it grows around the middle rather than from the top. The margin comes from
+last frame's measurement, so after a zoom (or a step of fitting) it uses the size the drawing is
+expected to come out at instead. The desktop doesn't center.
+
+Making the anchor hold everywhere would mean letting the picture sit anywhere in the viewport,
+the way a photo viewer does (a margin that zooming and two-finger panning can both change, or no
+`ScrollArea` at all).
+
+### [x] 6.3 Keep the cursor visible
+
+**Done.** Phase 4 already scrolled to the cursor's cell (with a cell to spare) whenever the
+cursor changed cells. Now that the cursor is drawn where it really is, it scrolls to that,
+whenever the cursor moves. Two fingers can still pan away from it.
 
 One finger moves the cursor and no longer pans, so when the cursor nears the edge of the visible
 area, scroll to keep it in view (`scroll_to_rect` on its cell).

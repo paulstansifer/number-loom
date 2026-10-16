@@ -475,6 +475,10 @@ pub struct CanvasGui {
     /// last frame that drew it.
     #[serde(skip)]
     pub picture_rect: Option<Rect>,
+    /// Whether to zoom to fit the picture (and any clues) on screen, because we're loading for
+    /// the first time.
+    #[serde(skip)]
+    pub needs_fit: bool,
 }
 
 /// The whole app's state. Saved as the session (see `session.rs`), apart from what's marked
@@ -536,6 +540,23 @@ pub struct NonogramGui {
     /// Whether a middle-drag pan is in flight right now.
     #[serde(skip)]
     panning: bool,
+    /// Where to scroll the canvas to on the next frame: what zooming (or fitting) last frame
+    /// worked out, now that the canvas is drawn at the new scale.
+    #[serde(skip)]
+    pending_scroll: Option<Vec2>,
+    /// Whether a fit (see `CanvasGui::needs_fit`) is under way: the first frame of one zooms
+    /// straight to the scale it measures, and any after it only zoom out, until it fits.
+    #[serde(skip)]
+    fitting: bool,
+    /// The render scale and the size of what was drawn at it, as of last frame, while fitting.
+    #[serde(skip)]
+    fit_measured: Option<(f32, Vec2)>,
+    /// The size of the canvas's viewport as of last frame, and how big the drawing in it will
+    /// come out this frame (which, after a zoom, is a guess), for centering it.
+    #[serde(skip)]
+    last_viewport: Vec2,
+    #[serde(skip)]
+    expected_drawing: Option<Vec2>,
     /// Mousewheel motion that hasn't yet added up to a whole step through the palette.
     #[serde(skip)]
     wheel_remainder: f32,
@@ -682,6 +703,11 @@ impl CanvasGui {
             Action::ReplaceDocument { document } => {
                 let mut document = document;
                 if let Ok(true) = document.has_complete_solution() {
+                    if document.try_solution().map(|s| s.extent())
+                        != self.document.try_solution().map(|s| s.extent())
+                    {
+                        self.needs_fit = true;
+                    }
                     self.document = *document;
                     self.version += 1;
                     // A mask means nothing against a picture that was swapped out from under it,
@@ -877,6 +903,7 @@ impl NonogramGui {
                 touch_area: None,
                 touch: Default::default(),
                 picture_rect: None,
+                needs_fit: true,
                 solved_mask: Staleable {
                     val: ("".to_string(), solved_mask),
                     version: 0,
@@ -924,6 +951,11 @@ impl NonogramGui {
             quality_warnings: vec![],
             pannable: false,
             panning: false,
+            pending_scroll: None,
+            fitting: false,
+            fit_measured: None,
+            last_viewport: Vec2::ZERO,
+            expected_drawing: None,
             wheel_remainder: 0.0,
             input_mode: InputMode::default(),
             saving: session::SaveState::default(),
@@ -1205,6 +1237,8 @@ impl NonogramGui {
     /// Back to the editor, discarding whatever solving progress was on the board.
     fn exit_solve_mode(&mut self) {
         self.solve_gui = None;
+        // The solver's clues took up room the editor has no use for.
+        self.editor_gui.needs_fit = true;
     }
 }
 
@@ -1321,6 +1355,27 @@ pub(crate) const MAX_SCALE: f32 = 50.0;
 /// square one's area, and its three clue gutters are rhombuses full of slanted numerals, so the
 /// same scale buys a good deal less legibility than it does on a square grid.
 const TRIDDLER_ZOOM_STEPS: f32 = 3.0;
+
+/// Where to scroll to after zooming by `factor`, so that whatever was `anchor` (in points from
+/// the top-left of the scroll area's viewport) stays put, from `offset`. Everything on the canvas
+/// is drawn from its top-left corner outwards, in proportion to the zoom, after a centering
+/// margin (see `centering_pad`) that was `pads.0` and will be `pads.1`.
+///
+/// Along a direction in which the drawing will fit in the viewport, there's no scrolling, and
+/// the anchor moves wherever centering puts it.
+fn zoom_scroll_offset(offset: Vec2, anchor: Vec2, pads: (Vec2, Vec2), factor: f32) -> Vec2 {
+    let (pad, new_pad) = pads;
+    (offset + anchor - pad) * factor + new_pad - anchor
+}
+
+/// The margin that centers a drawing `drawing` big in a `viewport`, where it's smaller. In whole
+/// points, so that the grid lines stay on pixels.
+fn centering_pad(layout: ScreenLayout, viewport: Vec2, drawing: Vec2) -> Vec2 {
+    match layout {
+        ScreenLayout::Desktop => Vec2::ZERO,
+        ScreenLayout::Compact => ((viewport - drawing) / 2.0).max(Vec2::ZERO).floor(),
+    }
+}
 
 /// This frame's wheel motion over the canvas, in notches, with the events taken away from the
 /// scroll area beneath — over the canvas the wheel steps through the palette instead of
@@ -1524,23 +1579,37 @@ impl NonogramGui {
                 // Read out here, because the closure below borrows `self` mutably.
                 let scale = self.render_scale();
 
+                // Where the drawing is smaller than the viewport, it's centered (on a phone; the
+                // desktop keeps it beside the sidebar). That's done with a margin before it,
+                // inside the scroll area.
+                let pad = match self.expected_drawing {
+                    Some(drawing) => centering_pad(layout, self.last_viewport, drawing),
+                    None => Vec2::ZERO,
+                };
+
                 // A zoomed-in puzzle is routinely bigger than the window in both directions.
                 // `animated(false)` because the only thing that scrolls this programmatically is
                 // the pan below, which has to keep up with the pointer exactly. A finger's drag
                 // belongs to the cursor, not to scrolling.
-                let scrolled = egui::ScrollArea::both()
+                let mut scroll_area = egui::ScrollArea::both()
                     .animated(false)
-                    .drag_to_scroll(touch_area.is_none())
-                    .show(ui, |ui| {
-                        if panning {
-                            ui.scroll_with_delta(pointer_delta);
-                        }
-                        // One finger steers the cursor, so two pan (as well as zooming, below).
-                        if touch_area.is_some()
-                            && let Some(touch) = ui.input(|i| i.multi_touch())
-                        {
-                            ui.scroll_with_delta(touch.translation_delta);
-                        }
+                    .drag_to_scroll(touch_area.is_none());
+                if let Some(offset) = self.pending_scroll.take() {
+                    scroll_area = scroll_area.scroll_offset(offset);
+                }
+                let scrolled = scroll_area.show(ui, |ui| {
+                    if panning {
+                        ui.scroll_with_delta(pointer_delta);
+                    }
+                    // One finger steers the cursor, so two pan (as well as zooming, below).
+                    if touch_area.is_some()
+                        && let Some(touch) = ui.input(|i| i.multi_touch())
+                    {
+                        ui.scroll_with_delta(touch.translation_delta);
+                    }
+                    let drawing_area =
+                        Rect::from_min_size(ui.cursor().min + pad, ui.available_size());
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(drawing_area), |ui| {
                         if let Some(solve_gui) = &mut self.solve_gui {
                             solve_gui.canvas.middle_pans = pannable;
                             solve_gui.canvas.touch_area = touch_area;
@@ -1551,6 +1620,11 @@ impl NonogramGui {
                             self.editor_gui.canvas(ui, scale, RenderStyle::Experimental);
                         }
                     });
+                });
+                let viewport = scrolled.inner_rect.size();
+                let drawing = scrolled.content_size - pad;
+                self.last_viewport = viewport;
+                self.expected_drawing = Some(drawing);
 
                 // What the scroll area just measured decides whether the *next* frame's
                 // middle-drag pans. A frame of lag is invisible beside how long a zoom lasts.
@@ -1565,12 +1639,94 @@ impl NonogramGui {
                 // egui routes ctrl-scroll (and trackpad pinch) into `zoom_delta` rather than
                 // into the scroll offset, and `take_wheel_notches` leaves those events alone.
                 if pointer_here {
-                    let zoom = ui.input(|i| i.zoom_delta());
+                    let (zoom, anchor) = ui.input(|i| {
+                        // Between the fingers, or under the pointer.
+                        let anchor = i
+                            .multi_touch()
+                            .map(|touch| touch.center_pos)
+                            .or(i.pointer.hover_pos());
+                        (i.zoom_delta(), anchor)
+                    });
                     if zoom != 1.0 {
+                        let before = self.render_scale();
                         self.scale = (self.scale * zoom).clamp(MIN_SCALE, MAX_SCALE);
+                        let factor = self.render_scale() / before;
+                        // Everything on the canvas is drawn in proportion to the zoom, so this is
+                        // a good guess at how big it'll come out, and where it'll be centered.
+                        self.expected_drawing = Some(drawing * factor);
+                        if let Some(anchor) = anchor {
+                            let new_pad = centering_pad(layout, viewport, drawing * factor);
+                            self.pending_scroll = Some(zoom_scroll_offset(
+                                scrolled.state.offset,
+                                anchor - scrolled.inner_rect.min,
+                                (pad, new_pad),
+                                factor,
+                            ));
+                        }
+                    }
+                }
+
+                match layout {
+                    ScreenLayout::Compact => self.fit_step(ctx, viewport, drawing),
+                    // The desktop has zoom buttons, and keeps whatever zoom they set.
+                    ScreenLayout::Desktop => {
+                        self.current_canvas().needs_fit = false;
+                        self.fitting = false;
                     }
                 }
             });
+    }
+
+    /// One frame's worth of zooming the canvas to fit `viewport`, if it wants to (see
+    /// `CanvasGui::needs_fit`), given that what it drew last came out `content` big.
+    ///
+    /// Not everything in the drawing grows in proportion to the zoom (the borders don't, for
+    /// one), so this measures, zooms, and measures again. The first measurement goes straight to
+    /// the scale it works out; the ones after it only zoom out (by at least a pixel per cell),
+    /// so it can't go back and forth.
+    fn fit_step(&mut self, ctx: &egui::Context, viewport: Vec2, content: Vec2) {
+        if !self.current_canvas().needs_fit {
+            self.fitting = false;
+            self.fit_measured = None;
+            return;
+        }
+        ctx.request_repaint();
+        if content.x <= 0.0 || content.y <= 0.0 {
+            return; // Nothing drawn yet.
+        }
+
+        // The solver's clue gutters are laid out in an `egui::Grid`, which sizes its columns
+        // from the frame before, so the first frame at a new zoom can come out any size at all.
+        // A measurement only counts once it's come out the same twice running.
+        let render = self.render_scale();
+        if self.fit_measured != Some((render, content)) {
+            self.fit_measured = Some((render, content));
+            return;
+        }
+
+        let ratio = (viewport.x / content.x).min(viewport.y / content.y);
+        // Whole points per cell, so that the grid lines land on pixels.
+        let mut target = (render * ratio).floor();
+        if self.fitting {
+            target = target.min(render - 1.0);
+            if ratio >= 1.0 {
+                target = render; // It fits.
+            }
+        }
+        // `scale` is what's clamped; the triddler's head start (see `render_scale`) rides along.
+        let scale = (target - (render - self.scale)).clamp(MIN_SCALE, MAX_SCALE);
+
+        if scale == self.scale {
+            self.current_canvas().needs_fit = false;
+            self.fitting = false;
+            self.fit_measured = None;
+        } else {
+            // See the zooming in `canvas_panel`.
+            self.expected_drawing = Some(content * (scale / self.scale));
+            self.scale = scale;
+            self.fitting = true;
+            self.pending_scroll = Some(Vec2::ZERO);
+        }
     }
 }
 
