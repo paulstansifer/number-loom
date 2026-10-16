@@ -5,6 +5,7 @@
 //! the pointer is already over.
 
 use super::*;
+use compact::Toggled as _;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum Tool {
@@ -80,19 +81,34 @@ fn tool_button(
     tool: Tool,
     typing: bool,
     description: &str,
+    layout: ScreenLayout,
 ) -> bool {
     let (icon, key, ch) = tool_appearance(tool);
-    ui.selectable_value(current_tool, tool, egui::RichText::new(icon).size(24.0))
-        .on_hover_text(if tool == Tool::Annotate {
-            format!("{description} (press {ch} or hold Shift, press again to go back)")
-        } else {
-            format!("{description} (press {ch}, again to go back)")
-        });
+    let icon = egui::RichText::new(icon).size(24.0);
+    let response = match layout {
+        ScreenLayout::Desktop => ui.selectable_value(current_tool, tool, icon),
+        ScreenLayout::Compact => {
+            let response = ui.add(
+                egui::Button::new(icon)
+                    .toggled(ui, *current_tool == tool)
+                    .min_size(Vec2::splat(compact::TARGET)),
+            );
+            if response.clicked() {
+                *current_tool = tool;
+            }
+            response
+        }
+    };
+    response.on_hover_text(if tool == Tool::Annotate {
+        format!("{description} (press {ch} or hold Shift, press again to go back)")
+    } else {
+        format!("{description} (press {ch}, again to go back)")
+    });
     !typing && ui.input(|i| i.key_pressed(key))
 }
 
 impl CanvasGui {
-    pub(super) fn tool_selector(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn tool_selector(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
         let was = self.current_tool;
         let editing = !self.solving;
 
@@ -104,8 +120,17 @@ impl CanvasGui {
         // which that was.
         let mut requested = None;
 
-        centered_row(ui, "tools", |ui| {
-            if editing && tool_button(ui, &mut self.current_tool, Tool::Pencil, typing, "Pencil") {
+        let mut row = |ui: &mut egui::Ui| {
+            if editing
+                && tool_button(
+                    ui,
+                    &mut self.current_tool,
+                    Tool::Pencil,
+                    typing,
+                    "Pencil",
+                    layout,
+                )
+            {
                 requested = Some(Tool::Pencil);
             }
             if tool_button(
@@ -114,6 +139,7 @@ impl CanvasGui {
                 Tool::LineAlongLane,
                 typing,
                 "Line along a lane",
+                layout,
             ) {
                 requested = Some(Tool::LineAlongLane);
             }
@@ -124,6 +150,7 @@ impl CanvasGui {
                     Tool::FloodFill,
                     typing,
                     "Flood Fill",
+                    layout,
                 ) {
                     requested = Some(Tool::FloodFill);
                 }
@@ -134,6 +161,7 @@ impl CanvasGui {
                     Tool::Lasso,
                     typing,
                     "Lasso select: draw a loop, then drag to move what's inside",
+                    layout,
                 ) {
                     requested = Some(Tool::Lasso);
                 }
@@ -145,11 +173,16 @@ impl CanvasGui {
                     Tool::Annotate,
                     typing,
                     "Annotate: click to mark one cell, drag to measure a span",
+                    layout,
                 ) {
                     requested = Some(Tool::Annotate);
                 }
             }
-        });
+        };
+        match layout {
+            ScreenLayout::Desktop => centered_row(ui, "tools", row),
+            ScreenLayout::Compact => row(ui),
+        }
 
         if let Some(tool) = requested {
             self.current_tool = if was == tool {

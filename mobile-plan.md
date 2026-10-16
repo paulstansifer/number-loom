@@ -436,7 +436,31 @@ without moving. Then play a whole puzzle on a phone.
 
 ## Phase 5: the compact layout
 
-### [ ] 5.1 Split the sidebar into pieces
+### [x] 5.1 Split the sidebar into pieces
+
+**Done.** The desktop layout renders pixel-for-pixel as before (compared in headless Chrome at
+1280×800, editing and solving, against a build of the previous commit).
+
+- `CanvasGui`: `undo_redo`, `tool_selector`, `clear_annotations_button` (each taking a
+  `ScreenLayout`), `palette_editor` (desktop) and `palette_strip` (compact), which share
+  `add_color` and `remove_color`.
+- `NonogramGui` (editor): `metadata_form` (which `metadata_editor` wraps in its collapsing
+  header), `resize_controls`, `line_solve_controls`, `backtrack_controls`, `disambig_controls`.
+- `SolveGui`: `title_and_author`, `replay`, `description`, `rosette`, `render_style_picker`, and
+  the aids as an `Aid` enum with `auto_mut`, `auto_changed`, `run_aid` and `errors_detected`.
+- What has to happen every frame whether or not its controls are on screen moved out of the
+  sidebars: `NonogramGui::editor_frame` (the document id, polling the backtracking search and the
+  disambiguator) and `SolveGui::solver_frame` (capturing the replay). `Disambiguator` and
+  `BacktrackSolver` are split into `poll`, `start`, `stop` and the desktop's `widget`.
+- The toolbar's dialogs moved into `NonogramGui::dialogs`, which both layouts call. The toolbar
+  only opens them (`open_new_dialog`, `open_library`, `open_file`, `open_save_share`).
+
+Two small changes to the desktop's behavior came along:
+
+- Running "Detect errors" by hand used to show "Error detected" only on the frame of the click
+  (until the next repaint). It now stays until the next move, which the compact top bar needed.
+- The status bar never showed the backtracking solve's progress: the disambiguator's widget,
+  drawn after it, overwrote the shared progress with `None`. Now whichever is running shows.
 
 Before building the compact layout, split the sidebars into functions that each produce one
 piece: the aids, the tool row, the palette, the line-solve report, the backtracking and
@@ -446,7 +470,32 @@ screen.
 
 This keeps the two layouts from drifting apart: a fix to the palette lands in both.
 
-### [ ] 5.2 Build the compact layout
+### [x] 5.2 Build the compact layout
+
+**Done**, in `gui/compact.rs`. `ScreenLayout::of(ctx)` picks the layout each frame, so resizing a
+desktop window across 600 points switches it. The compact style sets `interact_size` to 48
+points, and icon buttons are exactly 48 square; the canvas's own panel goes back to the desktop
+spacing, since the clue gutters are laid out with widgets.
+
+- The drawer is an `egui::Modal` anchored to the left. It goes first in the frame, because the
+  solving aids' Run buttons are in it and have to act before the canvas is drawn; the aids that
+  run after every move are run every frame whether the drawer is open or not.
+- Choosing the mode that's already on does nothing. (On the desktop, clicking "Puzzle" while
+  solving starts the solve over, which seemed too easy to do by accident on a phone.)
+- The render style is a column of three toggle buttons, using the desktop's labels, rather than a
+  segmented switch: the labels don't fit three across.
+- A press in touch mode only reaches the canvas if nothing floats over that spot
+  (`layer_id_at`), so the drawer, dialogs, the Resize window and error toasts don't also move or
+  paint with the cursor.
+- The palette strip ends with "unknown" while solving (compact only; the desktop palette, number
+  keys and wheel still skip it). Each swatch is drawn by the canvas's own `cell_shape`, so the
+  background and "unknown" look the way the grid shows them in the current render style.
+
+Tested with `egui_kittest` at 390×844 (`tests/gui.rs`, `mod compact`): both modes' bars, the
+drawer in both modes, full-screen dialogs, the Resize window, adding and deleting a color,
+toasts, the solved window, "Error detected", and a tap on the drawer not reaching the canvas.
+Every button and switch on screen is checked to be on the screen and at least 48 points square.
+Also looked at in headless Chrome at 390×844 (touch emulation).
 
 Use the compact layout when `ctx.screen_rect().width() < 600.0`, with 48-point targets. Build the
 screens as described under "The compact screens" above: the top bar, the bottom bar (one row in
@@ -455,12 +504,37 @@ solve mode, two in edit mode), and the drawer.
 `egui_kittest` (already a dev-dependency) can render the app at 390×844. Use it to check that
 nothing overflows and that both modes' bars contain what they should.
 
-### [ ] 5.3 Dialogs
+### [x] 5.3 Dialogs
+
+**Done.** `compact::dialog` shows a dialog as the desktop's `egui::Window` or, in the compact
+layout, as a full-screen modal under a bar with a back button and the title. The Library shows
+one preview across instead of two. Resize floats just above the bottom bar, doesn't block the
+grid, and is closed by its own button in the bottom bar; its +/- buttons are 48 points, and the
+triddler resizer's hexagon is scaled up until its buttons are too. The color dialog (a long press,
+or a right-click, on a swatch) has the name, a delete button (not for the background) and egui's
+color picker at the dialog's width.
 
 Full-screen Library, New, Save/share and Metadata in the compact layout. A non-modal Resize. The
 long-press color dialog, and "+" to add a color.
 
-### [ ] 5.4 Feedback
+### [x] 5.4 Feedback
+
+**Done.**
+
+- Toasts come from the same `StatusCell` as the status bar: a message that isn't an error shows
+  for 4 seconds; an error stays until its ✕ is tapped (`StatusCell::clear`). Info toasts don't
+  take touches.
+- The pill shows the count while the line solve is up to date. With line-solving after every
+  change off, it says "Solve" until tapped, then shows the count until the next change. There's
+  no "Clear" for the disambiguator's shading: the next change clears it, as it already did.
+- The backtracking solve's report shows under its button in the drawer, as on the desktop.
+- The solved window shows once per puzzle: `SolveGui::solved_announced` is saved with the
+  session (`#[serde(default)]`, so older sessions still load), so a reload doesn't bring it back.
+  It's compact-only; the desktop keeps its sidebar replay.
+
+Still to check on a real phone: everything, but especially the long press on a swatch (egui
+only notices it on a frame drawn after the press has lasted long enough, hence the
+`request_repaint_after`), and whether egui's default text size is big enough.
 
 The progress bar under the top bar, toasts, the unsolved-count pill, the "Error detected" label,
 and the solved modal with its replay and description.

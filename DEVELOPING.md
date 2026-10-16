@@ -19,6 +19,7 @@ doesn't cover code comments, documentation for developers (like this file), or p
   src/
     gui.rs - the core of the GUI: app state, the undo stack, the sidebar, and `main_ui`
     gui/
+      compact.rs - small-screen layout
       canvas.rs - drawing the picture, and the pointer hit test
       annotate.rs - the solver's scratch marks for counting out a line (undo never sees them)
       selection.rs - the lasso: drawing a loop, what it caught, and moving the catch around

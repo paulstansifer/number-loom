@@ -1,6 +1,7 @@
+use super::compact::Toggled as _;
 use super::{
-    Action, ActionMood, BacktrackSolver, CanvasGui, ClueId, Disambiguator, Staleable, Tool,
-    auto_button, default_color, outline_text,
+    Action, ActionMood, BacktrackSolver, CanvasGui, ClueId, Disambiguator, ScreenLayout, Staleable,
+    Tool, auto_button, default_color, outline_text,
 };
 use crate::{
     geometry::{CellIdx, FamilyIdx, LaneIdx},
@@ -38,6 +39,13 @@ pub struct SolveGui {
     pub render_style: RenderStyle,
     #[serde(skip, default = "super::session::never")]
     last_inferred_version: u32,
+    /// The picture's version when "Detect errors" was last run by hand, if it was.
+    #[serde(skip)]
+    errors_checked: Option<u32>,
+    /// Whether the compact layout has announced that the puzzle is solved (and the user has
+    /// dismissed the announcement), so that it doesn't again.
+    #[serde(default)]
+    pub(super) solved_announced: bool,
     #[serde(skip)]
     pub hovered_cell: Option<CellIdx>,
     /// Just for fun, a replay of the solve process, reconstructed from the undo history.
@@ -69,6 +77,43 @@ impl RenderStyle {
             "traditional_xes" => Some(RenderStyle::TraditionalXes),
             "experimental" => Some(RenderStyle::Experimental),
             _ => None,
+        }
+    }
+}
+
+/// The solving aids, each of which can run on demand or after every move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Aid {
+    AnalyzeLines,
+    MarkResolvedClues,
+    DetectErrors,
+    InferBackground,
+}
+
+impl Aid {
+    pub(super) const ALL: [Aid; 4] = [
+        Aid::AnalyzeLines,
+        Aid::MarkResolvedClues,
+        Aid::DetectErrors,
+        Aid::InferBackground,
+    ];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Aid::AnalyzeLines => "Analyze Lines",
+            Aid::MarkResolvedClues => "Mark resolved clues",
+            Aid::DetectErrors => "Detect errors",
+            Aid::InferBackground => "Infer background",
+        }
+    }
+
+    /// Where its "after every move" switch is remembered.
+    fn setting(self) -> &'static str {
+        match self {
+            Aid::AnalyzeLines => consts::SOLVER_ANALYZE_LINES,
+            Aid::MarkResolvedClues => consts::SOLVER_MARK_FIXED_CLUES,
+            Aid::DetectErrors => consts::SOLVER_DETECT_ERRORS,
+            Aid::InferBackground => consts::SOLVER_INFER_BACKGROUND,
         }
     }
 }
@@ -167,6 +212,8 @@ impl SolveGui {
                 .and_then(|name| RenderStyle::from_setting_name(&name))
                 .unwrap_or(RenderStyle::TraditionalXes),
             last_inferred_version: u32::MAX,
+            errors_checked: None,
+            solved_announced: false,
             hovered_cell: None,
             replay: None,
         }
@@ -190,7 +237,7 @@ impl SolveGui {
         false
     }
 
-    fn is_correctly_solved(&self) -> bool {
+    pub(super) fn is_correctly_solved(&self) -> bool {
         self.canvas.document.try_solution().unwrap().cells() == self.intended_solution.cells()
     }
 
@@ -214,197 +261,231 @@ impl SolveGui {
         }
     }
 
-    pub fn sidebar(&mut self, ui: &mut egui::Ui) {
+    /// What the solver does every frame, whichever layout is on screen and whatever it shows.
+    pub(super) fn solver_frame(&mut self) {
         // The first time the picture comes out right, freeze the solve for playback. Later
         // completions (after an undo and a redo, say) reuse this one rather than recapturing.
         if self.replay.is_none() && self.is_correctly_solved() {
             self.replay = Some(Replay::new(&self.canvas));
         }
+    }
 
+    pub fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            if !self.canvas.document.title.is_empty() {
-                ui.label(RichText::new(&self.canvas.document.title).strong());
-            }
-            if !self.canvas.document.author.is_empty() {
-                ui.label(format!("by {}", &self.canvas.document.author));
-            }
-
-            if let Some(replay) = &mut self.replay {
-                replay.show(ui, &self.canvas);
-            }
+            self.title_and_author(ui);
+            self.replay(ui);
 
             if self.is_correctly_solved() {
                 ui.colored_label(egui::Color32::DARK_GREEN, "Correctly solved");
-
-                if !self.canvas.document.description.is_empty() {
-                    ui.label(&self.canvas.document.description);
-                }
+                self.description(ui);
             }
 
             self.canvas.common_sidebar_items(ui);
 
             ui.separator();
-            let scale = 20.0;
-            // A triddler's rosette has six rhombus arms instead of a square grid's four square
-            // ones, and a rhombus is wider across its short diagonal than it is long — so it
-            // needs more room to keep adjacent arms from overlapping.
-            let triangular = matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_));
-            let plus_size = if triangular {
-                scale * super::triddler::ROSETTE_SIZE
+            self.rosette(ui);
+
+            ui.separator();
+            self.render_style_picker(ui, ScreenLayout::Desktop);
+
+            ui.separator();
+            for aid in Aid::ALL {
+                let pressed = auto_button(ui, aid.label(), self.auto_mut(aid));
+                if pressed.auto.changed() {
+                    self.auto_changed(aid);
+                }
+                self.run_aid(aid, pressed.button.clicked());
+                if aid == Aid::DetectErrors && self.errors_detected() {
+                    ui.colored_label(egui::Color32::DARK_RED, "Error detected");
+                }
+            }
+        });
+    }
+
+    pub(super) fn title_and_author(&self, ui: &mut egui::Ui) {
+        if !self.canvas.document.title.is_empty() {
+            ui.label(RichText::new(&self.canvas.document.title).strong());
+        }
+        if !self.canvas.document.author.is_empty() {
+            ui.label(format!("by {}", &self.canvas.document.author));
+        }
+    }
+
+    /// The solve, played back, once there is one.
+    pub(super) fn replay(&mut self, ui: &mut egui::Ui) {
+        if let Some(replay) = &mut self.replay {
+            replay.show(ui, &self.canvas);
+        }
+    }
+
+    pub(super) fn description(&self, ui: &mut egui::Ui) {
+        if !self.canvas.document.description.is_empty() {
+            ui.label(&self.canvas.document.description);
+        }
+    }
+
+    /// The cell under the pointer, and the runs of its color through it in each direction.
+    fn rosette(&self, ui: &mut egui::Ui) {
+        let scale = 20.0;
+        // A triddler's rosette has six rhombus arms instead of a square grid's four square
+        // ones, and a rhombus is wider across its short diagonal than it is long — so it
+        // needs more room to keep adjacent arms from overlapping.
+        let triangular = matches!(self.clues.shape(), crate::geometry::Shape::Triangular(_));
+        let plus_size = if triangular {
+            scale * super::triddler::ROSETTE_SIZE
+        } else {
+            scale * 3.0
+        };
+
+        if let Some(cell) = self.hovered_cell {
+            let picture = self.canvas.document.try_solution().unwrap();
+
+            let (resp, painter) =
+                ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
+            let rect = resp.rect;
+
+            if triangular {
+                super::triddler::draw_rosette(ui, &painter, picture, cell, rect.center(), scale);
             } else {
-                scale * 3.0
-            };
+                let color = picture.cells()[cell];
+                let rgb = picture.palette()[&color].rgb;
+                let text = if color == UNSOLVED { "?" } else { " " };
 
-            if let Some(cell) = self.hovered_cell {
-                let picture = self.canvas.document.try_solution().unwrap();
+                // One run per clue family: two arms each for a square grid.
+                // `arm_directions` lists each family's two directions adjacently, matching
+                // the `(backward, forward)` pairs `runs_at_cell` returns.
+                let runs = picture.runs_at_cell(cell);
+                let dirs = picture.arm_directions();
+                let size = Vec2::new(20.0, 20.0);
+                let center = rect.min + Vec2::new(scale, scale);
 
-                let (resp, painter) =
-                    ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
-                let rect = resp.rect;
-
-                if triangular {
-                    super::triddler::draw_rosette(
-                        ui,
-                        &painter,
-                        picture,
-                        cell,
-                        rect.center(),
-                        scale,
-                    );
-                } else {
-                    let color = picture.cells()[cell];
-                    let rgb = picture.palette()[&color].rgb;
-                    let text = if color == UNSOLVED { "?" } else { " " };
-
-                    // One run per clue family: two arms each for a square grid.
-                    // `arm_directions` lists each family's two directions adjacently, matching
-                    // the `(backward, forward)` pairs `runs_at_cell` returns.
-                    let runs = picture.runs_at_cell(cell);
-                    let dirs = picture.arm_directions();
-                    let size = Vec2::new(20.0, 20.0);
-                    let center = rect.min + Vec2::new(scale, scale);
-
-                    for (family, (back, forward)) in runs.iter().enumerate() {
-                        for (i, count) in [back, forward].into_iter().enumerate() {
-                            let Some(dir) = dirs.get(family * 2 + i) else {
-                                continue;
-                            };
-                            if *count == 0 {
-                                continue;
-                            }
-                            let at = center + Vec2::new(dir.x * scale, dir.y * scale);
-                            draw_string_in_box(
-                                ui,
-                                &painter,
-                                Rect::from_min_size(at, size),
-                                &count.to_string(),
-                                scale,
-                                rgb,
-                            );
+                for (family, (back, forward)) in runs.iter().enumerate() {
+                    for (i, count) in [back, forward].into_iter().enumerate() {
+                        let Some(dir) = dirs.get(family * 2 + i) else {
+                            continue;
+                        };
+                        if *count == 0 {
+                            continue;
                         }
+                        let at = center + Vec2::new(dir.x * scale, dir.y * scale);
+                        draw_string_in_box(
+                            ui,
+                            &painter,
+                            Rect::from_min_size(at, size),
+                            &count.to_string(),
+                            scale,
+                            rgb,
+                        );
                     }
-
-                    let mid_rect = Rect::from_min_size(center, size);
-                    draw_string_in_box(ui, &painter, mid_rect, text, scale, rgb);
                 }
-            } else {
-                ui.add_space(plus_size);
+
+                let mid_rect = Rect::from_min_size(center, size);
+                draw_string_in_box(ui, &painter, mid_rect, text, scale, rgb);
             }
+        } else {
+            ui.add_space(plus_size);
+        }
+    }
 
-            ui.separator();
+    /// Radio buttons on the desktop; on a phone, a column of toggles.
+    pub(super) fn render_style_picker(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
+        const STYLES: [(RenderStyle, &str); 3] = [
+            (RenderStyle::TraditionalDots, "traditional (dots)"),
+            (RenderStyle::TraditionalXes, "traditional (Xes)"),
+            (RenderStyle::Experimental, "experimental"),
+        ];
 
-            ui.label("Render style");
-            // Radio buttons report `changed()` one at a time; comparing against the style we came
-            // in with saves whichever one of the three the user landed on.
-            let was = self.render_style;
-            ui.radio_value(
-                &mut self.render_style,
-                RenderStyle::TraditionalDots,
-                "traditional (dots)",
-            );
-            ui.radio_value(
-                &mut self.render_style,
-                RenderStyle::TraditionalXes,
-                "traditional (Xes)",
-            );
-            ui.radio_value(
-                &mut self.render_style,
-                RenderStyle::Experimental,
-                "experimental",
-            );
-            if self.render_style != was {
-                let _ = UserSettings::set(
-                    consts::SOLVER_RENDER_STYLE,
-                    self.render_style.setting_name(),
-                );
-            }
-
-            ui.separator();
-
-            let analyze = auto_button(ui, "Analyze Lines", &mut self.analyze_lines);
-            if analyze.auto.changed() {
-                let _ = UserSettings::set(
-                    consts::SOLVER_ANALYZE_LINES,
-                    &self.analyze_lines.to_string(),
-                );
-                if !self.analyze_lines {
-                    // Turning the aid off has to take its marks with it; otherwise the last
-                    // analysis sits in the gutters, going staler with every move.
-                    self.line_analysis.update(None, u32::MAX);
+        match layout {
+            ScreenLayout::Desktop => ui.label("Render style"),
+            ScreenLayout::Compact => ui.add(super::compact::SectionHeading("Render style")),
+        };
+        // Radio buttons report `changed()` one at a time; comparing against the style we came
+        // in with saves whichever one of the three the user landed on.
+        let was = self.render_style;
+        for (style, label) in STYLES {
+            match layout {
+                ScreenLayout::Desktop => {
+                    ui.radio_value(&mut self.render_style, style, label);
+                }
+                ScreenLayout::Compact => {
+                    let row = egui::Button::new(label)
+                        .toggled(ui, self.render_style == style)
+                        .min_size(Vec2::new(ui.available_width(), 0.0));
+                    if ui.add(row).clicked() {
+                        self.render_style = style;
+                    }
                 }
             }
-            if analyze.button.clicked() || self.analyze_lines {
+        }
+        if self.render_style != was {
+            let _ = UserSettings::set(
+                consts::SOLVER_RENDER_STYLE,
+                self.render_style.setting_name(),
+            );
+        }
+    }
+
+    /// Whether the aid is switched to run after every move.
+    pub(super) fn auto_mut(&mut self, aid: Aid) -> &mut bool {
+        match aid {
+            Aid::AnalyzeLines => &mut self.analyze_lines,
+            Aid::MarkResolvedClues => &mut self.mark_fixed_clues,
+            Aid::DetectErrors => &mut self.detect_errors,
+            Aid::InferBackground => &mut self.infer_background,
+        }
+    }
+
+    /// Remember that `auto_mut(aid)` has just been flipped.
+    pub(super) fn auto_changed(&mut self, aid: Aid) {
+        let auto = *self.auto_mut(aid);
+        let _ = UserSettings::set(aid.setting(), &auto.to_string());
+        if !auto {
+            // Turning an aid off has to take its marks with it; otherwise the last analysis sits
+            // in the gutters, going staler with every move.
+            match aid {
+                Aid::AnalyzeLines => self.line_analysis.update(None, u32::MAX),
+                Aid::MarkResolvedClues => self.fixed_clues.update(None, u32::MAX),
+                Aid::DetectErrors | Aid::InferBackground => {}
+            }
+        }
+    }
+
+    /// Run the aid if it was `requested`, or if it runs after every move, unless what it would
+    /// work out is already up to date.
+    pub(super) fn run_aid(&mut self, aid: Aid, requested: bool) {
+        let run = requested || *self.auto_mut(aid);
+        match aid {
+            Aid::AnalyzeLines if run => {
                 let clues = &self.clues;
                 let picture = self.canvas.document.try_solution().unwrap();
                 let grid = picture.to_partial();
                 self.line_analysis
                     .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }
-
-            let mark = auto_button(ui, "Mark resolved clues", &mut self.mark_fixed_clues);
-            if mark.auto.changed() {
-                let _ = UserSettings::set(
-                    consts::SOLVER_MARK_FIXED_CLUES,
-                    &self.mark_fixed_clues.to_string(),
-                );
-                if !self.mark_fixed_clues {
-                    // As with the analysis marks: turning the aid off takes its marks with it.
-                    self.fixed_clues.update(None, u32::MAX);
-                }
-            }
-            if mark.button.clicked() || self.mark_fixed_clues {
+            Aid::MarkResolvedClues if run => {
                 let clues = &self.clues;
                 let picture = self.canvas.document.try_solution().unwrap();
                 let grid = picture.to_partial();
                 self.fixed_clues
                     .get_or_refresh(self.canvas.version, || Some(clues.fixed_clues(&grid)));
             }
-
-            let detect = auto_button(ui, "Detect errors", &mut self.detect_errors);
-            if detect.auto.changed() {
-                let _ = UserSettings::set(
-                    consts::SOLVER_DETECT_ERRORS,
-                    &self.detect_errors.to_string(),
-                );
+            // Checked as the answer is shown, by `errors_detected`.
+            Aid::DetectErrors if requested => {
+                self.errors_checked = Some(self.canvas.version);
             }
-            if (detect.button.clicked() || self.detect_errors) && self.detect_any_errors() {
-                ui.colored_label(egui::Color32::DARK_RED, "Error detected");
-            }
-
-            let infer = auto_button(ui, "Infer background", &mut self.infer_background);
-            if infer.auto.changed() {
-                let _ = UserSettings::set(
-                    consts::SOLVER_INFER_BACKGROUND,
-                    &self.infer_background.to_string(),
-                );
-            }
-            if (infer.button.clicked() || self.infer_background)
-                && self.last_inferred_version != self.canvas.version
-            {
+            Aid::InferBackground if run && self.last_inferred_version != self.canvas.version => {
                 self.infer_background();
                 self.last_inferred_version = self.canvas.version;
             }
-        });
+            _ => {}
+        }
+    }
+
+    /// Whether "Detect errors" has something to say: there's a cell that doesn't match the
+    /// answer, and the aid is either on, or was run since the last move.
+    pub(super) fn errors_detected(&self) -> bool {
+        (self.detect_errors || self.errors_checked == Some(self.canvas.version))
+            && self.detect_any_errors()
     }
 
     /// The block of one color under the pointer, for the gutters to report. `None` when the

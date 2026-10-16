@@ -1681,4 +1681,488 @@ mod tests {
         harness.step();
         assert_eq!(harness.state().input_mode(), InputMode::Mouse);
     }
+
+    /// The compact layout, on a phone-sized screen.
+    mod compact {
+        use super::*;
+        use egui_kittest::kittest::{Node, by};
+        use egui_material_icons::icons;
+        use number_loom::puzzle::{Color, UNSOLVED};
+
+        /// A phone's screen, in points (and so in CSS pixels).
+        const PHONE: egui::Vec2 = egui::vec2(390.0, 844.0);
+
+        /// What a finger needs.
+        const TARGET: f32 = 48.0;
+
+        fn phone(gui: NonogramGui) -> Harness<'static, NonogramGui> {
+            let mut harness = Harness::builder().with_size(PHONE).build_state(
+                |ctx, nonogram_gui: &mut NonogramGui| {
+                    nonogram_gui.main_ui(ctx);
+                },
+                gui,
+            );
+            harness.run();
+            harness
+        }
+
+        fn apron() -> number_loom::puzzle::Document {
+            import::load_path(&"examples/png/apron.png".into(), None).unwrap()
+        }
+
+        /// The names of the colors the palette offers, background first.
+        fn color_names(canvas: &number_loom::gui::CanvasGui) -> Vec<(Color, String)> {
+            let mut colors: Vec<_> = canvas
+                .document
+                .try_solution()
+                .unwrap()
+                .palette()
+                .iter()
+                .map(|(color, info)| (*color, info.name.clone()))
+                .collect();
+            colors.sort();
+            colors
+        }
+
+        /// Click `label`'s widget with the right button. (kittest only clicks with the left.)
+        fn right_click(harness: &mut Harness<NonogramGui>, label: &str) {
+            let bounds = harness.get_by_label(label).bounding_box().unwrap();
+            let at = Pos2::new(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            harness.input_mut().events.push(Event::PointerMoved(at));
+            for pressed in [true, false] {
+                harness.input_mut().events.push(Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Secondary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+            harness.run();
+        }
+
+        /// Whether `node` is on the screen, and big enough for a finger.
+        fn assert_tappable(node: &Node<'_>) {
+            let bounds = node
+                .bounding_box()
+                .unwrap_or_else(|| panic!("{node:?} has no bounds"));
+            let slop = 0.5;
+            assert!(
+                bounds.x0 >= -slop
+                    && bounds.y0 >= -slop
+                    && bounds.x1 <= PHONE.x as f64 + slop
+                    && bounds.y1 <= PHONE.y as f64 + slop,
+                "{node:?} is at {bounds:?}, off the screen"
+            );
+            assert!(
+                bounds.width() >= TARGET as f64 - slop && bounds.height() >= TARGET as f64 - slop,
+                "{node:?} is only {} by {}",
+                bounds.width(),
+                bounds.height()
+            );
+        }
+
+        /// Every button (and switch) on the screen is on the screen, and big enough for a
+        /// finger.
+        fn assert_all_tappable(harness: &Harness<NonogramGui>) {
+            use egui::accesskit::Role;
+            for role in [Role::Button, Role::CheckBox, Role::Switch] {
+                for node in harness.query_all(by().role(role)) {
+                    assert_tappable(&node);
+                }
+            }
+        }
+
+        #[test]
+        fn solve_mode_has_its_bars() {
+            let harness = phone(NonogramGui::new_solving(apron()));
+            let canvas = &harness.state().solve_gui.as_ref().unwrap().canvas;
+
+            // The top bar.
+            for icon in [icons::ICON_MENU, icons::ICON_UNDO, icons::ICON_REDO] {
+                assert_tappable(&harness.get_by_label(icon));
+            }
+            // The bottom bar: the solver's tools, and the whole palette, "unknown" included.
+            for icon in [icons::ICON_LINE_START, icons::ICON_SQUARE_FOOT] {
+                assert_tappable(&harness.get_by_label(icon));
+            }
+            for (color, name) in color_names(canvas) {
+                assert_tappable(&harness.get_by_label(&name));
+                if color == UNSOLVED {
+                    assert_eq!(name, "unknown");
+                }
+            }
+
+            // Gone from this layout, or in the drawer, which isn't open.
+            for missing in [
+                icons::ICON_ZOOM_IN,
+                icons::ICON_BRUSH,
+                "Save/share",
+                "Render style",
+                "Clear annotations",
+                "Analyze Lines",
+            ] {
+                assert!(
+                    harness.query_by_label(missing).is_none(),
+                    "{missing:?} shouldn't be showing"
+                );
+            }
+            assert_all_tappable(&harness);
+        }
+
+        #[test]
+        fn edit_mode_has_its_bars() {
+            let mut harness = phone(NonogramGui::new(apron()));
+
+            for icon in [
+                icons::ICON_MENU,
+                icons::ICON_UNDO,
+                icons::ICON_REDO,
+                icons::ICON_BRUSH,
+                icons::ICON_LINE_START,
+                icons::ICON_FORMAT_COLOR_FILL,
+                icons::ICON_LASSO_SELECT,
+                icons::ICON_EDIT_NOTE,
+                icons::ICON_RESIZE,
+                icons::ICON_ADD,
+            ] {
+                assert_tappable(&harness.get_by_label(icon));
+            }
+            for (color, name) in color_names(&harness.state().editor_gui) {
+                assert_ne!(color, UNSOLVED);
+                assert_tappable(&harness.get_by_label(&name));
+            }
+            assert!(harness.query_by_label(icons::ICON_SQUARE_FOOT).is_none());
+            assert!(harness.query_by_label("Disambiguate!").is_none());
+
+            // The unsolved-cell count says "Solve" until there's a line solve to count from,
+            // unless line-solving after every change is on.
+            if let Some(solve) = harness.query_by_label("Solve") {
+                solve.click();
+                harness.run();
+            }
+            assert_tappable(&harness.get_by_label("0 unsolved"));
+
+            assert_all_tappable(&harness);
+        }
+
+        #[test]
+        fn the_drawer_has_the_rest() {
+            let mut harness = phone(NonogramGui::new_solving(apron()));
+            harness.get_by_label(icons::ICON_MENU).click();
+            harness.run();
+
+            for label in [
+                "Edit",
+                "Puzzle",
+                "New",
+                "Library",
+                "Open",
+                "Save/share",
+                "traditional (dots)",
+                "traditional (Xes)",
+                "experimental",
+                "Analyze Lines automatically",
+                "Mark resolved clues automatically",
+                "Detect errors automatically",
+                "Infer background automatically",
+            ] {
+                assert_tappable(&harness.get_by_label(label));
+            }
+            assert_eq!(harness.query_all_by_label("Run once").count(), 4);
+            assert_all_tappable(&harness);
+
+            // Each aid can be run once, or switched on.
+            let analysis = |harness: &Harness<NonogramGui>| {
+                harness
+                    .state()
+                    .solve_gui
+                    .as_ref()
+                    .unwrap()
+                    .line_analysis
+                    .val
+                    .is_some()
+            };
+            let auto = harness.state().solve_gui.as_ref().unwrap().analyze_lines;
+            if auto {
+                harness.get_by_label("Analyze Lines automatically").click();
+                harness.run();
+            }
+            assert!(!analysis(&harness));
+            harness.get_all_by_label("Run once").next().unwrap().click();
+            harness.run();
+            assert!(analysis(&harness));
+            harness.get_by_label("Analyze Lines automatically").click();
+            harness.run();
+            assert!(harness.state().solve_gui.as_ref().unwrap().analyze_lines);
+            // Put the user's setting back the way it was.
+            if !auto {
+                harness.get_by_label("Analyze Lines automatically").click();
+                harness.run();
+            }
+
+            // Choosing the other mode closes the drawer.
+            harness.get_by_label("Edit").click();
+            harness.run();
+            assert!(harness.state().solve_gui.is_none());
+            assert!(harness.query_by_label("Library").is_none());
+        }
+
+        #[test]
+        fn the_editors_drawer() {
+            let mut harness = phone(NonogramGui::new(apron()));
+            harness.get_by_label(icons::ICON_MENU).click();
+            harness.run();
+
+            // The switch is named after its row.
+            let label = "Auto-solve";
+            assert_eq!(harness.query_all_by_label(label).count(), 2);
+            assert_tappable(&harness.get_by_label("Solve (backtracking)"));
+            assert!(harness.query_by_label("Render style").is_none());
+            assert_all_tappable(&harness);
+
+            // The close button closes it.
+            harness.get_by_label(icons::ICON_CLOSE).click();
+            harness.run();
+            assert!(harness.query_by_label("Solve (backtracking)").is_none());
+        }
+
+        #[test]
+        fn dialogs_take_the_whole_screen() {
+            let mut harness = phone(NonogramGui::new(apron()));
+            harness.get_by_label(icons::ICON_MENU).click();
+            harness.run();
+            harness.get_by_label("Save/share").click();
+            harness.run();
+
+            // The drawer closed behind it.
+            assert!(harness.query_by_label("Library").is_none());
+            let copy = harness.get_by_label("Copy to clipboard");
+            assert_tappable(&copy);
+            let back = harness.get_by_label(icons::ICON_ARROW_BACK);
+            let bounds = back.bounding_box().unwrap();
+            assert!(bounds.x0 < TARGET as f64 && bounds.y0 < TARGET as f64);
+            back.click();
+            harness.run();
+            assert!(harness.query_by_label("Copy to clipboard").is_none());
+
+            // Metadata has one of its own.
+            harness.get_by_label(icons::ICON_EDIT_NOTE).click();
+            harness.run();
+            harness.get_by_label("Description:");
+            harness.get_by_label(icons::ICON_ARROW_BACK).click();
+            harness.run();
+            assert!(harness.query_by_label("Description:").is_none());
+        }
+
+        #[test]
+        fn the_resize_window_leaves_the_grid_alone() {
+            let mut harness = phone(NonogramGui::new(apron()));
+            let picture = harness.state().editor_gui.picture_rect.unwrap();
+
+            harness.get_by_label(icons::ICON_RESIZE).click();
+            harness.run();
+            let size = harness.get_by_label_contains("Canvas size");
+            // Above the bottom bar, and below the top of the picture.
+            let bounds = size.bounding_box().unwrap();
+            let bottom_bar = harness
+                .get_by_label(icons::ICON_BRUSH)
+                .bounding_box()
+                .unwrap();
+            assert!(bounds.y1 < bottom_bar.y0);
+            assert!(bounds.y0 > picture.top() as f64);
+            // The grid didn't move to make room for it.
+            assert_eq!(harness.state().editor_gui.picture_rect, Some(picture));
+            assert_all_tappable(&harness);
+
+            // Its button closes it again.
+            harness.get_by_label(icons::ICON_RESIZE).click();
+            harness.run();
+            assert!(harness.query_by_label_contains("Canvas size").is_none());
+        }
+
+        #[test]
+        fn colors_are_added_and_edited_from_the_palette() {
+            let mut harness = phone(NonogramGui::new(apron()));
+            let before = color_names(&harness.state().editor_gui);
+
+            harness.get_by_label(icons::ICON_ADD).click();
+            harness.run();
+            let after = color_names(&harness.state().editor_gui);
+            assert_eq!(after.len(), before.len() + 1);
+            let (added, name) = after.last().unwrap().clone();
+
+            // A long press opens a color's dialog (and with a mouse, so does a right-click).
+            right_click(&mut harness, &name);
+            assert_eq!(harness.state().editor_gui.current_color, added);
+            harness.get_by_label(icons::ICON_DELETE).click();
+            harness.run();
+            assert_eq!(color_names(&harness.state().editor_gui), before);
+            assert!(harness.query_by_label(icons::ICON_DELETE).is_none());
+
+            // The background can't be deleted.
+            right_click(&mut harness, &before[0].1);
+            assert!(harness.query_by_label(icons::ICON_DELETE).is_none());
+            harness.get_by_label(icons::ICON_CLOSE).click();
+            harness.run();
+            assert!(harness.query_by_label(icons::ICON_CLOSE).is_none());
+        }
+
+        #[test]
+        fn messages_are_toasts() {
+            use number_loom::gui::StatusMessage;
+
+            let mut harness = phone(NonogramGui::new(apron()));
+            harness
+                .state()
+                .editor_gui
+                .status
+                .set(StatusMessage::info("Something happened"));
+            harness.run();
+            harness.get_by_label("Something happened");
+            // Info goes away by itself, so it has no button.
+            assert!(harness.query_by_label(icons::ICON_CLOSE).is_none());
+
+            harness
+                .state()
+                .editor_gui
+                .status
+                .set(StatusMessage::error("Something broke"));
+            harness.run();
+            harness.get_by_label("Something broke");
+            harness.get_by_label(icons::ICON_CLOSE).click();
+            harness.run();
+            assert!(harness.query_by_label("Something broke").is_none());
+            assert!(harness.state().editor_gui.status.get().is_none());
+        }
+
+        #[test]
+        fn solving_it_is_announced_once() {
+            let mut harness = phone(NonogramGui::new_solving(apron()));
+            let solve_gui = harness.state_mut().solve_gui.as_mut().unwrap();
+            let changes = solve_gui
+                .intended_solution
+                .cells()
+                .iter_enumerated()
+                .map(|(cell, color)| (cell, *color))
+                .collect();
+            solve_gui.canvas.perform(
+                number_loom::gui::Action::ChangeColor { changes },
+                number_loom::gui::ActionMood::Normal,
+            );
+            // The replay keeps it repainting.
+            harness.run_steps(3);
+
+            harness.get_by_label("Correctly solved");
+            assert!(
+                harness
+                    .state()
+                    .solve_gui
+                    .as_ref()
+                    .unwrap()
+                    .replay
+                    .as_ref()
+                    .unwrap()
+                    .rect
+                    .is_some()
+            );
+            harness.get_by_label(icons::ICON_CLOSE).click();
+            harness.run_steps(3);
+            assert!(harness.query_by_label("Correctly solved").is_none());
+
+            // Undoing and redoing the last step doesn't bring it back.
+            harness.get_by_label(icons::ICON_UNDO).click();
+            harness.run();
+            harness.get_by_label(icons::ICON_REDO).click();
+            harness.run();
+            assert!(harness.query_by_label("Correctly solved").is_none());
+        }
+
+        #[test]
+        fn errors_show_in_the_top_bar() {
+            let mut harness = phone(NonogramGui::new_solving(apron()));
+            let solve_gui = harness.state_mut().solve_gui.as_mut().unwrap();
+            // A cell painted with a color that isn't the answer's.
+            let (cell, wrong) = {
+                let answer = solve_gui.intended_solution.cells();
+                let cell = number_loom::geometry::CellIdx(0);
+                let wrong = color_names(&solve_gui.canvas)
+                    .into_iter()
+                    .map(|(color, _)| color)
+                    .find(|color| *color != answer[cell] && *color != UNSOLVED)
+                    .unwrap();
+                (cell, wrong)
+            };
+            solve_gui.canvas.perform(
+                number_loom::gui::Action::ChangeColor {
+                    changes: [(cell, wrong)].into(),
+                },
+                number_loom::gui::ActionMood::Normal,
+            );
+            let auto = solve_gui.detect_errors;
+            harness.run();
+            assert_eq!(harness.query_by_label("Error detected").is_some(), auto);
+
+            // Run once from the drawer, it stays until the next move.
+            if !auto {
+                harness.get_by_label(icons::ICON_MENU).click();
+                harness.run();
+                harness.get_all_by_label("Run once").nth(2).unwrap().click();
+                harness.run();
+                harness.get_by_label(icons::ICON_CLOSE).click();
+                harness.run();
+                harness.get_by_label("Error detected");
+                harness.get_by_label(icons::ICON_UNDO).click();
+                harness.run();
+                assert!(harness.query_by_label("Error detected").is_none());
+            }
+        }
+
+        /// A finger on the drawer is the drawer's, not the canvas's.
+        #[test]
+        fn touches_on_the_drawer_dont_reach_the_canvas() {
+            use egui::{TouchDeviceId, TouchId, TouchPhase};
+
+            let mut harness = phone(NonogramGui::new(apron()));
+            harness.get_by_label(icons::ICON_MENU).click();
+            harness.run();
+
+            let undo_len = harness.state().editor_gui.undo_stack.len();
+            // A tap in the drawer's empty space, over the canvas.
+            let at = Pos2::new(100.0, 600.0);
+            let touch = |phase| Event::Touch {
+                device_id: TouchDeviceId(0),
+                id: TouchId(0),
+                phase,
+                pos: at,
+                force: None,
+            };
+            harness.input_mut().events.extend([
+                Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+                touch(TouchPhase::Start),
+            ]);
+            harness.step();
+            harness.input_mut().events.extend([
+                Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                },
+                Event::PointerGone,
+                touch(TouchPhase::End),
+            ]);
+            harness.run();
+            assert_eq!(harness.state().editor_gui.undo_stack.len(), undo_len);
+            // It's still open.
+            harness.get_by_label("Library");
+        }
+    }
 }

@@ -284,7 +284,15 @@ impl CanvasGui {
         to_screen: &egui::emath::RectTransform,
         tool: Tool,
     ) -> Option<CellIdx> {
-        let sample = ui.input(|i| TouchSample::from_egui(i, area));
+        let mut sample = ui.input(|i| TouchSample::from_egui(i, area));
+        // A press on something floating over the canvas (the menu, a dialog, a window) belongs
+        // to that, not to the cursor. The panels, the canvas's among them, are all in the
+        // background.
+        sample.pressed_at = sample.pressed_at.filter(|at| {
+            ui.ctx()
+                .layer_id_at(*at)
+                .is_none_or(|layer| layer.order == egui::Order::Background)
+        });
         let before = self.touch_cursor();
         let step = self.touch_frame(sample, to_screen.scale().x, tool);
 

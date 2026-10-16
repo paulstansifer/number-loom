@@ -1,6 +1,7 @@
 mod annotate;
 mod auto_button;
 mod canvas;
+mod compact;
 pub mod gallery;
 mod input_mode;
 mod outline_text;
@@ -19,6 +20,7 @@ pub use crate::geometry::{CellIdx, FamilyIdx, LaneIdx, LanePos};
 pub use annotate::{AnnotateDrag, Annotation};
 pub use auto_button::{AutoButton, auto_button};
 pub use canvas::{ClueId, ClueOverlay, HoverBlocks};
+pub use compact::ScreenLayout;
 pub use input_mode::InputMode;
 pub use palette::default_color;
 pub use selection::{Selection, cells_in_lasso};
@@ -87,6 +89,19 @@ impl StatusCell {
             .borrow()
             .as_ref()
             .map(|(message, _)| message.clone())
+    }
+
+    /// The message, and how long ago it was set.
+    pub fn get_with_age(&self) -> Option<(StatusMessage, Duration)> {
+        self.inner
+            .borrow()
+            .as_ref()
+            .map(|(message, set_at)| (message.clone(), set_at.elapsed()))
+    }
+
+    /// Dismissed by the user.
+    pub fn clear(&self) {
+        *self.inner.borrow_mut() = None;
     }
 
     // Called when something dirties the editor (or otherwise makes the current message stale);
@@ -490,7 +505,14 @@ pub struct NonogramGui {
     /// showing backtracking's text under the `Solve` button.
     #[serde(skip)]
     solve_report_version: Option<Version>,
+    /// How many cells the line solve behind `solve_report` left unsolved.
+    #[serde(skip)]
+    solve_cells_left: Option<usize>,
     pub solve_gui: Option<SolveGui>,
+    /// What the compact layout has open: the menu drawer, and its dialogs that don't belong to
+    /// the desktop's toolbar.
+    #[serde(skip)]
+    compact: compact::CompactState,
     #[serde(skip)]
     show_save_share_window: bool,
     #[serde(skip)]
@@ -725,55 +747,86 @@ impl CanvasGui {
     /// The part of the sidebar the editor and the solver share. `self.solving` says which of
     /// the two is asking, and so which tools and palette controls to offer.
     pub fn common_sidebar_items(&mut self, ui: &mut egui::Ui) {
+        self.undo_redo(ui, ScreenLayout::Desktop);
+
+        ui.separator();
+
+        self.tool_selector(ui, ScreenLayout::Desktop);
+        self.clear_annotations_button(ui, ScreenLayout::Desktop);
+
+        ui.separator();
+
+        self.palette_editor(ui);
+    }
+
+    /// The undo and redo buttons, and their keys. On the desktop, each shows how many steps it
+    /// has.
+    pub(super) fn undo_redo(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
         // A focused `TextEdit` reads its key events without consuming them, so a bare-key
         // shortcut still fires while the user is typing into one. Nothing here uses a modifier,
         // so every one of them has to be suppressed by hand.
         let typing = ui.ctx().wants_keyboard_input();
 
         let (can_undo, can_redo) = (!self.undo_stack.is_empty(), !self.redo_stack.is_empty());
+        let (undos, redos) = (self.undo_stack.len(), self.redo_stack.len());
+        let desktop = layout == ScreenLayout::Desktop;
 
-        centered_row(ui, "undo_row", |ui| {
-            ui.label(format!("({})", self.undo_stack.len()));
-            if ui
-                .add_enabled(can_undo, egui::Button::new(icons::ICON_UNDO))
-                .clicked()
-                || (can_undo && !typing && ui.input(|i| i.key_pressed(egui::Key::Z)))
-            {
-                self.un_or_re_do(true);
+        let row = |ui: &mut egui::Ui| {
+            if desktop {
+                ui.label(format!("({undos})"));
             }
-            if ui
-                .add_enabled(can_redo, egui::Button::new(icons::ICON_REDO))
+            let undo = ui
+                .add_enabled(can_undo, compact::icon_button(icons::ICON_UNDO, layout))
                 .clicked()
-                || (can_redo && !typing && ui.input(|i| i.key_pressed(egui::Key::Y)))
-            {
-                self.un_or_re_do(false);
+                || (can_undo && !typing && ui.input(|i| i.key_pressed(egui::Key::Z)));
+            let redo = ui
+                .add_enabled(can_redo, compact::icon_button(icons::ICON_REDO, layout))
+                .clicked()
+                || (can_redo && !typing && ui.input(|i| i.key_pressed(egui::Key::Y)));
+            if desktop {
+                ui.label(format!("({redos})"));
             }
-            ui.label(format!("({})", self.redo_stack.len()));
-        });
+            (undo, redo)
+        };
+        let (undo, redo) = match layout {
+            ScreenLayout::Desktop => centered_row(ui, "undo_row", row),
+            ScreenLayout::Compact => row(ui),
+        };
 
-        ui.separator();
-
-        self.tool_selector(ui);
-
-        // Annotations aren't part of the picture, so undo can't take them back — this is the only
-        // way to be rid of them, and it only appears when there's something to clear.
-        if self.solving && !self.annotations.is_empty() {
-            centered_row(ui, "clear_annotations", |ui| {
-                if ui
-                    .button("Clear annotations")
-                    .on_hover_text("Remove every annotation (press Escape)")
-                    .clicked()
-                    || (!typing && ui.input(|i| i.key_pressed(egui::Key::Escape)))
-                {
-                    self.annotations.clear();
-                    self.annotate_drag = None;
-                }
-            });
+        if undo {
+            self.un_or_re_do(true);
         }
+        if redo {
+            self.un_or_re_do(false);
+        }
+    }
 
-        ui.separator();
+    /// Annotations aren't part of the picture, so undo can't take them back — this is the only
+    /// way to be rid of them, and it only appears when there's something to clear.
+    pub(super) fn clear_annotations_button(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
+        if !self.solving || self.annotations.is_empty() {
+            return;
+        }
+        // See `undo_redo`.
+        let typing = ui.ctx().wants_keyboard_input();
 
-        self.palette_editor(ui);
+        let button = |ui: &mut egui::Ui| {
+            match layout {
+                ScreenLayout::Desktop => ui.button("Clear annotations"),
+                ScreenLayout::Compact => ui.add(compact::icon_button(icons::ICON_MOP, layout)),
+            }
+            .on_hover_text("Remove every annotation (press Escape)")
+            .clicked()
+        };
+        let clicked = match layout {
+            ScreenLayout::Desktop => centered_row(ui, "clear_annotations", button),
+            ScreenLayout::Compact => button(ui),
+        };
+
+        if clicked || (!typing && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+            self.annotations.clear();
+            self.annotate_drag = None;
+        }
     }
 }
 
@@ -859,7 +912,9 @@ impl NonogramGui {
             lines_to_affect_string: "5".to_string(),
             solve_report: "".to_string(),
             solve_report_version: None,
+            solve_cells_left: None,
             solve_gui: None,
+            compact: Default::default(),
             show_save_share_window: false,
             share_as_link: false,
             share_string: "".to_string(),
@@ -877,18 +932,6 @@ impl NonogramGui {
 
     fn edit_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            // The id tracks the title, and `Save/share` needs it whether or not the "Metadata"
-            // section happens to be expanded — so this can't live inside that section's body,
-            // which egui skips entirely while it's collapsed.
-            let backup_title = self.editor_gui.document.get_or_make_up_title().unwrap();
-            let id = self
-                .editor_gui
-                .id
-                .get_or_refresh(self.editor_gui.version, || backup_title.clone());
-            if self.editor_gui.document.id != *id {
-                self.editor_gui.document.id = id.clone();
-            }
-
             self.metadata_editor(ui);
 
             ui.separator();
@@ -897,146 +940,197 @@ impl NonogramGui {
 
             ui.separator();
 
-            match self.editor_gui.document.try_solution().map(|s| s.shape()) {
-                Some(crate::geometry::Shape::Triangular(_)) => self.tri_resizer(ui),
-                _ => self.resizer(ui),
-            }
-
-            ui.separator();
-            let solve = auto_button(ui, "Solve", &mut self.auto_solve);
-            if solve.auto.changed() {
-                let _ = UserSettings::set(consts::EDITOR_AUTO_SOLVE, &self.auto_solve.to_string());
-                if !self.auto_solve {
-                    // The shading clears itself (it's only drawn while fresh), but the report is
-                    // plain text that would otherwise linger after the aid is switched off.
-                    self.solve_report.clear();
-                    self.solve_report_version = None;
-                }
-            }
-            if (solve.button.clicked() || self.auto_solve)
-                // Tracked separately from `solved_mask`'s own freshness: the backtracking solve
-                // writes there too (see `BacktrackSolver::widget`).
-                && self.solve_report_version != Some(self.editor_gui.version)
-            {
-                let puzzle = self.editor_gui.document.try_solution().unwrap().to_puzzle();
-
-                let (report, mask) = match puzzle.line_solve() {
-                    Ok(grid_solve::Report {
-                        solve_counts,
-                        cells_left,
-                        solution: _solution,
-                        solved_mask,
-                    }) => (
-                        // Unsolved cells first: that's the number that says whether the puzzle
-                        // works. The skim/scrub counts are solver diagnostics.
-                        format!("unsolved cells: {cells_left}\n{solve_counts}"),
-                        Some(solved_mask),
-                    ),
-                    // Can't happen, because the puzzle has a solution!
-                    Err(e) => (format!("Error: {:?}", e), None),
-                };
-                self.solve_report = report.clone();
-                self.solve_report_version = Some(self.editor_gui.version);
-                if let Some(mask) = mask {
-                    self.editor_gui
-                        .solved_mask
-                        .update((report, mask), self.editor_gui.version);
-                }
-            }
-
-            ui.colored_label(
-                if self.solve_report_version == Some(self.editor_gui.version) {
-                    Color32::BLACK
-                } else {
-                    Color32::GRAY
-                },
-                &self.solve_report,
-            );
+            self.resize_controls(ui, ScreenLayout::Desktop);
 
             ui.separator();
 
-            let picture = self.editor_gui.document.try_solution().unwrap().clone();
-            let version = self.editor_gui.version;
-            self.editor_gui
-                .backtrack_solver
-                .get_or_refresh(version, BacktrackSolver::new)
-                .widget(
-                    &picture,
-                    version,
-                    &mut self.editor_gui.solved_mask,
-                    &self.editor_gui.progress,
-                    ui,
-                );
+            self.line_solve_controls(ui);
 
             ui.separator();
 
-            self.editor_gui
-                .disambiguator
-                .get_or_refresh(self.editor_gui.version, Disambiguator::new)
-                .disambig_widget(
-                    &picture,
-                    &self.editor_gui.status,
-                    &self.editor_gui.progress,
-                    ui,
-                );
+            self.backtrack_controls(ui);
+
+            ui.separator();
+
+            self.disambig_controls(ui);
         });
+    }
+
+    /// What the editor does every frame, whichever layout is on screen and whatever it shows.
+    fn editor_frame(&mut self) {
+        // The id tracks the title, and `Save/share` needs it whether or not the title is on
+        // screen (in a collapsed "Metadata" section, or a closed dialog).
+        let backup_title = self.editor_gui.document.get_or_make_up_title().unwrap();
+        let id = self
+            .editor_gui
+            .id
+            .get_or_refresh(self.editor_gui.version, || backup_title.clone());
+        if self.editor_gui.document.id != *id {
+            self.editor_gui.document.id = id.clone();
+        }
+
+        // The searches run in the background, and report back here. Each belongs to the picture
+        // it was started on, so a change to the picture starts afresh with a new one.
+        let canvas = &mut self.editor_gui;
+        let version = canvas.version;
+        let backtrack = canvas
+            .backtrack_solver
+            .get_or_refresh(version, BacktrackSolver::new);
+        backtrack.poll(version, &mut canvas.solved_mask);
+        let backtrack_progress = backtrack.running_progress();
+        let disambiguator = canvas
+            .disambiguator
+            .get_or_refresh(version, Disambiguator::new);
+        disambiguator.poll(&canvas.status);
+        *canvas.progress.borrow_mut() = backtrack_progress.or(disambiguator.running_progress());
+    }
+
+    /// Run the line solve if `requested`, or if it runs after every change, unless it's already
+    /// up to date.
+    fn update_line_solve(&mut self, requested: bool) {
+        // Tracked separately from `solved_mask`'s own freshness: the backtracking solve writes
+        // there too (see `BacktrackSolver::poll`).
+        if !(requested || self.auto_solve)
+            || self.solve_report_version == Some(self.editor_gui.version)
+        {
+            return;
+        }
+        let puzzle = self.editor_gui.document.try_solution().unwrap().to_puzzle();
+
+        let (report, mask) = match puzzle.line_solve() {
+            Ok(grid_solve::Report {
+                solve_counts,
+                cells_left,
+                solution: _solution,
+                solved_mask,
+            }) => {
+                self.solve_cells_left = Some(cells_left);
+                (
+                    // Unsolved cells first: that's the number that says whether the puzzle
+                    // works. The skim/scrub counts are solver diagnostics.
+                    format!("unsolved cells: {cells_left}\n{solve_counts}"),
+                    Some(solved_mask),
+                )
+            }
+            // Can't happen, because the puzzle has a solution!
+            Err(e) => {
+                self.solve_cells_left = None;
+                (format!("Error: {:?}", e), None)
+            }
+        };
+        self.solve_report = report.clone();
+        self.solve_report_version = Some(self.editor_gui.version);
+        if let Some(mask) = mask {
+            self.editor_gui
+                .solved_mask
+                .update((report, mask), self.editor_gui.version);
+        }
+    }
+
+    /// Switch line-solving after every change on or off, and remember it.
+    fn set_auto_solve(&mut self, auto_solve: bool) {
+        self.auto_solve = auto_solve;
+        let _ = UserSettings::set(consts::EDITOR_AUTO_SOLVE, &self.auto_solve.to_string());
+        if !self.auto_solve {
+            // The shading clears itself (it's only drawn while fresh), but the report is plain
+            // text that would otherwise linger after the aid is switched off.
+            self.solve_report.clear();
+            self.solve_report_version = None;
+            self.solve_cells_left = None;
+        }
+    }
+
+    /// The line solve's button, its "after every change" toggle, and its report.
+    fn line_solve_controls(&mut self, ui: &mut egui::Ui) {
+        let solve = auto_button(ui, "Solve", &mut self.auto_solve);
+        if solve.auto.changed() {
+            self.set_auto_solve(self.auto_solve);
+        }
+        self.update_line_solve(solve.button.clicked());
+
+        ui.colored_label(
+            if self.solve_report_version == Some(self.editor_gui.version) {
+                Color32::BLACK
+            } else {
+                Color32::GRAY
+            },
+            &self.solve_report,
+        );
+    }
+
+    fn backtrack_controls(&mut self, ui: &mut egui::Ui) {
+        let picture = self.editor_gui.document.try_solution().unwrap();
+        self.editor_gui.backtrack_solver.val.widget(picture, ui);
+    }
+
+    fn disambig_controls(&mut self, ui: &mut egui::Ui) {
+        let picture = self.editor_gui.document.try_solution().unwrap();
+        self.editor_gui.disambiguator.val.widget(picture, ui);
+    }
+
+    /// The +/- buttons for each side of the picture.
+    fn resize_controls(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
+        match self.editor_gui.document.try_solution().map(|s| s.shape()) {
+            Some(crate::geometry::Shape::Triangular(_)) => self.tri_resizer(ui, layout),
+            _ => self.resizer(ui, layout),
+        }
     }
 
     /// Title, author, description and license; in a collapsable section.
     fn metadata_editor(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Metadata").show(ui, |ui| {
+        egui::CollapsingHeader::new("Metadata").show(ui, |ui| self.metadata_form(ui));
+    }
+
+    /// Title, author, description and license.
+    fn metadata_form(&mut self, ui: &mut egui::Ui) {
+        ui.add(egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"));
+
+        ui.horizontal(|ui| {
+            ui.label("by ");
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.editor_gui.document.author)
+                        .hint_text("Author"),
+                )
+                .changed()
+            {
+                let _ =
+                    UserSettings::set(consts::EDITOR_AUTHOR_NAME, &self.editor_gui.document.author);
+            }
+        });
+
+        ui.label("Description:");
+        ui.text_edit_multiline(&mut self.editor_gui.document.description);
+
+        let cc_by_license_str = "CC BY 4.0";
+        let mut is_cc_by = self.editor_gui.document.license == cc_by_license_str;
+
+        ui.label("License:");
+
+        ui.horizontal(|ui| {
+            if ui.radio_value(&mut is_cc_by, true, "").changed() {
+                self.editor_gui.document.license = cc_by_license_str.to_string();
+            };
             ui.add(
-                egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"),
+                egui::Hyperlink::from_label_and_url(
+                    cc_by_license_str,
+                    "https://creativecommons.org/licenses/by/4.0/",
+                )
+                .open_in_new_tab(true),
             );
+        });
 
-            ui.horizontal(|ui| {
-                ui.label("by ");
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut self.editor_gui.document.author)
-                            .hint_text("Author"),
-                    )
-                    .changed()
-                {
-                    let _ = UserSettings::set(
-                        consts::EDITOR_AUTHOR_NAME,
-                        &self.editor_gui.document.author,
-                    );
-                }
-            });
-
-            ui.label("Description:");
-            ui.text_edit_multiline(&mut self.editor_gui.document.description);
-
-            let cc_by_license_str = "CC BY 4.0";
-            let mut is_cc_by = self.editor_gui.document.license == cc_by_license_str;
-
-            ui.label("License:");
-
-            ui.horizontal(|ui| {
-                if ui.radio_value(&mut is_cc_by, true, "").changed() {
-                    self.editor_gui.document.license = cc_by_license_str.to_string();
-                };
-                ui.add(
-                    egui::Hyperlink::from_label_and_url(
-                        cc_by_license_str,
-                        "https://creativecommons.org/licenses/by/4.0/",
-                    )
-                    .open_in_new_tab(true),
-                );
-            });
-
-            ui.horizontal(|ui| {
-                if ui.radio_value(&mut is_cc_by, false, "").changed() {
-                    self.editor_gui.document.license.clear();
-                };
-                ui.add_enabled(
-                    !is_cc_by,
-                    egui::TextEdit::singleline(&mut self.editor_gui.document.license),
-                );
-            });
+        ui.horizontal(|ui| {
+            if ui.radio_value(&mut is_cc_by, false, "").changed() {
+                self.editor_gui.document.license.clear();
+            };
+            ui.add_enabled(
+                !is_cc_by,
+                egui::TextEdit::singleline(&mut self.editor_gui.document.license),
+            );
         });
     }
+
     /// What to actually draw at: `scale` is what the zoom controls set, but triddlers are drawn
     /// `TRIDDLER_ZOOM_STEPS` clicks further in than square puzzles.
     fn render_scale(&self) -> f32 {
@@ -1179,6 +1273,41 @@ fn bar_frame(ctx: &egui::Context, separator_on: Edge) -> egui::Frame {
     base.inner_margin(margin)
 }
 
+/// egui's spacing, except where noted.
+fn desktop_spacing() -> egui::Spacing {
+    egui::Spacing {
+        interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
+        ..egui::Spacing::default()
+    }
+}
+
+/// The whole app's style.
+fn style_for(layout: ScreenLayout) -> Style {
+    // egui leaves a button outline-less until it's hovered, which makes a button hard to tell
+    // from a label until you go looking for it — and impossible to tell from a second button
+    // parked right behind it (see `gui/auto_button.rs`). Borrowing the separator stroke gives
+    // every widget at rest a quiet outline in whatever theme is in force.
+    let mut visuals = Visuals::light();
+    visuals.widgets.inactive.bg_stroke = visuals.widgets.noninteractive.bg_stroke;
+
+    let (visuals, spacing, text_styles) = match layout {
+        ScreenLayout::Desktop => (visuals, desktop_spacing(), Style::default().text_styles),
+        ScreenLayout::Compact => (
+            compact::visuals(visuals),
+            compact::spacing(),
+            compact::text_styles(),
+        ),
+    };
+
+    Style {
+        visuals,
+        spacing,
+        text_styles,
+
+        ..Style::default()
+    }
+}
+
 /// Breathing room between the canvas and the panels around it.
 const CANVAS_MARGIN: i8 = 16;
 
@@ -1263,27 +1392,25 @@ impl NonogramGui {
     /// The whole window, panel by panel. Separate from `eframe::App::update` for testing.
     pub fn main_ui(&mut self, ctx: &egui::Context) {
         self.input_mode = ctx.input(|i| self.input_mode.after(i));
+        let layout = ScreenLayout::of(ctx);
 
         // Styling. Has to be here instead of `edit_image` to take effect on the Web.
-        let spacing = egui::Spacing {
-            interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
-            ..egui::Spacing::default()
-        };
-        // egui leaves a button outline-less until it's hovered, which makes a button hard to
-        // tell from a label until you go looking for it — and impossible to tell from a second
-        // button parked right behind it (see `gui/auto_button.rs`). Borrowing the separator
-        // stroke gives every widget at rest a quiet outline in whatever theme is in force.
-        let mut visuals = Visuals::light();
-        visuals.widgets.inactive.bg_stroke = visuals.widgets.noninteractive.bg_stroke;
+        ctx.set_style(style_for(layout));
 
-        let style = Style {
-            visuals,
-            spacing,
+        // Whatever is on screen, the mode's background work goes on.
+        match &mut self.solve_gui {
+            Some(solve_gui) => solve_gui.solver_frame(),
+            None => self.editor_frame(),
+        }
 
-            ..Style::default()
-        };
-        ctx.set_style(style);
+        match layout {
+            ScreenLayout::Desktop => self.desktop_ui(ctx),
+            ScreenLayout::Compact => self.compact_ui(ctx),
+        }
+    }
 
+    /// The desktop layout: a toolbar, a status bar, a sidebar, and the canvas.
+    fn desktop_ui(&mut self, ctx: &egui::Context) {
         // Panel order matters: egui hands each panel the space its predecessors didn't claim, so
         // the top and bottom bars span the full width, and the sidebar then splits what's left
         // with the canvas.
@@ -1292,6 +1419,7 @@ impl NonogramGui {
             .show(ctx, |ui| {
                 self.toolbar(ctx, ui);
             });
+        self.dialogs(ctx, ScreenLayout::Desktop);
 
         egui::TopBottomPanel::bottom("status_bar")
             .frame(bar_frame(ctx, Edge::Top))
@@ -1340,9 +1468,23 @@ impl NonogramGui {
                 });
             });
 
+        self.canvas_panel(ctx, ScreenLayout::Desktop);
+    }
+
+    /// The canvas, in whatever space the panels around it have left.
+    fn canvas_panel(&mut self, ctx: &egui::Context, layout: ScreenLayout) {
+        let margin = match layout {
+            ScreenLayout::Desktop => CANVAS_MARGIN,
+            ScreenLayout::Compact => compact::CANVAS_MARGIN,
+        };
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(CANVAS_MARGIN))
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(margin))
             .show(ctx, |ui| {
+                // The compact layout's touch-sized spacing and bigger text would pad out the clue
+                // gutters, which are laid out as widgets.
+                *ui.spacing_mut() = desktop_spacing();
+                ui.style_mut().text_styles = Style::default().text_styles;
+
                 // Everything below only applies while the pointer is over the canvas: the wheel
                 // and the middle button still mean what they usually do over the sidebar.
                 let pointer_here = ui.rect_contains_pointer(ui.max_rect());
@@ -1465,20 +1607,20 @@ impl Disambiguator {
         self.progress = 0.0;
     }
 
-    pub fn disambig_widget(
-        &mut self,
-        picture: &DynSolution,
-        status: &SharedStatus,
-        progress: &SharedProgress,
-        ui: &mut egui::Ui,
-    ) {
+    fn running(&self) -> bool {
+        self.progress > 0.0 && self.progress < 1.0
+    }
+
+    /// How far along it is, while it's running.
+    pub fn running_progress(&self) -> Option<f32> {
+        self.running().then_some(self.progress)
+    }
+
+    /// Collect whatever the search has sent back since last time.
+    pub fn poll(&mut self, status: &SharedStatus) {
         while let Ok(p) = self.progress_r.try_recv() {
             self.progress = p;
         }
-        let report_running = self.progress > 0.0 && self.progress < 1.0;
-
-        // Taking the report before drawing means "Clear" becomes available on the same frame the
-        // report lands, rather than the one after.
         if let Ok(result) = self.report_r.try_recv() {
             // Clear any stale message (e.g. a load error from before) now that disambiguation
             // has something new to say (or, for `Report`, nothing to say).
@@ -1492,12 +1634,38 @@ impl Disambiguator {
                 }
             }
         }
+    }
+
+    pub fn start(&mut self, picture: &DynSolution) {
+        let (p_s, p_r) = mpsc::channel();
+        let (r_s, r_r) = mpsc::channel();
+        let (t_s, t_r) = mpsc::channel();
+        self.progress_r = p_r;
+        self.terminate_s = t_s;
+        self.report_r = r_r;
+
+        let solution = picture.clone();
+        spawn_async(async move {
+            let result = disambig_candidates(&solution, p_s, t_r).await;
+            r_s.send(result).unwrap();
+        });
+    }
+
+    pub fn stop(&mut self) {
+        let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
+        self.progress = 0.0;
+    }
+
+    /// The desktop's buttons. (`poll` has already taken in whatever there was, so "Clear"
+    /// becomes available on the same frame the report lands, rather than the one after.)
+    pub fn widget(&mut self, picture: &DynSolution, ui: &mut egui::Ui) {
+        let running = self.running();
 
         // Both buttons share a row: "Clear" discards what the button beside it produced. They
         // only record what was clicked, since acting on it needs `self` mutably.
         let (mut start, mut stop, mut clear) = (false, false, false);
         ui.horizontal(|ui| {
-            if !report_running {
+            if !running {
                 start = ui.button("Disambiguate!").clicked();
             } else {
                 stop = ui.button("Stop").clicked();
@@ -1508,30 +1676,11 @@ impl Disambiguator {
         });
 
         if start {
-            let (p_s, p_r) = mpsc::channel();
-            let (r_s, r_r) = mpsc::channel();
-            let (t_s, t_r) = mpsc::channel();
-            self.progress_r = p_r;
-            self.terminate_s = t_s;
-            self.report_r = r_r;
-
-            let solution = picture.clone();
-            spawn_async(async move {
-                let result = disambig_candidates(&solution, p_s, t_r).await;
-                r_s.send(result).unwrap();
-            });
+            self.start(picture);
         }
         if stop {
-            let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
-            self.progress = 0.0;
+            self.stop();
         }
-
-        *progress.borrow_mut() = if self.progress > 0.0 && self.progress < 1.0 {
-            Some(self.progress)
-        } else {
-            None
-        };
-
         if clear {
             self.report = None;
         }
@@ -1570,18 +1719,24 @@ impl BacktrackSolver {
         }
     }
 
-    pub fn widget(
+    fn running(&self) -> bool {
+        self.progress > 0.0 && self.progress < 1.0
+    }
+
+    /// How far along it is, while it's running.
+    pub fn running_progress(&self) -> Option<f32> {
+        self.running().then_some(self.progress)
+    }
+
+    /// Collect whatever the search has sent back since last time.
+    pub fn poll(
         &mut self,
-        picture: &DynSolution,
         version: Version,
         solved_mask: &mut Staleable<(String, TiVec<CellIdx, bool>)>,
-        progress: &SharedProgress,
-        ui: &mut egui::Ui,
     ) {
         while let Ok(p) = self.progress_r.try_recv() {
             self.progress = p;
         }
-        let running = self.progress > 0.0 && self.progress < 1.0;
 
         if let Ok((report, mask)) = self.report_r.try_recv() {
             // Shared with the line-logic `Solve` button: whichever one ran last is the one
@@ -1591,6 +1746,45 @@ impl BacktrackSolver {
             }
             self.report = Some(report);
         }
+    }
+
+    pub fn start(&mut self, picture: &DynSolution) {
+        let (p_s, p_r) = mpsc::channel();
+        let (r_s, r_r) = mpsc::channel();
+        let (t_s, t_r) = mpsc::channel();
+        self.progress_r = p_r;
+        self.terminate_s = t_s;
+        self.report_r = r_r;
+        self.report = None;
+
+        let picture = picture.clone();
+        spawn_async(async move {
+            let puzzle = picture.to_puzzle();
+            let outcome = crate::with_puzzle!(&puzzle, |p| {
+                conprop::conprop_solve_in_background(p, &SolveOptions::default(), p_s, t_r).await
+            });
+            let (report, mask) = match outcome {
+                Ok(report) => (
+                    format!(
+                        "unsolved cells (upper bound): {}\n{}",
+                        report.cells_left, report.solve_counts
+                    ),
+                    Some(report.solved_mask),
+                ),
+                Err(e) => (format!("{:?}", e), None),
+            };
+            let _ = r_s.send((report, mask));
+        });
+    }
+
+    pub fn stop(&mut self) {
+        let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
+        self.progress = 0.0;
+    }
+
+    /// The button, and the report once there is one.
+    pub fn widget(&mut self, picture: &DynSolution, ui: &mut egui::Ui) {
+        let running = self.running();
 
         let (mut start, mut stop) = (false, false);
         ui.horizontal(|ui| {
@@ -1602,40 +1796,11 @@ impl BacktrackSolver {
         });
 
         if start {
-            let (p_s, p_r) = mpsc::channel();
-            let (r_s, r_r) = mpsc::channel();
-            let (t_s, t_r) = mpsc::channel();
-            self.progress_r = p_r;
-            self.terminate_s = t_s;
-            self.report_r = r_r;
-            self.report = None;
-
-            let picture = picture.clone();
-            spawn_async(async move {
-                let puzzle = picture.to_puzzle();
-                let outcome = crate::with_puzzle!(&puzzle, |p| {
-                    conprop::conprop_solve_in_background(p, &SolveOptions::default(), p_s, t_r)
-                        .await
-                });
-                let (report, mask) = match outcome {
-                    Ok(report) => (
-                        format!(
-                            "unsolved cells (upper bound): {}\n{}",
-                            report.cells_left, report.solve_counts
-                        ),
-                        Some(report.solved_mask),
-                    ),
-                    Err(e) => (format!("{:?}", e), None),
-                };
-                let _ = r_s.send((report, mask));
-            });
+            self.start(picture);
         }
         if stop {
-            let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
-            self.progress = 0.0;
+            self.stop();
         }
-
-        *progress.borrow_mut() = if running { Some(self.progress) } else { None };
 
         if let Some(report) = &self.report {
             ui.label(report);

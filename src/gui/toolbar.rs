@@ -1,7 +1,7 @@
 //! The document-wide controls across the top of the window, and the three dialogs they open.
 //!
-//! The New, Library, and Save/share windows are opened, drawn, and dismissed entirely within
-//! `toolbar`, so their state lives no wider than this module needs.
+//! The New, Library, and Save/share windows are opened from here (or from the compact layout's
+//! menu), and drawn and dismissed by `dialogs`.
 
 use super::*;
 use crate::formats::partial_cells::has_progress;
@@ -50,7 +50,7 @@ impl NonogramGui {
     /// the Edit/Puzzle mode toggle. Runs before the sidebar and canvas each frame, so a mode
     /// switched here takes effect on the same frame.
     pub(super) fn toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        // See the matching note in `common_sidebar_items`: bare-key shortcuts have to opt out of
+        // See the matching note in `CanvasGui::undo_redo`: bare-key shortcuts have to opt out of
         // firing while a text field has the focus.
         let typing = ctx.wants_keyboard_input();
 
@@ -66,18 +66,77 @@ impl NonogramGui {
                 self.scale = (self.scale - ZOOM_STEP).max(MIN_SCALE);
             }
             if ui.button("New").clicked() {
-                let clue_style = self.editor_gui.document.solution_mut().clue_style();
-                self.new_dialog = Some(NewPuzzleDialog {
-                    shape: NewPuzzleShape::Square,
-                    clue_style,
-                });
+                self.open_new_dialog();
             }
-            let mut new_document = None;
-            // A new puzzle is something to draw, so it always lands in the editor. Deferred,
-            // rather than done in the button handler, because `dialog` borrows out of `self`.
-            let mut leave_solve_mode = false;
-            if let Some(dialog) = self.new_dialog.as_mut() {
-                egui::Window::new("New puzzle").show(ctx, |ui| {
+            if ui.button("Library").clicked() {
+                self.open_library();
+            }
+            if ui.button("Open").clicked() {
+                self.open_file();
+            }
+            if ui.button("Save/share").clicked() {
+                self.open_save_share();
+            }
+
+            ui.separator();
+
+            let solving = self.solve_gui.is_some();
+            if ui.selectable_label(!solving, "Edit").clicked() {
+                self.exit_solve_mode();
+            }
+            if ui.selectable_label(solving, "Puzzle").clicked() {
+                self.enter_solve_mode();
+            }
+        });
+    }
+
+    pub(super) fn open_new_dialog(&mut self) {
+        let clue_style = self.editor_gui.document.solution_mut().clue_style();
+        self.new_dialog = Some(NewPuzzleDialog {
+            shape: NewPuzzleShape::Square,
+            clue_style,
+        });
+    }
+
+    pub(super) fn open_library(&mut self) {
+        let (sender, receiver) = mpsc::channel();
+        self.library_receiver = receiver;
+        self.library_dialog = Some(LibraryStatus::Loading);
+
+        spawn_async(async move {
+            let result = crate::import::load_library().await;
+            let _ = sender.send(result);
+        });
+    }
+
+    pub(super) fn open_save_share(&mut self) {
+        self.share_progress = self.solve_progress();
+        self.quality_warnings = self.editor_gui.document.quality_check();
+        self.show_save_share_window = true;
+        self.share_string.clear(); // needs to be regenerated
+    }
+
+    /// The New, Library and Save/share dialogs, whichever are open, and what comes back from the
+    /// file and library loads they (and Open) started. Floating windows on the desktop; the
+    /// whole screen in the compact layout.
+    pub(super) fn dialogs(&mut self, ctx: &egui::Context, layout: ScreenLayout) {
+        // How wide the Save/share window's text boxes are.
+        let text_width = match layout {
+            ScreenLayout::Desktop => 730.0,
+            ScreenLayout::Compact => ctx.screen_rect().width() - 2.0 * compact::DIALOG_MARGIN,
+        };
+
+        let mut new_document = None;
+        // A new puzzle is something to draw, so it always lands in the editor. Deferred,
+        // rather than done in the button handler, because `dialog` borrows out of `self`.
+        let mut leave_solve_mode = false;
+        if let Some(dialog) = self.new_dialog.as_mut() {
+            let (_, back) = compact::dialog(
+                ctx,
+                layout,
+                egui::Window::new("New puzzle"),
+                "New puzzle",
+                |ui| {
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut dialog.shape, NewPuzzleShape::Square, "Square");
                         ui.radio_value(&mut dialog.shape, NewPuzzleShape::Triangular, "Triddler");
@@ -134,265 +193,268 @@ impl NonogramGui {
                         ));
                         leave_solve_mode = true;
                     }
-                });
+                },
+            );
+            if back {
+                self.new_dialog = None;
             }
+        }
 
-            if ui.button("Library").clicked() {
-                let (sender, receiver) = mpsc::channel();
-                self.library_receiver = receiver;
-                self.library_dialog = Some(LibraryStatus::Loading);
-
-                spawn_async(async move {
-                    let result = crate::import::load_library().await;
-                    let _ = sender.send(result);
-                });
+        if let Ok(result) = self.library_receiver.try_recv() {
+            match result {
+                Ok(library) => self.library_dialog = Some(LibraryStatus::Loaded(library)),
+                // `{:#}` rather than `to_string`, so the dialog shows the whole context chain
+                // ("couldn't fetch https://...: HTTP status 404") and not just its last link.
+                Err(e) => self.library_dialog = Some(LibraryStatus::Failed(format!("{e:#}"))),
             }
+        }
 
-            if let Ok(result) = self.library_receiver.try_recv() {
-                match result {
-                    Ok(library) => self.library_dialog = Some(LibraryStatus::Loaded(library)),
-                    // `{:#}` rather than `to_string`, so the dialog shows the whole context chain
-                    // ("couldn't fetch https://...: HTTP status 404") and not just its last link.
-                    Err(e) => self.library_dialog = Some(LibraryStatus::Failed(format!("{e:#}"))),
-                }
-            }
-
-            let mut next_enter_solve_mode = false;
-            let mut close_library = false;
-            if let Some(status) = &self.library_dialog {
-                egui::Window::new("Puzzle Library")
-                    .max_size(ctx.screen_rect().size() * 0.9)
-                    .show(ctx, |ui| {
-                        match status {
-                            LibraryStatus::Loading => {
-                                ui.vertical_centered(|ui| {
-                                    ui.add(egui::Spinner::new());
-                                    ui.label("Loading library...");
-                                });
-                            }
-                            LibraryStatus::Loaded(docs) => {
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    egui::Grid::new("library_grid").show(ui, |ui| {
-                                        for (i, doc) in docs.iter().enumerate() {
-                                            if gallery::gallery_puzzle_preview(ui, doc).clicked() {
-                                                new_document = Some(doc.clone());
-                                                next_enter_solve_mode = true;
-                                                close_library = true;
-                                            }
-                                            if i % 2 == 1 {
-                                                ui.end_row();
-                                            }
+        let mut next_enter_solve_mode = false;
+        let mut close_library = false;
+        if let Some(status) = &self.library_dialog {
+            // The previews are a fixed width, so a phone only has room for one across.
+            let columns = match layout {
+                ScreenLayout::Desktop => 2,
+                ScreenLayout::Compact => 1,
+            };
+            let (_, back) = compact::dialog(
+                ctx,
+                layout,
+                egui::Window::new("Puzzle Library").max_size(ctx.screen_rect().size() * 0.9),
+                "Puzzle Library",
+                |ui| {
+                    match status {
+                        LibraryStatus::Loading => {
+                            ui.vertical_centered(|ui| {
+                                ui.add(egui::Spinner::new());
+                                ui.label("Loading library...");
+                            });
+                        }
+                        LibraryStatus::Loaded(docs) => {
+                            let mut grid = |ui: &mut egui::Ui| {
+                                egui::Grid::new("library_grid").show(ui, |ui| {
+                                    for (i, doc) in docs.iter().enumerate() {
+                                        if gallery::gallery_puzzle_preview(ui, doc).clicked() {
+                                            new_document = Some(doc.clone());
+                                            next_enter_solve_mode = true;
+                                            close_library = true;
                                         }
-                                    });
+                                        if i % columns == columns - 1 {
+                                            ui.end_row();
+                                        }
+                                    }
                                 });
-                            }
-                            LibraryStatus::Failed(e) => {
-                                ui.vertical_centered(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Failed to load library: {}", e))
-                                            .color(Color32::RED),
-                                    );
-                                });
+                            };
+                            match layout {
+                                ScreenLayout::Desktop => {
+                                    egui::ScrollArea::vertical().show(ui, grid);
+                                }
+                                // The whole screen scrolls already.
+                                ScreenLayout::Compact => grid(ui),
                             }
                         }
+                        LibraryStatus::Failed(e) => {
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    RichText::new(format!("Failed to load library: {}", e))
+                                        .color(Color32::RED),
+                                );
+                            });
+                        }
+                    }
+                    // The compact layout's dialogs close with their back button.
+                    if layout == ScreenLayout::Desktop {
                         ui.separator();
                         if ui.button("Cancel").clicked() {
                             close_library = true;
                         }
-                    });
-            }
-            if close_library {
-                self.library_dialog = None;
-            }
-            self.loader(ui);
+                    }
+                },
+            );
+            close_library |= back;
+        }
+        if close_library {
+            self.library_dialog = None;
+        }
 
-            if ui.button("Save/share").clicked() {
-                self.share_progress = self.solve_progress();
-                self.quality_warnings = self.editor_gui.document.quality_check();
-                self.show_save_share_window = true;
-                self.share_string.clear(); // needs to be regenerated
-            }
+        self.receive_opened_file();
 
-            if self.show_save_share_window {
-                if self.share_string.is_empty() {
-                    self.share_string = self.share_string();
-                }
+        if self.show_save_share_window {
+            if self.share_string.is_empty() {
+                self.share_string = self.share_string();
+            }
+            let (_, back) = compact::dialog(
+                ctx,
+                layout,
                 egui::Window::new("Save/share")
                     .open(&mut self.show_save_share_window)
-                    .default_width(780.0)
-                    .show(ctx, |ui| {
-                        if !self.quality_warnings.is_empty() {
-                            if self.quality_warnings.len() == 1 {
-                                ui.label("Warning:");
-                            } else {
-                                ui.label("Warnings:");
-                            }
-                            for warning in &self.quality_warnings {
-                                ui.label(warning);
-                            }
-                            ui.separator();
-                        }
-                        let sh_ui_1 = ui.add_enabled(
-                            self.share_progress.is_some(),
-                            egui::Checkbox::new(
-                                &mut self.save_solve_progress,
-                                "save solve progress",
-                            ),
-                        );
-                        let sh_ui_2 =
-                            ui.radio_value(&mut self.share_as_link, false, "Share string:");
-                        let sh_ui_3 = ui.radio_value(&mut self.share_as_link, true, "Share link:");
-
-                        if sh_ui_1.changed() || sh_ui_2.changed() || sh_ui_3.changed() {
-                            self.share_string.clear();
-                        }
-
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.share_string.clone())
-                                .font(TextStyle::Monospace)
-                                .desired_width(730.0),
-                        );
-                        if ui.button("Copy to clipboard").clicked() {
-                            ctx.copy_text(self.share_string.clone());
-                        }
-
-                        if self.editor_gui.document.license == "CC BY 4.0" {
-                            if self.editor_gui.document.author.trim().is_empty() {
-                                ui.label(
-                                    "(The author field in your puzzle is empty; please use \
-                                    'anonymous' if that's what you want.)",
-                                );
-                            }
-                            ui.add(
-                                egui::Hyperlink::from_label_and_url(
-                                    "Contribute this puzzle to Number Loom",
-                                    "https://forms.gle/WXxWVsEMqy3NHXmK9",
-                                )
-                                .open_in_new_tab(true),
-                            );
+                    .default_width(780.0),
+                "Save/share",
+                |ui| {
+                    if !self.quality_warnings.is_empty() {
+                        if self.quality_warnings.len() == 1 {
+                            ui.label("Warning:");
                         } else {
+                            ui.label("Warnings:");
+                        }
+                        for warning in &self.quality_warnings {
+                            ui.label(warning);
+                        }
+                        ui.separator();
+                    }
+                    let sh_ui_1 = ui.add_enabled(
+                        self.share_progress.is_some(),
+                        egui::Checkbox::new(&mut self.save_solve_progress, "save solve progress"),
+                    );
+                    let sh_ui_2 = ui.radio_value(&mut self.share_as_link, false, "Share string:");
+                    let sh_ui_3 = ui.radio_value(&mut self.share_as_link, true, "Share link:");
+
+                    if sh_ui_1.changed() || sh_ui_2.changed() || sh_ui_3.changed() {
+                        self.share_string.clear();
+                    }
+
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.share_string.clone())
+                            .font(TextStyle::Monospace)
+                            .desired_width(text_width),
+                    );
+                    if ui.button("Copy to clipboard").clicked() {
+                        ctx.copy_text(self.share_string.clone());
+                    }
+
+                    if self.editor_gui.document.license == "CC BY 4.0" {
+                        if self.editor_gui.document.author.trim().is_empty() {
                             ui.label(
-                                "If you'd like to contribute your puzzle to Number Loom's \
-                                library, please set the license to 'CC BY 4.0'",
+                                "(The author field in your puzzle is empty; please use \
+                                'anonymous' if that's what you want.)",
                             );
                         }
-
-                        ui.separator();
-
-                        ui.label("Paste a 'WOVEN' string to load:");
                         ui.add(
-                            egui::TextEdit::multiline(&mut self.pasted_string)
-                                .font(TextStyle::Monospace)
-                                .desired_width(730.0),
+                            egui::Hyperlink::from_label_and_url(
+                                "Contribute this puzzle to Number Loom",
+                                "https://forms.gle/WXxWVsEMqy3NHXmK9",
+                            )
+                            .open_in_new_tab(true),
                         );
+                    } else {
+                        ui.label(
+                            "If you'd like to contribute your puzzle to Number Loom's \
+                            library, please set the license to 'CC BY 4.0'",
+                        );
+                    }
 
-                        if ui.button("Load").clicked() {
-                            match crate::formats::woven::from_woven(
-                                &self.pasted_string,
-                                "unknown.woven".to_string(),
-                            ) {
-                                Ok(doc) => {
-                                    new_document = Some(doc);
-                                    next_enter_solve_mode = true;
-                                }
-                                Err(e) => {
-                                    self.editor_gui.status.set(StatusMessage::error(format!(
-                                        "Error loading WOVEN puzzle: {:?}",
-                                        e
-                                    )));
-                                }
+                    ui.separator();
+
+                    ui.label("Paste a 'WOVEN' string to load:");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.pasted_string)
+                            .font(TextStyle::Monospace)
+                            .desired_width(text_width),
+                    );
+
+                    if ui.button("Load").clicked() {
+                        match crate::formats::woven::from_woven(
+                            &self.pasted_string,
+                            "unknown.woven".to_string(),
+                        ) {
+                            Ok(doc) => {
+                                new_document = Some(doc);
+                                next_enter_solve_mode = true;
+                            }
+                            Err(e) => {
+                                self.editor_gui.status.set(StatusMessage::error(format!(
+                                    "Error loading WOVEN puzzle: {:?}",
+                                    e
+                                )));
                             }
                         }
+                    }
 
-                        ui.separator();
+                    ui.separator();
 
-                        ui.label("Supported file types:");
-                        ui.label("  .png (or other image formats): solution image");
-                        ui.label("  .xml/.pbn: the format used by the \"pbnsolve\" solver");
-                        ui.label("  .txt: grid of characters");
-                        ui.label("  .g: the format used by the Olšák solver");
-                        ui.label("  .woven: Number Loom's custom format");
-                        ui.label("  .html: printable puzzle");
+                    ui.label("Supported file types:");
+                    ui.label("  .png (or other image formats): solution image");
+                    ui.label("  .xml/.pbn: the format used by the \"pbnsolve\" solver");
+                    ui.label("  .txt: grid of characters");
+                    ui.label("  .g: the format used by the Olšák solver");
+                    ui.label("  .woven: Number Loom's custom format");
+                    ui.label("  .html: printable puzzle");
 
-                        ui.horizontal(|ui| {
-                            ui.label("Filename:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.editor_gui.document.file)
-                                    .desired_width(450.0),
-                            );
-                        });
-                        if ui.button("Save").clicked() {
-                            let mut document_copy = document_to_save(
-                                &self.editor_gui.document,
-                                self.share_progress.as_ref(),
-                                self.save_solve_progress,
-                            );
-
-                            let (sender, receiver) = mpsc::channel();
-                            self.save_result_receiver = receiver;
-
-                            spawn_async(async move {
-                                let handle = rfd::AsyncFileDialog::new()
-                                    .add_filter(
-                                        "all recognized formats",
-                                        &["png", "gif", "bmp", "xml", "pbn", "txt", "g", "html"],
-                                    )
-                                    .add_filter("image", &["png", "gif", "bmp"])
-                                    .add_filter("PBN", &["xml", "pbn"])
-                                    .add_filter("chargrid", &["txt"])
-                                    .add_filter("Olšák", &["g"])
-                                    .add_filter("woven", &["woven"])
-                                    .add_filter("HTML (for printing)", &["html"])
-                                    .set_file_name(document_copy.file.clone())
-                                    .save_file()
-                                    .await;
-
-                                if let Some(handle) = handle {
-                                    let result = async {
-                                        let bytes = to_bytes(
-                                            &mut document_copy,
-                                            Some(handle.file_name()),
-                                            None,
-                                        )?;
-                                        handle.write(&bytes).await?;
-                                        Ok(())
-                                    }
-                                    .await;
-                                    sender.send(result).unwrap();
-                                }
-                            });
-                        }
-
-                        if let Ok(Err(e)) = self.save_result_receiver.try_recv() {
-                            self.editor_gui
-                                .status
-                                .set(StatusMessage::error(format!("Error saving file: {:?}", e)));
-                        }
+                    ui.horizontal(|ui| {
+                        ui.label("Filename:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.editor_gui.document.file)
+                                .desired_width(text_width.min(450.0)),
+                        );
                     });
-            }
+                    if ui.button("Save").clicked() {
+                        let mut document_copy = document_to_save(
+                            &self.editor_gui.document,
+                            self.share_progress.as_ref(),
+                            self.save_solve_progress,
+                        );
 
-            if let Some(new_document) = new_document {
-                let document = Box::new(new_document);
-                self.editor_gui
-                    .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
-                self.new_dialog = None;
-                self.library_dialog = None;
+                        let (sender, receiver) = mpsc::channel();
+                        self.save_result_receiver = receiver;
+
+                        spawn_async(async move {
+                            let handle = rfd::AsyncFileDialog::new()
+                                .add_filter(
+                                    "all recognized formats",
+                                    &["png", "gif", "bmp", "xml", "pbn", "txt", "g", "html"],
+                                )
+                                .add_filter("image", &["png", "gif", "bmp"])
+                                .add_filter("PBN", &["xml", "pbn"])
+                                .add_filter("chargrid", &["txt"])
+                                .add_filter("Olšák", &["g"])
+                                .add_filter("woven", &["woven"])
+                                .add_filter("HTML (for printing)", &["html"])
+                                .set_file_name(document_copy.file.clone())
+                                .save_file()
+                                .await;
+
+                            if let Some(handle) = handle {
+                                let result = async {
+                                    let bytes = to_bytes(
+                                        &mut document_copy,
+                                        Some(handle.file_name()),
+                                        None,
+                                    )?;
+                                    handle.write(&bytes).await?;
+                                    Ok(())
+                                }
+                                .await;
+                                sender.send(result).unwrap();
+                            }
+                        });
+                    }
+
+                    if let Ok(Err(e)) = self.save_result_receiver.try_recv() {
+                        self.editor_gui
+                            .status
+                            .set(StatusMessage::error(format!("Error saving file: {:?}", e)));
+                    }
+                },
+            );
+            if back {
                 self.show_save_share_window = false;
             }
-            if leave_solve_mode {
-                self.exit_solve_mode();
-            }
+        }
 
-            ui.separator();
-
-            let solving = self.solve_gui.is_some();
-            if ui.selectable_label(!solving, "Edit").clicked() {
-                self.exit_solve_mode();
-            }
-            if ui.selectable_label(solving, "Puzzle").clicked() || next_enter_solve_mode {
-                self.enter_solve_mode();
-            }
-        });
+        if let Some(new_document) = new_document {
+            let document = Box::new(new_document);
+            self.editor_gui
+                .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
+            self.new_dialog = None;
+            self.library_dialog = None;
+            self.show_save_share_window = false;
+        }
+        if leave_solve_mode {
+            self.exit_solve_mode();
+        }
+        if next_enter_solve_mode {
+            self.enter_solve_mode();
+        }
     }
 
     /// The grid as it's being solved (or, outside of solve mode, as it was loaded), if anything
@@ -406,39 +468,39 @@ impl NonogramGui {
         has_progress(&progress.raw, palette.keys().copied()).then_some(progress)
     }
 
-    fn loader(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Open").clicked() {
-            let (sender, receiver) = mpsc::channel();
-            self.opened_file_receiver = receiver;
+    /// Ask for a file to open. It turns up in `receive_opened_file`.
+    pub(super) fn open_file(&mut self) {
+        let (sender, receiver) = mpsc::channel();
+        self.opened_file_receiver = receiver;
 
-            spawn_async(async move {
-                let handle = rfd::AsyncFileDialog::new()
-                    .add_filter(
-                        "all recognized formats",
-                        &["png", "gif", "bmp", "xml", "pbn", "txt", "g"],
-                    )
-                    .add_filter("image", &["png", "gif", "bmp"])
-                    .add_filter("PBN", &["xml", "pbn"])
-                    .add_filter("chargrid", &["txt"])
-                    .add_filter("Olsak", &["g"])
-                    .add_filter("woven", &["woven"])
-                    .pick_file()
-                    .await;
+        spawn_async(async move {
+            let handle = rfd::AsyncFileDialog::new()
+                .add_filter(
+                    "all recognized formats",
+                    &["png", "gif", "bmp", "xml", "pbn", "txt", "g"],
+                )
+                .add_filter("image", &["png", "gif", "bmp"])
+                .add_filter("PBN", &["xml", "pbn"])
+                .add_filter("chargrid", &["txt"])
+                .add_filter("Olsak", &["g"])
+                .add_filter("woven", &["woven"])
+                .pick_file()
+                .await;
 
-                if let Some(handle) = handle {
-                    let document =
-                        crate::import::load(&handle.file_name(), handle.read().await, None);
-                    // We need a solution to edit it:
-                    let document = match document {
-                        Ok(mut document) => document.find_solution().await.map(|()| document),
-                        Err(e) => Err(e),
-                    };
+            if let Some(handle) = handle {
+                let document = crate::import::load(&handle.file_name(), handle.read().await, None);
+                // We need a solution to edit it:
+                let document = match document {
+                    Ok(mut document) => document.find_solution().await.map(|()| document),
+                    Err(e) => Err(e),
+                };
 
-                    sender.send(document).unwrap();
-                }
-            });
-        }
+                sender.send(document).unwrap();
+            }
+        });
+    }
 
+    fn receive_opened_file(&mut self) {
         if let Ok(result) = self.opened_file_receiver.try_recv() {
             match result {
                 Ok(document) => {

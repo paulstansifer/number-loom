@@ -362,7 +362,7 @@ const TRI_MARK_SHRINK: f32 = 2.0 / 3.0;
 /// Build the shapes for one cell. `shape` and `origin` come from the geometry, so a triangle is
 /// drawn as a triangle and every overlay lands on the real centroid rather than the middle of a
 /// bounding box.
-fn cell_shape(
+pub(super) fn cell_shape(
     ci: &ColorInfo,
     solved: bool,
     disambig: (&ColorInfo, f32),

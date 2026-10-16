@@ -124,7 +124,7 @@ impl NonogramGui {
         );
     }
 
-    pub(super) fn resizer(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn resizer(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
         ui.vertical_centered(|ui| {
             ui.label(format!(
                 "Canvas size: {}",
@@ -136,10 +136,16 @@ impl NonogramGui {
             egui::Grid::new("resizer").show(ui, |ui| {
                 ui.label("");
                 ui.horizontal(|ui| {
-                    if ui.button(icons::ICON_ADD).clicked() {
+                    if ui
+                        .add(compact::icon_button(icons::ICON_ADD, layout))
+                        .clicked()
+                    {
                         self.square_resize(Some(true), None, true);
                     }
-                    if ui.button(icons::ICON_REMOVE).clicked() {
+                    if ui
+                        .add(compact::icon_button(icons::ICON_REMOVE, layout))
+                        .clicked()
+                    {
                         self.square_resize(Some(true), None, false);
                     }
                 });
@@ -147,20 +153,32 @@ impl NonogramGui {
                 ui.end_row();
 
                 ui.vertical(|ui| {
-                    if ui.button(icons::ICON_ADD).clicked() {
+                    if ui
+                        .add(compact::icon_button(icons::ICON_ADD, layout))
+                        .clicked()
+                    {
                         self.square_resize(None, Some(true), true);
                     }
-                    if ui.button(icons::ICON_REMOVE).clicked() {
+                    if ui
+                        .add(compact::icon_button(icons::ICON_REMOVE, layout))
+                        .clicked()
+                    {
                         self.square_resize(None, Some(true), false);
                     }
                 });
                 ui.text_edit_singleline(&mut self.lines_to_affect_string);
 
                 ui.vertical(|ui| {
-                    if ui.button(icons::ICON_ADD).clicked() {
+                    if ui
+                        .add(compact::icon_button(icons::ICON_ADD, layout))
+                        .clicked()
+                    {
                         self.square_resize(None, Some(false), true);
                     }
-                    if ui.button(icons::ICON_REMOVE).clicked() {
+                    if ui
+                        .add(compact::icon_button(icons::ICON_REMOVE, layout))
+                        .clicked()
+                    {
                         self.square_resize(None, Some(false), false);
                     }
                 });
@@ -168,10 +186,16 @@ impl NonogramGui {
 
                 ui.label("");
                 ui.horizontal(|ui| {
-                    if ui.button(icons::ICON_ADD).clicked() {
+                    if ui
+                        .add(compact::icon_button(icons::ICON_ADD, layout))
+                        .clicked()
+                    {
                         self.square_resize(Some(false), None, true);
                     }
-                    if ui.button(icons::ICON_REMOVE).clicked() {
+                    if ui
+                        .add(compact::icon_button(icons::ICON_REMOVE, layout))
+                        .clicked()
+                    {
                         self.square_resize(Some(false), None, false);
                     }
                 });
@@ -183,7 +207,7 @@ impl NonogramGui {
     /// Triangular counterpart to `resizer`: a hexagon holding the same "how many lines" box,
     /// with a +/- pair on each of its six sides — one per `geometry::Side` — grown/shrunk via
     /// `tri_resize`. Each pair sits flush against, and rotated parallel to, its own hexagon edge.
-    pub(super) fn tri_resizer(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn tri_resizer(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
         ui.vertical_centered(|ui| {
             ui.label(format!(
                 "Outline size: {}",
@@ -201,15 +225,20 @@ impl NonogramGui {
             .and_then(|s| s.as_tri())
             .map(|t| *t.geometry.dims());
 
-        // Layout constants, all in screen pixels.
-        const APOTHEM: f32 = 22.0; // centre-to-edge distance of the hexagon.
-        const CIRCUMRADIUS: f32 = APOTHEM / 0.866_025_4; // centre-to-vertex distance.
-        const EDIT_SIZE: Vec2 = Vec2::new(30.0, 18.0);
-        const BUTTON_ALONG: f32 = 12.0; // button extent parallel to its edge.
-        const BUTTON_ACROSS: f32 = 12.0; // button extent along the outward normal.
-        const BUTTON_GAP: f32 = 3.0; // gap between the +/- pair, along the edge.
-        const BUTTON_DISTANCE: f32 = APOTHEM + BUTTON_ACROSS / 2.0 + 3.0;
-        const MARK_RADIUS: f32 = 3.0; // half-length of the hand-drawn +/- strokes.
+        // Layout constants, all in screen pixels on the desktop. The compact layout scales
+        // everything up until the buttons are big enough for a finger.
+        let zoom = match layout {
+            ScreenLayout::Desktop => 1.0,
+            ScreenLayout::Compact => compact::TARGET / 12.0,
+        };
+        let apothem: f32 = 22.0 * zoom; // centre-to-edge distance of the hexagon.
+        let circumradius: f32 = apothem / 0.866_025_4; // centre-to-vertex distance.
+        let edit_size: Vec2 = Vec2::new(30.0, 18.0) * zoom.sqrt();
+        let button_along: f32 = 12.0 * zoom; // button extent parallel to its edge.
+        let button_across: f32 = 12.0 * zoom; // button extent along the outward normal.
+        let button_gap: f32 = 3.0 * zoom; // gap between the +/- pair, along the edge.
+        let button_distance: f32 = apothem + button_across / 2.0 + 3.0 * zoom;
+        let mark_radius: f32 = 3.0 * zoom; // half-length of the hand-drawn +/- strokes.
         const PAD: f32 = 4.0; // headroom for stroke width / hover expansion at the edges.
 
         let to_vec2 = |v: crate::layout::Vec2| Vec2::new(v.x, v.y);
@@ -232,7 +261,7 @@ impl NonogramGui {
                 .map(|i| {
                     let a = outward_dirs[i];
                     let b = outward_dirs[(i + 1) % 6];
-                    center + (a + b).normalized() * CIRCUMRADIUS
+                    center + (a + b).normalized() * circumradius
                 })
                 .collect();
 
@@ -240,16 +269,16 @@ impl NonogramGui {
             for side in sides {
                 let (outward, edge_dir) = side.outward_and_edge_dir();
                 let (outward, edge_dir) = (to_vec2(outward), to_vec2(edge_dir));
-                let base = center + outward * BUTTON_DISTANCE;
+                let base = center + outward * button_distance;
                 for add in [true, false] {
                     let sign = if add { 1.0 } else { -1.0 };
                     let button_center =
-                        base + edge_dir * (sign * BUTTON_GAP / 2.0 + sign * BUTTON_ALONG / 2.0);
+                        base + edge_dir * (sign * button_gap / 2.0 + sign * button_along / 2.0);
                     // A small rectangle with one axis along the edge and the other along the
                     // outward normal — the same "centre ± dir*half ± perp*half" construction
                     // `layout::clue_box` uses for the (differently-shaped) clue boxes.
-                    let along = edge_dir * (BUTTON_ALONG / 2.0);
-                    let across = outward * (BUTTON_ACROSS / 2.0);
+                    let along = edge_dir * (button_along / 2.0);
+                    let across = outward * (button_across / 2.0);
                     let corners = [
                         button_center + along + across,
                         button_center - along + across,
@@ -263,7 +292,7 @@ impl NonogramGui {
         };
 
         let (probe_hex, probe_buttons) = layout(Pos2::ZERO);
-        let mut bounds = Rect::from_center_size(Pos2::ZERO, EDIT_SIZE);
+        let mut bounds = Rect::from_center_size(Pos2::ZERO, edit_size);
         for p in probe_hex
             .iter()
             .chain(probe_buttons.iter().flat_map(|b| b.5.iter()))
@@ -289,7 +318,7 @@ impl NonogramGui {
         ));
 
         ui.put(
-            Rect::from_center_size(center, EDIT_SIZE),
+            Rect::from_center_size(center, edit_size),
             egui::TextEdit::singleline(&mut self.lines_to_affect_string),
         );
 
@@ -346,16 +375,16 @@ impl NonogramGui {
             let stroke = egui::Stroke::new(1.5, visuals.fg_stroke.color);
             painter.line_segment(
                 [
-                    button_center - edge_dir * MARK_RADIUS,
-                    button_center + edge_dir * MARK_RADIUS,
+                    button_center - edge_dir * mark_radius,
+                    button_center + edge_dir * mark_radius,
                 ],
                 stroke,
             );
             if add {
                 painter.line_segment(
                     [
-                        button_center - outward * MARK_RADIUS,
-                        button_center + outward * MARK_RADIUS,
+                        button_center - outward * mark_radius,
+                        button_center + outward * mark_radius,
                     ],
                     stroke,
                 );

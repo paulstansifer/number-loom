@@ -315,50 +315,189 @@ impl CanvasGui {
         }
         self.current_color = picked_color;
 
-        if Some(self.current_color) == removed_color {
+        if let Some(removed_color) = removed_color {
+            self.remove_color(removed_color);
+        }
+        if add_color {
+            self.add_color();
+        }
+    }
+
+    /// Take `color` out of the palette, painting its cells with whatever's left current.
+    pub(super) fn remove_color(&mut self, color: Color) {
+        if self.current_color == color {
             self.current_color = BACKGROUND;
         }
 
-        if let Some(removed_color) = removed_color {
-            let mut new_document = self.document.clone();
-            let new_picture = new_document.solution_mut();
-            for cell in new_picture.cells_mut().iter_mut() {
-                if *cell == removed_color {
-                    *cell = self.current_color;
-                }
+        let mut new_document = self.document.clone();
+        let new_picture = new_document.solution_mut();
+        for cell in new_picture.cells_mut().iter_mut() {
+            if *cell == color {
+                *cell = self.current_color;
             }
-            new_picture.palette_mut().remove(&removed_color);
-            self.perform(
-                Action::ReplaceDocument {
-                    document: Box::new(new_document),
-                },
-                ActionMood::Normal,
-            );
         }
+        new_picture.palette_mut().remove(&color);
+        self.perform(
+            Action::ReplaceDocument {
+                document: Box::new(new_document),
+            },
+            ActionMood::Normal,
+        );
+    }
+
+    /// Add a color to the palette (see `suggested_color`).
+    pub(super) fn add_color(&mut self) {
+        let mut new_document = self.document.clone();
+        let new_picture = new_document.solution_mut();
+        let next_color = Color(new_picture.palette().keys().map(|k| k.0).max().unwrap() + 1);
+        let (rgb, name) = suggested_color(new_picture.palette());
+        new_picture.palette_mut().insert(
+            next_color,
+            ColorInfo {
+                ch: (next_color.0 + 65) as char, // TODO: will break chargrid export
+                name: name.to_string(),
+                rgb,
+                color: next_color,
+                corner: None,
+            },
+        );
+        self.perform(
+            Action::ReplaceDocument {
+                document: Box::new(new_document),
+            },
+            ActionMood::Normal,
+        );
+    }
+
+    /// The compact layout's palette: a row of swatches, which scrolls by dragging if it doesn't
+    /// fit. While solving, it ends with "unknown", so that a finger can take a mark back; while
+    /// editing, with a button to add a color. Returns the color whose swatch was long-pressed
+    /// (or right-clicked), which in the editor opens that color's dialog.
+    pub(super) fn palette_strip(
+        &mut self,
+        ui: &mut egui::Ui,
+        render_style: RenderStyle,
+    ) -> Option<Color> {
+        let typing = ui.ctx().wants_keyboard_input();
+        let mut order = self.palette_order();
+        let shortcuts = order.len();
+        if self.solving {
+            order.push(UNSOLVED);
+        }
+
+        let mut held = None;
+        let mut add_color = false;
+        egui::ScrollArea::horizontal()
+            .id_salt("palette_strip")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (index, color) in order.into_iter().enumerate() {
+                        let Some(picture) = self.document.try_solution() else {
+                            return;
+                        };
+                        let Some(color_info) = picture.palette().get(&color) else {
+                            continue;
+                        };
+                        let selected = color == self.current_color;
+                        let response = swatch(ui, color_info, selected, render_style);
+                        let key = palette_shortcut(index).filter(|_| index < shortcuts);
+                        if response.clicked()
+                            || (!typing
+                                && key.is_some_and(|(key, _)| ui.input(|i| i.key_pressed(key))))
+                        {
+                            self.current_color = color;
+                        }
+                        if response.long_touched() || response.secondary_clicked() {
+                            self.current_color = color;
+                            held = Some(color);
+                        }
+                        // egui only notices a long press on a frame that happens to be drawn
+                        // after the press has gone on long enough.
+                        if response.is_pointer_button_down_on() {
+                            let wait = ui.ctx().options(|o| o.input_options.max_click_duration);
+                            ui.ctx()
+                                .request_repaint_after(Duration::from_secs_f64(wait));
+                        }
+                    }
+                    if !self.solving {
+                        add_color = ui
+                            .add(compact::icon_button(icons::ICON_ADD, ScreenLayout::Compact))
+                            .clicked();
+                    }
+                });
+            });
+
         if add_color {
-            let mut new_document = self.document.clone();
-            let new_picture = new_document.solution_mut();
-            let next_color = Color(new_picture.palette().keys().map(|k| k.0).max().unwrap() + 1);
-            let (rgb, name) = suggested_color(new_picture.palette());
-            new_picture.palette_mut().insert(
-                next_color,
-                ColorInfo {
-                    ch: (next_color.0 + 65) as char, // TODO: will break chargrid export
-                    name: name.to_string(),
-                    rgb,
-                    color: next_color,
-                    corner: None,
-                },
-            );
-            self.perform(
-                Action::ReplaceDocument {
-                    document: Box::new(new_document),
-                },
-                ActionMood::Normal,
-            );
+            self.add_color();
         }
+        held.filter(|_| !self.solving)
     }
 }
+
+/// A palette entry in the compact layout: a square of its color, on a button, drawn just as the
+/// canvas draws a cell of it in `render_style` (so the background and "unknown" get whatever marks
+/// they get there).
+fn swatch(
+    ui: &mut egui::Ui,
+    color_info: &ColorInfo,
+    selected: bool,
+    render_style: RenderStyle,
+) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::splat(compact::TARGET), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            selected,
+            &color_info.name,
+        )
+    });
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let painter = ui.painter();
+    let visuals = ui.style().interact_selectable(&response, selected);
+    if selected || response.hovered() {
+        painter.rect(
+            rect.expand(visuals.expansion),
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let square = Rect::from_center_size(rect.center(), Vec2::splat(SWATCH_SIZE));
+    let to_screen = egui::emath::RectTransform::from_to(
+        Rect::from_min_size(Pos2::ZERO, Vec2::splat(1.0)),
+        square,
+    );
+    // Under a trianogram's half-square color, which leaves the rest of the square empty.
+    painter.rect_filled(square, 0.0, Color32::WHITE);
+    painter.extend(super::canvas::cell_shape(
+        color_info,
+        true,
+        (color_info, 1.0),
+        crate::layout::CellShape::Square,
+        Point::new(0.0, 0.0),
+        &to_screen,
+        render_style,
+    ));
+    painter.rect_stroke(
+        square,
+        0.0,
+        egui::Stroke::new(1.0, Color32::from_black_alpha(80)),
+        egui::StrokeKind::Inside,
+    );
+    response
+}
+
+/// The colored square on a compact palette button.
+const SWATCH_SIZE: f32 = 30.0;
 
 #[cfg(test)]
 mod palette_tests {
