@@ -21,7 +21,8 @@ use std::collections::HashSet;
 
 use crate::geometry::{CellIdx, FamilyIdx};
 use crate::layout::Point;
-use crate::puzzle::{Clue, ColorInfo, DynSolution};
+use crate::puzzle::{Clue, Color, ColorInfo, DynSolution};
+use typed_index_collections::TiSlice;
 
 /// A rhombus clue box's label is smaller than a square one's: the rhombus is narrower
 /// top-to-bottom than it is wide, so a square box's font wouldn't fit between its slanted sides.
@@ -207,12 +208,13 @@ pub(super) fn draw_rosette(
     ui: &egui::Ui,
     painter: &egui::Painter,
     picture: &DynSolution,
+    cells: &TiSlice<CellIdx, Color>,
     cell: CellIdx,
     center: Pos2,
     scale: f32,
 ) {
-    let color = picture.cells()[cell];
-    let rgb = picture.palette()[&color].rgb;
+    let color = cells[cell];
+    let rgb = super::color_info(picture.palette(), color).rgb;
     let text = if color == crate::puzzle::UNSOLVED {
         "?"
     } else {
@@ -220,7 +222,7 @@ pub(super) fn draw_rosette(
     };
 
     // One run per clue family, three families; `arm_directions` places the two arms of each.
-    let runs = picture.runs_at_cell(cell);
+    let runs = picture.runs_at_cell(cells, cell);
     let dirs = picture.arm_directions();
 
     let cell_shape = picture.cell_shape(cell);

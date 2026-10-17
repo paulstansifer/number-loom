@@ -33,7 +33,6 @@ pub use typed_index_collections::{TiSlice, TiVec};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    rc::Rc,
     sync::mpsc,
     time::Duration,
 };
@@ -65,8 +64,8 @@ impl StatusMessage {
 
 const STATUS_GRACE_PERIOD: Duration = Duration::from_secs(1);
 
-// Shared between `CanvasGui`s so that the editor and the solver (which have separate
-// `CanvasGui`s) can show messages in the same status bar.
+/// The status bar's message, which whatever has something to say sets through a shared reference.
+#[derive(Default)]
 pub struct StatusCell {
     // The `Instant` is when the message was set: for the first `STATUS_GRACE_PERIOD` after that,
     // `maybe_clear_on_dirty` calls are ignored, so a message doesn't disappear before the user
@@ -75,12 +74,6 @@ pub struct StatusCell {
 }
 
 impl StatusCell {
-    pub fn new() -> Rc<Self> {
-        Rc::new(StatusCell {
-            inner: RefCell::new(None),
-        })
-    }
-
     pub fn set(&self, message: StatusMessage) {
         *self.inner.borrow_mut() = Some((message, Instant::now()));
     }
@@ -117,12 +110,6 @@ impl StatusCell {
     }
 }
 
-pub type SharedStatus = Rc<StatusCell>;
-
-// Shared the same way as `SharedStatus`, for a progress bar in the status bar. `Some(fraction)`
-// (0.0 to 1.0) while a long-running task is in progress, `None` otherwise.
-pub type SharedProgress = Rc<RefCell<Option<f32>>>;
-
 use solver::{RenderStyle, SolveGui};
 
 use crate::{
@@ -135,8 +122,8 @@ use crate::{
         BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynSolution, Palette, PartialSolution,
         PuzzleDynOps, Solution, UNSOLVED,
     },
-    solve::conprop,
     solve::grid_solve::{self, DisambigResult, SolveOptions, disambig_candidates},
+    solve::{conprop, line_solve::Cell},
     user_settings::{UserSettings, consts},
 };
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, TextStyle, Vec2, Visuals};
@@ -234,11 +221,10 @@ pub fn edit_image(document: anyhow::Result<Document>) {
                     // editor's undo history (see `open_linked`).
                     let gui = match (link_document, saved) {
                         (Some(link_document), Some(Ok(mut gui))) => {
-                            if gui.open_linked(link_document) {
-                                gui.editor_gui
-                                    .status
-                                    .set(StatusMessage::info("Opened the puzzle at the link; 'undo' will restore your previous edits."));
-                            }
+                            gui.open_linked(link_document);
+                            gui.canvas
+                                .status
+                                .set(StatusMessage::info("Opened the puzzle at the link; 'undo' will restore your previous edits."));
                             gui
                         }
                         (Some(link_document), None) => NonogramGui::new_solving(link_document),
@@ -257,7 +243,7 @@ pub fn edit_image(document: anyhow::Result<Document>) {
                     }
                     // The status bar holds one message, and both of these can happen at once.
                     if !errors.is_empty() {
-                        gui.editor_gui
+                        gui.canvas
                             .status
                             .set(StatusMessage::error(errors.join("\n")));
                     }
@@ -460,11 +446,14 @@ pub struct CanvasGui {
     /// The annotation being dragged out right now, if any.
     #[serde(skip)]
     pub annotate_drag: Option<AnnotateDrag>,
-    /// Whether this canvas is solving a puzzle rather than editing one. That decides which tools
-    /// it offers (annotate is solver-only, the way flood fill and the lasso are editor-only),
-    /// whether the palette can be edited, and whether a cell has an "unknown" state to go back
-    /// to when a click undoes itself.
+    /// Whether this canvas is solving the puzzle rather than editing it. That decides what it
+    /// shows and changes (the picture, or `in_progress`), which tools it offers (annotate is
+    /// solver-only, the way flood fill and the lasso are editor-only), whether the palette can be
+    /// edited, and whether a cell has an "unknown" state to go back to when a click undoes
+    /// itself. See `set_solving`.
     pub solving: bool,
+    /// The editor's own state while solving, or the solver's while editing.
+    other_mode: ModeState,
     /// Whether the view has somewhere to pan to, in which case a middle-drag pans it and so must
     /// not also reach a tool. `main_ui` sets this from the scroll area's own measurements.
     #[serde(skip)]
@@ -486,12 +475,12 @@ pub struct CanvasGui {
     pub backtrack_solver: Staleable<BacktrackSolver>,
     #[serde(skip)]
     pub id: Staleable<String>,
-    /// Shared with the solver's canvas, which `NonogramGui::reconnect` takes care of after a
-    /// restore.
-    #[serde(skip, default = "StatusCell::new")]
-    pub status: SharedStatus,
     #[serde(skip)]
-    pub progress: SharedProgress,
+    pub status: StatusCell,
+    /// For the progress bar in the status bar: `Some(fraction)` (0.0 to 1.0) while a
+    /// long-running task is in progress, `None` otherwise.
+    #[serde(skip)]
+    pub progress: RefCell<Option<f32>>,
     /// Where the picture itself (not counting any clue gutters) was placed on screen, as of the
     /// last frame that drew it.
     #[serde(skip)]
@@ -507,7 +496,7 @@ pub struct CanvasGui {
 #[derive(Serialize, Deserialize)]
 pub struct NonogramGui {
     // The `pub`s are solely for tests/gui.rs
-    pub editor_gui: CanvasGui,
+    pub canvas: CanvasGui,
     scale: f32,
     #[serde(skip, default = "session::dead_receiver")]
     opened_file_receiver: mpsc::Receiver<anyhow::Result<Document>>,
@@ -523,8 +512,8 @@ pub struct NonogramGui {
     lines_to_affect_string: String,
     #[serde(skip)]
     solve_report: String,
-    /// The `editor_gui.version` `solve_report` was computed for, if any — independent of
-    /// `editor_gui.solved_mask`'s own freshness, which the backtracking solve also writes to
+    /// The `canvas.version` `solve_report` was computed for, if any — independent of
+    /// `canvas.solved_mask`'s own freshness, which the backtracking solve also writes to
     /// (see `BacktrackSolver::widget`). Without this, `solved_mask.get_or_refresh` would see
     /// backtracking's fresher write and skip re-running line logic, leaving `solve_report`
     /// showing backtracking's text under the `Solve` button.
@@ -609,6 +598,53 @@ pub enum Action {
     ToggleClue { clue: ClueId },
 }
 
+/// What the editor and the solver each keep for themselves, though they share the canvas, and
+/// with it the document. The one in use is in `CanvasGui`'s own fields, and the other is set aside
+/// in `CanvasGui::other_mode` (see `CanvasGui::set_solving`).
+#[derive(Serialize, Deserialize)]
+struct ModeState {
+    version: Version,
+    current_color: Color,
+    drag_start_color: Color,
+    undo_stack: Vec<Action>,
+    redo_stack: Vec<Action>,
+    current_tool: Tool,
+    previous_tool: Tool,
+}
+
+impl ModeState {
+    fn new(palette: &Palette, tool: Tool) -> Self {
+        let current_color = default_color(palette);
+        ModeState {
+            version: 0,
+            current_color,
+            drag_start_color: current_color,
+            undo_stack: vec![],
+            redo_stack: vec![],
+            current_tool: tool,
+            previous_tool: tool,
+        }
+    }
+}
+
+/// How an undecided cell is drawn. It's in no palette, since no picture has one (see `Document`).
+static UNSOLVED_INFO: std::sync::LazyLock<ColorInfo> = std::sync::LazyLock::new(|| ColorInfo {
+    ch: '?',
+    name: "unknown".to_owned(),
+    rgb: (128, 128, 128),
+    color: UNSOLVED,
+    corner: None,
+});
+
+/// How to draw `color`: as `palette` says, or for `UNSOLVED`, as `UNSOLVED_INFO` does.
+pub(crate) fn color_info(palette: &Palette, color: Color) -> &ColorInfo {
+    if color == UNSOLVED {
+        &UNSOLVED_INFO
+    } else {
+        &palette[&color]
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub enum ActionMood {
     Normal,
@@ -619,37 +655,29 @@ pub enum ActionMood {
 }
 
 impl CanvasGui {
-    /// A canvas for editing `document`, or, if `solving`, for solving it.
-    fn new(
-        document: Document,
-        solving: bool,
-        status: SharedStatus,
-        progress: SharedProgress,
-    ) -> Self {
+    /// A canvas for editing `document` (see `set_solving` for solving it instead).
+    fn new(document: Document) -> Self {
         let picture = document.solution();
         let solved_mask = vec![true; picture.cells().len()].into();
-        let current_color = default_color(picture.palette());
-        let tool = if solving {
-            Tool::LineAlongLane
-        } else {
-            Tool::Pencil
-        };
+        let editor = ModeState::new(picture.palette(), Tool::Pencil);
+        let solver = ModeState::new(picture.palette(), Tool::LineAlongLane);
 
         CanvasGui {
             document,
-            version: 0,
-            current_color,
-            drag_start_color: current_color,
-            undo_stack: vec![],
-            redo_stack: vec![],
-            current_tool: tool,
-            previous_tool: tool,
+            version: editor.version,
+            current_color: editor.current_color,
+            drag_start_color: editor.drag_start_color,
+            undo_stack: editor.undo_stack,
+            redo_stack: editor.redo_stack,
+            current_tool: editor.current_tool,
+            previous_tool: editor.previous_tool,
             line_tool_state: None,
             selection: None,
             annotations: vec![],
             annotate_drag: None,
             checked_clues: HashSet::new(),
-            solving,
+            solving: false,
+            other_mode: solver,
             middle_pans: false,
             touch_area: None,
             touch: Default::default(),
@@ -670,32 +698,116 @@ impl CanvasGui {
             // Never fresh, so that the first frame names the document after its title, as every
             // change after that does.
             id: Staleable::default(),
-            status,
-            progress,
+            status: StatusCell::default(),
+            progress: RefCell::new(None),
         }
+    }
+
+    /// Switch between editing the picture and solving it. Whatever progress there is towards
+    /// solving it stays (in `Document::in_progress`) until the picture changes, along with the
+    /// solver's undo history.
+    pub(super) fn set_solving(&mut self, solving: bool) {
+        if solving == self.solving {
+            return;
+        }
+        if solving {
+            // The lasso's floating layer belongs to the picture; put it down.
+            self.clear_selection();
+        }
+        self.line_tool_state = None;
+        self.annotate_drag = None;
+        self.touch.gesture = Default::default();
+
+        let mode = &mut self.other_mode;
+        std::mem::swap(&mut self.version, &mut mode.version);
+        std::mem::swap(&mut self.current_color, &mut mode.current_color);
+        std::mem::swap(&mut self.drag_start_color, &mut mode.drag_start_color);
+        std::mem::swap(&mut self.undo_stack, &mut mode.undo_stack);
+        std::mem::swap(&mut self.redo_stack, &mut mode.redo_stack);
+        std::mem::swap(&mut self.current_tool, &mut mode.current_tool);
+        std::mem::swap(&mut self.previous_tool, &mut mode.previous_tool);
+        self.solving = solving;
+
+        if solving {
+            self.document.progress_mut(); // Somewhere for the progress to go.
+        }
+        // The palette may have changed since this mode last had a look at it.
+        self.clamp_colors_to_palette();
+        // The solver's clue gutters take room that the editor has no use for.
+        self.needs_fit = true;
+    }
+
+    /// One cell as the canvas shows it: the picture's color, or while solving, what's known of
+    /// it so far (`UNSOLVED`, if it's not known for sure).
+    pub fn cell(&self, cell: CellIdx) -> Color {
+        if self.solving {
+            self.document
+                .in_progress()
+                .and_then(|progress| progress[cell].known_or())
+                .unwrap_or(UNSOLVED)
+        } else {
+            self.document.solution().cells()[cell]
+        }
+    }
+
+    /// Every cell as the canvas shows it (see `cell`).
+    pub fn cells(&self) -> std::borrow::Cow<'_, TiSlice<CellIdx, Color>> {
+        if self.solving {
+            let cells = self.document.solution().cells();
+            std::borrow::Cow::Owned(cells.keys().map(|cell| self.cell(cell)).collect())
+        } else {
+            std::borrow::Cow::Borrowed(self.document.solution().cells())
+        }
+    }
+
+    /// What's known while solving, as the solver's aids want it.
+    pub fn progress(&self) -> PartialSolution {
+        match self.document.in_progress() {
+            Some(progress) if self.solving => progress.clone(),
+            _ => self.document.solution().to_partial(),
+        }
+    }
+
+    /// Change one cell as the canvas shows it (see `cell`), bumping `version` if that's a change.
+    fn set_cell(&mut self, cell: CellIdx, color: Color) {
+        if self.cell(cell) == color {
+            return;
+        }
+        if self.solving {
+            self.document.progress_mut()[cell] = if color == UNSOLVED {
+                Cell::new_anything()
+            } else {
+                Cell::from_color(color)
+            };
+        } else {
+            self.document.solution_mut().cells_mut()[cell] = color;
+        }
+        self.version += 1;
     }
 
     /// Sync `self.current_color` and `self.drag_start_color` to the document, for safety.
     fn clamp_colors_to_palette(&mut self) {
         let palette = self.document.solution().palette();
         let fallback = default_color(palette);
+        let usable =
+            |color: &Color| palette.contains_key(color) || (self.solving && *color == UNSOLVED);
 
-        if !palette.contains_key(&self.current_color) {
+        if !usable(&self.current_color) {
             self.current_color = fallback;
         }
-        if !palette.contains_key(&self.drag_start_color) {
+        if !usable(&self.drag_start_color) {
             self.drag_start_color = fallback;
         }
     }
 
     fn reversed(&self, action: &Action) -> Action {
         match action {
-            Action::ChangeColor { changes } => {
-                let cells = self.document.solution().cells();
-                Action::ChangeColor {
-                    changes: changes.keys().map(|cell| (*cell, cells[*cell])).collect(),
-                }
-            }
+            Action::ChangeColor { changes } => Action::ChangeColor {
+                changes: changes
+                    .keys()
+                    .map(|cell| (*cell, self.cell(*cell)))
+                    .collect(),
+            },
             Action::ReplaceDocument { document: _ } => Action::ReplaceDocument {
                 document: Box::new(self.document.clone()),
             },
@@ -714,89 +826,112 @@ impl CanvasGui {
             self.flatten_selection();
         }
 
-        let mood = if mood == Merge || mood == ReplaceAction {
-            match (self.undo_stack.last_mut(), &action) {
-                // Consecutive `ChangeColor`s can be merged with each other.
-                (
-                    Some(ChangeColor { changes }),
-                    ChangeColor {
-                        changes: new_changes,
-                    },
-                ) => {
-                    let cells = self.document.solution_mut().cells_mut();
-                    if mood == ReplaceAction {
-                        for cell in new_changes.keys() {
-                            changes.entry(*cell).or_insert(cells[*cell]);
-                        }
-                        changes.retain(|cell, old_col| {
-                            if !new_changes.contains_key(cell) {
-                                cells[*cell] = *old_col;
-                                self.version += 1;
-                                false
-                            } else {
-                                true
-                            }
-                        });
-                        for (cell, col) in new_changes {
-                            if cells[*cell] != *col {
-                                cells[*cell] = *col;
-                                self.version += 1;
-                            }
-                        }
-                        return;
-                    } else {
-                        for (cell, col) in new_changes {
-                            if !changes.contains_key(cell) {
-                                changes.insert(*cell, cells[*cell]);
-                                // Crucially, this only fires on a new cell!
-                                // Otherwise, we'd be flipping cells back and forth as long as we
-                                // were in them!
-                                cells[*cell] = *col;
-                                self.version += 1;
-                            }
-                        }
-                        return;
-                    }
+        let version_before = self.version;
+        let merging = matches!(mood, Merge | ReplaceAction)
+            && matches!(
+                (self.undo_stack.last(), &action),
+                (Some(ChangeColor { .. }), ChangeColor { .. })
+            );
+        if merging {
+            // Consecutive `ChangeColor`s can be merged with each other.
+            let (
+                Some(ChangeColor { changes }),
+                ChangeColor {
+                    changes: new_changes,
+                },
+            ) = (self.undo_stack.pop(), action)
+            else {
+                unreachable!("just checked");
+            };
+            let changes = self.merge(changes, new_changes, mood == ReplaceAction);
+            self.undo_stack.push(ChangeColor { changes });
+        } else {
+            let reversed_action = self.reversed(&action);
+            self.apply(action);
+            match mood {
+                // Unable to merge, so this is a new undo entry.
+                Normal | Merge | ReplaceAction => {
+                    self.undo_stack.push(reversed_action);
+                    self.redo_stack.clear();
                 }
-                _ => Normal, // Unable to merge; add a new undo entry.
+                Undo => self.redo_stack.push(reversed_action),
+                Redo => self.undo_stack.push(reversed_action),
+            }
+        }
+
+        if self.version != version_before {
+            self.status.maybe_clear_on_dirty();
+            // A changed picture is a different puzzle. Its progress is already gone (see
+            // `Document::solution_mut`), so the rest of the solve goes too.
+            if !self.solving {
+                self.other_mode.undo_stack.clear();
+                self.other_mode.redo_stack.clear();
+                self.annotations.clear();
+                self.checked_clues.clear();
+            }
+        }
+    }
+
+    /// Fold `new_changes` into `changes`, the undo entry for the stroke in progress, making them
+    /// on the way. If `replace`, the stroke now covers just `new_changes`, and whatever it
+    /// covered before goes back to how it was.
+    fn merge(
+        &mut self,
+        mut changes: HashMap<CellIdx, Color>,
+        new_changes: HashMap<CellIdx, Color>,
+        replace: bool,
+    ) -> HashMap<CellIdx, Color> {
+        if replace {
+            for cell in new_changes.keys() {
+                changes.entry(*cell).or_insert_with(|| self.cell(*cell));
+            }
+            changes.retain(|cell, old_color| {
+                let kept = new_changes.contains_key(cell);
+                if !kept {
+                    self.set_cell(*cell, *old_color);
+                }
+                kept
+            });
+            for (cell, color) in new_changes {
+                self.set_cell(cell, color);
             }
         } else {
-            mood
-        };
+            for (cell, color) in new_changes {
+                if let std::collections::hash_map::Entry::Vacant(entry) = changes.entry(cell) {
+                    entry.insert(self.cell(cell));
+                    // Crucially, this only fires on a new cell!
+                    // Otherwise, we'd be flipping cells back and forth as long as we
+                    // were in them!
+                    self.set_cell(cell, color);
+                }
+            }
+        }
+        changes
+    }
 
-        let reversed_action = self.reversed(&action);
-
-        let version_before = self.version;
+    fn apply(&mut self, action: Action) {
         match action {
             Action::ChangeColor { changes } => {
-                let cells = self.document.solution_mut().cells_mut();
-                for (cell, new_color) in changes {
-                    if cells[cell] != new_color {
-                        cells[cell] = new_color;
-                        self.version += 1;
-                    }
+                for (cell, color) in changes {
+                    self.set_cell(cell, color);
                 }
             }
             Action::ReplaceDocument { document } => {
-                if document.is_complete() {
-                    if document.solution().extent() != self.document.solution().extent() {
-                        self.needs_fit = true;
-                    }
-                    self.document = *document;
-                    self.version += 1;
-                    // A mask means nothing against a picture that was swapped out from under it,
-                    // and a floating layer belongs to the picture it was lifted from. Annotations
-                    // and check-offs name lanes, which the new picture may not have at all.
-                    self.selection = None;
-                    self.annotations.clear();
-                    self.annotate_drag = None;
-                    self.checked_clues.clear();
-                    // The new palette may not have the color the old one did.
-                    self.clamp_colors_to_palette();
-                } else {
-                    self.status
-                        .set(StatusMessage::error("That puzzle has no solution"));
+                debug_assert!(!self.solving, "a new document goes to the editor");
+                if document.solution().extent() != self.document.solution().extent() {
+                    self.needs_fit = true;
                 }
+                self.document = *document;
+                self.version += 1;
+                // A mask means nothing against a picture that was swapped out from under it,
+                // and a floating layer belongs to the picture it was lifted from. Annotations
+                // and check-offs name lanes, which the new picture may not have at all.
+                self.selection = None;
+                self.annotations.clear();
+                self.annotate_drag = None;
+                self.checked_clues.clear();
+                // The new palette may not have the color the old one did.
+                self.clamp_colors_to_palette();
             }
             // No `version` bump: the picture is untouched, so nothing that watches it — the line
             // analysis, the solved mask, the replay — has any reason to recompute.
@@ -804,23 +939,6 @@ impl CanvasGui {
                 if !self.checked_clues.remove(&clue) {
                     self.checked_clues.insert(clue);
                 }
-            }
-        }
-        if self.version != version_before {
-            self.status.maybe_clear_on_dirty();
-        }
-
-        match mood {
-            Merge | ReplaceAction => {}
-            Normal => {
-                self.undo_stack.push(reversed_action);
-                self.redo_stack.clear();
-            }
-            Undo => {
-                self.redo_stack.push(reversed_action);
-            }
-            Redo => {
-                self.undo_stack.push(reversed_action);
             }
         }
     }
@@ -940,7 +1058,7 @@ impl NonogramGui {
                     DynSolution::Square(Solution::blank_bw(20, 20)),
                     "blank.xml".to_string(),
                 ));
-                gui.editor_gui.status.set(StatusMessage::error(format!(
+                gui.canvas.status.set(StatusMessage::error(format!(
                     "could not solve this puzzle: {e:#}"
                 )));
                 gui
@@ -957,12 +1075,7 @@ impl NonogramGui {
         }
 
         NonogramGui {
-            editor_gui: CanvasGui::new(
-                document,
-                false,
-                StatusCell::new(),
-                Rc::new(RefCell::new(None)),
-            ),
+            canvas: CanvasGui::new(document),
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
             save_result_receiver: mpsc::channel().1,
@@ -1003,7 +1116,7 @@ impl NonogramGui {
 
             ui.separator();
 
-            self.editor_gui.common_sidebar_items(ui);
+            self.canvas.common_sidebar_items(ui);
 
             ui.separator();
 
@@ -1027,18 +1140,18 @@ impl NonogramGui {
     fn editor_frame(&mut self) {
         // The id tracks the title, and `Save/share` needs it whether or not the title is on
         // screen (in a collapsed "Metadata" section, or a closed dialog).
-        let backup_title = self.editor_gui.document.get_or_make_up_title();
+        let backup_title = self.canvas.document.get_or_make_up_title();
         let id = self
-            .editor_gui
+            .canvas
             .id
-            .get_or_refresh(self.editor_gui.version, || backup_title.clone());
-        if self.editor_gui.document.id != *id {
-            self.editor_gui.document.id = id.clone();
+            .get_or_refresh(self.canvas.version, || backup_title.clone());
+        if self.canvas.document.id != *id {
+            self.canvas.document.id = id.clone();
         }
 
         // The searches run in the background, and report back here. Each belongs to the picture
         // it was started on, so a change to the picture starts afresh with a new one.
-        let canvas = &mut self.editor_gui;
+        let canvas = &mut self.canvas;
         let version = canvas.version;
         let backtrack = canvas
             .backtrack_solver
@@ -1057,12 +1170,11 @@ impl NonogramGui {
     fn update_line_solve(&mut self, requested: bool) {
         // Tracked separately from `solved_mask`'s own freshness: the backtracking solve writes
         // there too (see `BacktrackSolver::poll`).
-        if !(requested || self.auto_solve)
-            || self.solve_report_version == Some(self.editor_gui.version)
+        if !(requested || self.auto_solve) || self.solve_report_version == Some(self.canvas.version)
         {
             return;
         }
-        let puzzle = self.editor_gui.document.solution().to_puzzle();
+        let puzzle = self.canvas.document.solution().to_puzzle();
 
         let (report, mask) = match puzzle.line_solve() {
             Ok(grid_solve::Report {
@@ -1086,11 +1198,11 @@ impl NonogramGui {
             }
         };
         self.solve_report = report.clone();
-        self.solve_report_version = Some(self.editor_gui.version);
+        self.solve_report_version = Some(self.canvas.version);
         if let Some(mask) = mask {
-            self.editor_gui
+            self.canvas
                 .solved_mask
-                .update((report, mask), self.editor_gui.version);
+                .update((report, mask), self.canvas.version);
         }
     }
 
@@ -1116,7 +1228,7 @@ impl NonogramGui {
         self.update_line_solve(solve.button.clicked());
 
         ui.colored_label(
-            if self.solve_report_version == Some(self.editor_gui.version) {
+            if self.solve_report_version == Some(self.canvas.version) {
                 Color32::BLACK
             } else {
                 Color32::GRAY
@@ -1126,18 +1238,18 @@ impl NonogramGui {
     }
 
     fn backtrack_controls(&mut self, ui: &mut egui::Ui) {
-        let picture = self.editor_gui.document.solution();
-        self.editor_gui.backtrack_solver.val.widget(picture, ui);
+        let picture = self.canvas.document.solution();
+        self.canvas.backtrack_solver.val.widget(picture, ui);
     }
 
     fn disambig_controls(&mut self, ui: &mut egui::Ui) {
-        let picture = self.editor_gui.document.solution();
-        self.editor_gui.disambiguator.val.widget(picture, ui);
+        let picture = self.canvas.document.solution();
+        self.canvas.disambiguator.val.widget(picture, ui);
     }
 
     /// The +/- buttons for each side of the picture.
     fn resize_controls(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
-        match self.editor_gui.document.solution().shape() {
+        match self.canvas.document.solution().shape() {
             crate::geometry::Shape::Triangular(_) => self.tri_resizer(ui, layout),
             _ => self.resizer(ui, layout),
         }
@@ -1150,34 +1262,33 @@ impl NonogramGui {
 
     /// Title, author, description and license.
     fn metadata_form(&mut self, ui: &mut egui::Ui) {
-        ui.add(egui::TextEdit::singleline(&mut self.editor_gui.document.title).hint_text("Title"));
+        ui.add(egui::TextEdit::singleline(&mut self.canvas.document.title).hint_text("Title"));
 
         ui.horizontal(|ui| {
             ui.label("by ");
             if ui
                 .add(
-                    egui::TextEdit::singleline(&mut self.editor_gui.document.author)
+                    egui::TextEdit::singleline(&mut self.canvas.document.author)
                         .hint_text("Author"),
                 )
                 .changed()
             {
-                let _ =
-                    UserSettings::set(consts::EDITOR_AUTHOR_NAME, &self.editor_gui.document.author);
+                let _ = UserSettings::set(consts::EDITOR_AUTHOR_NAME, &self.canvas.document.author);
             }
         });
 
         let description_label = ui.label("Description:");
-        ui.text_edit_multiline(&mut self.editor_gui.document.description)
+        ui.text_edit_multiline(&mut self.canvas.document.description)
             .labelled_by(description_label.id);
 
-        let mut is_cc_by = self.editor_gui.document.license == CC_BY;
+        let mut is_cc_by = self.canvas.document.license == CC_BY;
 
         ui.label("License:");
 
         ui.horizontal(|ui| {
             let radio = ui.radio_value(&mut is_cc_by, true, "");
             if radio.changed() {
-                self.editor_gui.document.license = CC_BY.to_string();
+                self.canvas.document.license = CC_BY.to_string();
             };
             let link = ui.add(
                 egui::Hyperlink::from_label_and_url(
@@ -1192,12 +1303,12 @@ impl NonogramGui {
         ui.horizontal(|ui| {
             let radio = ui.radio_value(&mut is_cc_by, false, "");
             if radio.changed() {
-                self.editor_gui.document.license.clear();
+                self.canvas.document.license.clear();
             };
             let field = ui
                 .add_enabled(
                     !is_cc_by,
-                    egui::TextEdit::singleline(&mut self.editor_gui.document.license),
+                    egui::TextEdit::singleline(&mut self.canvas.document.license),
                 )
                 .accessible_name("Custom license");
             radio.labelled_by(field.id);
@@ -1207,11 +1318,7 @@ impl NonogramGui {
     /// What to actually draw at: `scale` is what the zoom controls set, but triddlers are drawn
     /// `TRIDDLER_ZOOM_STEPS` clicks further in than square puzzles.
     fn render_scale(&self) -> f32 {
-        let shape = match &self.solve_gui {
-            Some(solve_gui) => solve_gui.clues.shape(),
-            None => self.editor_gui.document.solution().shape(),
-        };
-
+        let shape = self.canvas.document.solution().shape();
         if matches!(shape, crate::geometry::Shape::Triangular(_)) {
             self.scale + TRIDDLER_ZOOM_STEPS * ZOOM_STEP
         } else {
@@ -1224,14 +1331,6 @@ impl NonogramGui {
         self.input_mode
     }
 
-    /// The canvas the user is working in right now.
-    fn current_canvas(&mut self) -> &mut CanvasGui {
-        match &mut self.solve_gui {
-            Some(solve_gui) => &mut solve_gui.canvas,
-            None => &mut self.editor_gui,
-        }
-    }
-
     /// Like `new`, but starting out in solve mode.
     pub fn new_solving(document: Document) -> Self {
         let mut gui = Self::new(document);
@@ -1240,42 +1339,37 @@ impl NonogramGui {
     }
 
     /// Open `document` (from a link) in solve mode, the way choosing it from the Library does:
-    /// the editor's document is replaced with an undoable `ReplaceDocument`, so undoing in the
-    /// editor brings back whatever was there before. Any solving progress on that earlier puzzle
-    /// is lost, just as it is when the Library replaces it.
-    ///
-    /// Returns whether it opened; if not, it has said why.
-    pub fn open_linked(&mut self, document: Document) -> bool {
-        // `perform` checks this too, but it records an undo step even when it refuses.
-        if !document.is_complete() {
-            self.editor_gui
-                .status
-                .set(StatusMessage::error("That puzzle has no solution"));
-            return false;
-        }
-        self.editor_gui.perform(
+    /// the document is replaced with an undoable `ReplaceDocument`, so undoing in the editor
+    /// brings back whatever was there before, progress and all.
+    pub fn open_linked(&mut self, document: Document) {
+        self.replace_document(document);
+        self.enter_solve_mode();
+    }
+
+    /// Replace the document, in the editor, undoably.
+    fn replace_document(&mut self, document: Document) {
+        self.exit_solve_mode();
+        self.canvas.perform(
             Action::ReplaceDocument {
                 document: Box::new(document),
             },
             ActionMood::Normal,
         );
-        self.enter_solve_mode();
-        true
     }
 
+    /// Start solving, from whatever progress the document has (see `CanvasGui::set_solving`).
     fn enter_solve_mode(&mut self) {
-        self.solve_gui = Some(SolveGui::new(
-            self.editor_gui.document.clone(),
-            Rc::clone(&self.editor_gui.status),
-            Rc::clone(&self.editor_gui.progress),
-        ));
+        if self.solve_gui.is_none() {
+            self.canvas.set_solving(true);
+            self.solve_gui = Some(SolveGui::new(self.canvas.document.puzzle().clone()));
+        }
     }
 
-    /// Back to the editor, discarding whatever solving progress was on the board.
+    /// Back to the editor. The progress stays with the document, to come back to, until the
+    /// picture changes.
     fn exit_solve_mode(&mut self) {
+        self.canvas.set_solving(false);
         self.solve_gui = None;
-        // The solver's clues took up room the editor has no use for.
-        self.editor_gui.needs_fit = true;
     }
 }
 
@@ -1479,7 +1573,7 @@ impl NonogramGui {
 
         // Whatever is on screen, the mode's background work goes on.
         match &mut self.solve_gui {
-            Some(solve_gui) => solve_gui.solver_frame(),
+            Some(solve_gui) => solve_gui.solver_frame(&self.canvas),
             None => self.editor_frame(),
         }
 
@@ -1510,15 +1604,12 @@ impl NonogramGui {
         self.dialogs(ctx, ScreenLayout::Desktop);
 
         egui::Panel::bottom("status_bar").show(ui, |ui| {
-            // `editor_gui.status`/`editor_gui.progress` are shared (via `Rc<RefCell<_>>`) with
-            // `solve_gui.canvas`, so this shows the latest message/progress regardless of which
-            // mode is active.
             ui.horizontal(|ui| {
                 // Reserves a consistent height for the bar even when there's nothing to show,
                 // so the rest of the UI doesn't jump around as messages come and go.
                 ui.label("");
 
-                if let Some(progress) = *self.editor_gui.progress.borrow() {
+                if let Some(progress) = *self.canvas.progress.borrow() {
                     // ~50% wider than the sidebar (150.0) is by default.
                     ui.add(
                         egui::ProgressBar::new(progress)
@@ -1527,7 +1618,7 @@ impl NonogramGui {
                     );
                 }
 
-                if let Some(status) = self.editor_gui.status.get() {
+                if let Some(status) = self.canvas.status.get() {
                     let color = if status.is_error {
                         Color32::DARK_RED
                     } else {
@@ -1547,7 +1638,7 @@ impl NonogramGui {
                 // expanded, the solver's once a puzzle has a long palette.
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     if let Some(solve_gui) = &mut self.solve_gui {
-                        solve_gui.sidebar(ui);
+                        solve_gui.sidebar(ui, &mut self.canvas);
                     } else {
                         self.edit_sidebar(ui);
                     }
@@ -1592,7 +1683,7 @@ impl NonogramGui {
                     if steps != 0.0 {
                         // A notch away from the user goes *up* the palette, the way it would move
                         // up any other list.
-                        self.current_canvas().cycle_color(-steps as i32);
+                        self.canvas.cycle_color(-steps as i32);
                     }
                 }
 
@@ -1655,14 +1746,13 @@ impl NonogramGui {
                     let drawing_area =
                         Rect::from_min_size(ui.cursor().min + pad, ui.available_size());
                     ui.scope_builder(egui::UiBuilder::new().max_rect(drawing_area), |ui| {
-                        if let Some(solve_gui) = &mut self.solve_gui {
-                            solve_gui.canvas.middle_pans = pannable;
-                            solve_gui.canvas.touch_area = touch_area;
-                            solve_gui.body(ui, scale);
-                        } else {
-                            self.editor_gui.middle_pans = pannable;
-                            self.editor_gui.touch_area = touch_area;
-                            self.editor_gui.canvas(ui, scale, RenderStyle::Experimental);
+                        self.canvas.middle_pans = pannable;
+                        self.canvas.touch_area = touch_area;
+                        match &mut self.solve_gui {
+                            Some(solve_gui) => solve_gui.body(ui, scale, &mut self.canvas),
+                            None => {
+                                self.canvas.canvas(ui, scale, RenderStyle::Experimental);
+                            }
                         }
                     });
                 });
@@ -1715,7 +1805,7 @@ impl NonogramGui {
                     ScreenLayout::Compact => self.fit_step(ctx, viewport, drawing),
                     // The desktop has zoom buttons, and keeps whatever zoom they set.
                     ScreenLayout::Desktop => {
-                        self.current_canvas().needs_fit = false;
+                        self.canvas.needs_fit = false;
                         self.fitting = false;
                     }
                 }
@@ -1730,7 +1820,7 @@ impl NonogramGui {
     /// the scale it works out; the ones after it only zoom out (by at least a pixel per cell),
     /// so it can't go back and forth.
     fn fit_step(&mut self, ctx: &egui::Context, viewport: Vec2, content: Vec2) {
-        if !self.current_canvas().needs_fit {
+        if !self.canvas.needs_fit {
             self.fitting = false;
             self.fit_measured = None;
             return;
@@ -1762,7 +1852,7 @@ impl NonogramGui {
         let scale = (target - (render - self.scale)).clamp(MIN_SCALE, MAX_SCALE);
 
         if scale == self.scale {
-            self.current_canvas().needs_fit = false;
+            self.canvas.needs_fit = false;
             self.fitting = false;
             self.fit_measured = None;
         } else {
@@ -1878,7 +1968,7 @@ impl Disambiguator {
     }
 
     /// Collect whatever the search has sent back since last time.
-    pub fn poll(&mut self, status: &SharedStatus) {
+    pub fn poll(&mut self, status: &StatusCell) {
         if let Some(result) = self.search.poll() {
             // Clear any stale message (e.g. a load error from before) now that disambiguation
             // has something new to say (or, for `Report`, nothing to say).
@@ -1947,7 +2037,7 @@ pub struct BacktrackSolver {
     /// The search's outcome, already formatted for display.
     report: Option<String>,
     /// The formatted report, alongside the mask `canvas.rs` shades unsolved cells with — the same
-    /// shape `editor_gui.solved_mask` already holds for the line-logic `Solve` button, so the two
+    /// shape `canvas.solved_mask` already holds for the line-logic `Solve` button, so the two
     /// buttons can share it.
     search: BackgroundSearch<(String, Option<TiVec<CellIdx, bool>>)>,
 }
@@ -2097,7 +2187,80 @@ mod editor_tests {
         doc.title = "Teapot".to_string();
         let mut gui = NonogramGui::new(doc);
         gui.editor_frame();
-        assert_eq!(gui.editor_gui.document.id, "Teapot");
+        assert_eq!(gui.canvas.document.id, "Teapot");
+    }
+}
+
+/// The editor and the solver share the one canvas, and switch between them with `set_solving`.
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    /// A 3x3 with its top row filled.
+    fn gui() -> NonogramGui {
+        let mut picture = Solution::blank_bw(3, 3);
+        for x in 0..3 {
+            picture.cells[CellIdx(x)] = Color(1);
+        }
+        NonogramGui::new(Document::from_solution(
+            DynSolution::Square(picture),
+            "test".to_string(),
+        ))
+    }
+
+    fn paint(gui: &mut NonogramGui, cell: u32, color: Color) {
+        gui.canvas.perform(
+            Action::ChangeColor {
+                changes: [(CellIdx(cell), color)].into(),
+            },
+            ActionMood::Normal,
+        );
+    }
+
+    /// The editor shows the picture and the solver the progress, which is never in the picture.
+    #[test]
+    fn solving_paints_the_progress_not_the_picture() {
+        let mut gui = gui();
+        gui.enter_solve_mode();
+        assert_eq!(gui.canvas.cell(CellIdx(0)), UNSOLVED);
+        paint(&mut gui, 4, BACKGROUND);
+        assert_eq!(gui.canvas.cell(CellIdx(4)), BACKGROUND);
+
+        gui.exit_solve_mode();
+        assert_eq!(gui.canvas.cell(CellIdx(0)), Color(1));
+        assert!(!gui.canvas.document.solution().cells().contains(&UNSOLVED));
+    }
+
+    /// Progress made while solving is still there after a look at the editor, undo and all.
+    #[test]
+    fn progress_survives_a_trip_to_the_editor() {
+        let mut gui = gui();
+        gui.enter_solve_mode();
+        paint(&mut gui, 0, Color(1));
+        gui.exit_solve_mode();
+        gui.enter_solve_mode();
+        assert_eq!(gui.canvas.cell(CellIdx(0)), Color(1));
+
+        gui.canvas.un_or_re_do(true);
+        assert_eq!(gui.canvas.cell(CellIdx(0)), UNSOLVED);
+    }
+
+    /// Changing the picture changes the puzzle, so the solve starts over: no progress, and no
+    /// history of it to undo.
+    #[test]
+    fn editing_the_picture_starts_the_solve_over() {
+        let mut gui = gui();
+        gui.enter_solve_mode();
+        paint(&mut gui, 0, Color(1));
+        gui.exit_solve_mode();
+        paint(&mut gui, 8, Color(1));
+        gui.enter_solve_mode();
+        assert_eq!(gui.canvas.cell(CellIdx(0)), UNSOLVED);
+        assert!(gui.canvas.undo_stack.is_empty());
+
+        // The editor's own history is untouched.
+        gui.exit_solve_mode();
+        assert_eq!(gui.canvas.undo_stack.len(), 1);
     }
 }
 
@@ -2128,17 +2291,8 @@ mod new_solving_tests {
 
         let woven = crate::formats::woven::to_woven(&doc).unwrap();
         let doc = crate::formats::woven::from_woven(&woven, "linked.woven".to_string()).unwrap();
-        let mut gui = NonogramGui::new_solving(doc);
-        let grid = gui
-            .solve_gui
-            .as_mut()
-            .unwrap()
-            .canvas
-            .document
-            .solution()
-            .cells()
-            .raw
-            .to_vec();
+        let gui = NonogramGui::new_solving(doc);
+        let grid = gui.canvas.cells().raw.to_vec();
         assert_eq!(grid[0], answer[0]);
         assert!(grid[1..].iter().all(|&c| c == UNSOLVED));
     }

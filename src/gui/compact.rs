@@ -384,7 +384,7 @@ impl NonogramGui {
             && self
                 .solve_gui
                 .as_ref()
-                .is_some_and(|solve_gui| solve_gui.solve_unannounced());
+                .is_some_and(|solve_gui| solve_gui.solve_unannounced(&self.canvas));
         [
             (Overlay::Solved, solved),
             (Overlay::ColorDialog, compact.color_dialog.is_some()),
@@ -438,7 +438,7 @@ impl NonogramGui {
         match &mut self.solve_gui {
             Some(solve_gui) => {
                 for (aid, requested) in Aid::ALL.into_iter().zip(aid_requests) {
-                    solve_gui.run_aid(aid, requested);
+                    solve_gui.run_aid(aid, requested, &mut self.canvas);
                 }
             }
             None => self.update_line_solve(false),
@@ -481,15 +481,14 @@ impl NonogramGui {
             {
                 self.compact.drawer_open = true;
             }
-            self.current_canvas().undo_redo(ui, ScreenLayout::Compact);
+            self.canvas.undo_redo(ui, ScreenLayout::Compact);
 
             let right = egui::Layout::right_to_left(egui::Align::Center);
             match &mut self.solve_gui {
                 Some(solve_gui) => {
-                    solve_gui
-                        .canvas
+                    self.canvas
                         .clear_annotations_button(ui, ScreenLayout::Compact);
-                    if solve_gui.errors_detected() {
+                    if solve_gui.errors_detected(&self.canvas) {
                         ui.with_layout(right, |ui| {
                             egui::Frame::new()
                                 .fill(Color32::from_rgb(0xfb, 0xe3, 0xe4))
@@ -512,14 +511,9 @@ impl NonogramGui {
     /// again while that runs stops it. While the line solve doesn't run after every change and
     /// is out of date, it says "Solve" instead, and runs it.
     fn unsolved_pill(&mut self, ui: &mut egui::Ui) {
-        let fresh = self.solve_report_version == Some(self.editor_gui.version);
+        let fresh = self.solve_report_version == Some(self.canvas.version);
         let count = self.solve_cells_left.filter(|_| fresh);
-        let running = self
-            .editor_gui
-            .disambiguator
-            .val
-            .running_progress()
-            .is_some();
+        let running = self.canvas.disambiguator.val.running_progress().is_some();
 
         let label = match count {
             Some(count) => format!("{count} unsolved"),
@@ -541,7 +535,7 @@ impl NonogramGui {
             })
             .inner;
         if clicked {
-            let canvas = &mut self.editor_gui;
+            let canvas = &mut self.canvas;
             if running {
                 canvas.disambiguator.val.stop();
             } else if count.is_some() {
@@ -559,16 +553,15 @@ impl NonogramGui {
         let held = match &mut self.solve_gui {
             Some(solve_gui) => {
                 centered_row(ui, "compact_tools", |ui| {
-                    solve_gui.canvas.tool_selector(ui, ScreenLayout::Compact);
+                    self.canvas.tool_selector(ui, ScreenLayout::Compact);
                     ui.separator();
-                    let render_style = solve_gui.render_style;
-                    solve_gui.canvas.palette_strip(ui, render_style);
+                    self.canvas.palette_strip(ui, solve_gui.render_style);
                 });
                 None
             }
             None => {
                 centered_row(ui, "compact_tools", |ui| {
-                    self.editor_gui.tool_selector(ui, ScreenLayout::Compact);
+                    self.canvas.tool_selector(ui, ScreenLayout::Compact);
                     ui.separator();
                     let compact = &mut self.compact;
                     let metadata = icon_button(icons::ICON_EDIT_NOTE, ScreenLayout::Compact)
@@ -583,8 +576,8 @@ impl NonogramGui {
                     }
                 });
                 centered_row(ui, "compact_palette", |ui| {
-                    // What the editor's canvas is drawn in.
-                    self.editor_gui.palette_strip(ui, RenderStyle::Experimental)
+                    // What the editor draws in.
+                    self.canvas.palette_strip(ui, RenderStyle::Experimental)
                 })
             }
         };
@@ -729,7 +722,7 @@ impl NonogramGui {
 
     /// Under the top bar, while something is running.
     fn progress_strip(&self, ctx: &egui::Context, top: f32) {
-        let Some(progress) = *self.editor_gui.progress.borrow() else {
+        let Some(progress) = *self.canvas.progress.borrow() else {
             return;
         };
         let screen = ctx.content_rect();
@@ -755,7 +748,7 @@ impl NonogramGui {
     /// Status messages, floating just above `bottom`. Errors stay until they're dismissed; the
     /// rest go away on their own.
     fn toasts(&mut self, ctx: &egui::Context, bottom: f32) {
-        let Some((message, age)) = self.editor_gui.status.get_with_age() else {
+        let Some((message, age)) = self.canvas.status.get_with_age() else {
             return;
         };
         if !message.is_error {
@@ -804,7 +797,7 @@ impl NonogramGui {
                     });
             });
         if dismissed {
-            self.editor_gui.status.clear();
+            self.canvas.status.clear();
         }
     }
 
@@ -840,7 +833,7 @@ impl NonogramGui {
     /// A palette color's picker, its name, and (unless it's the background) a button to delete
     /// it. Opened by a long press on its swatch.
     fn color_dialog(&mut self, ctx: &egui::Context, color: Color) {
-        let canvas = &mut self.editor_gui;
+        let canvas = &mut self.canvas;
         if !canvas.document.solution().palette().contains_key(&color) {
             self.compact.color_dialog = None;
             return;
@@ -902,9 +895,10 @@ impl NonogramGui {
         let Some(solve_gui) = &mut self.solve_gui else {
             return;
         };
-        if !solve_gui.solve_unannounced() {
+        if !solve_gui.solve_unannounced(&self.canvas) {
             return;
         }
+        let canvas = &self.canvas;
 
         let width = (ctx.content_rect().width() - 4.0 * DIALOG_MARGIN).min(360.0);
         let shown = egui::Modal::new(egui::Id::unique("solved")).show(ctx, |ui| {
@@ -922,9 +916,9 @@ impl NonogramGui {
                         .clicked();
                 });
             });
-            solve_gui.title_and_author(ui);
-            solve_gui.replay(ui);
-            solve_gui.description(ui);
+            SolveGui::title_and_author(ui, canvas);
+            solve_gui.replay(ui, canvas);
+            SolveGui::description(ui, canvas);
             close
         });
         if shown.inner || shown.should_close() {
@@ -972,17 +966,17 @@ mod tests {
     fn the_solved_window_is_closed_by_back() {
         let mut gui = gui();
         gui.enter_solve_mode();
-        let solve_gui = gui.solve_gui.as_mut().unwrap();
-        let changes = solve_gui
-            .intended_solution
+        let changes = gui
+            .canvas
+            .document
+            .solution()
             .cells()
             .iter_enumerated()
             .map(|(cell, color)| (cell, *color))
             .collect();
-        solve_gui
-            .canvas
+        gui.canvas
             .perform(Action::ChangeColor { changes }, ActionMood::Normal);
-        solve_gui.solver_frame();
+        gui.solve_gui.as_mut().unwrap().solver_frame(&gui.canvas);
 
         assert!(gui.overlays(ScreenLayout::Desktop).is_empty());
         assert_eq!(gui.overlays(ScreenLayout::Compact), vec![Overlay::Solved]);

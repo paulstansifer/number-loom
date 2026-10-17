@@ -491,28 +491,12 @@ fn progress_image<K: GridKind + ImageDelimiter>(
 /// progress towards solving it is written too, as a `<solution type="saved">`.
 pub fn as_webpbn(document: &UncertainDocument) -> String {
     let mut document_with_puzzle = document.clone();
-    let has_solution = document_with_puzzle
-        .has_complete_solution()
-        .unwrap_or(false);
-
-    let square_solution: Option<Solution<Square>> = has_solution
-        .then(|| {
-            document_with_puzzle
-                .try_solution()
-                .unwrap()
-                .as_square()
-                .cloned()
-        })
-        .flatten();
-    let tri_solution: Option<Solution<Tri>> = has_solution
-        .then(|| {
-            document_with_puzzle
-                .try_solution()
-                .unwrap()
-                .as_tri()
-                .cloned()
-        })
-        .flatten();
+    // Not `solution`: for clues that line logic can't finish, that would guess, and so might
+    // write down one of several pictures as though it were *the* answer.
+    let picture = document_with_puzzle.known_solution().cloned();
+    let square_solution: Option<Solution<Square>> =
+        picture.as_ref().and_then(|p| p.as_square()).cloned();
+    let tri_solution: Option<Solution<Tri>> = picture.as_ref().and_then(|p| p.as_tri()).cloned();
 
     match document_with_puzzle.puzzle() {
         DynPuzzle::SquareNono(p) => write_webpbn(document, p, square_solution.as_ref()),
@@ -1103,9 +1087,7 @@ mod tests {
     #[test]
     fn reads_the_embedded_solution_for_a_puzzle_line_logic_cant_finish() {
         let mut doc = webpbn_to_document(AMBIGUOUS_WITH_SOLUTION).unwrap();
-        assert!(doc.has_complete_solution().unwrap());
-
-        let solution = doc.solution().unwrap().as_square().unwrap();
+        let solution = doc.known_solution().unwrap().as_square().unwrap();
         let black = palette_color(&solution.palette, "black");
         assert_eq!(solution.get((0, 0)), Some(black));
         assert_eq!(solution.get((1, 0)), Some(BACKGROUND));

@@ -166,7 +166,6 @@ impl CanvasGui {
             .palette()
             .keys()
             .copied()
-            .filter(|color| !(*color == UNSOLVED && self.solving))
             .sorted()
             .collect()
     }
@@ -413,10 +412,7 @@ impl CanvasGui {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (index, color) in order.into_iter().enumerate() {
-                        let Some(color_info) = self.document.solution().palette().get(&color)
-                        else {
-                            continue;
-                        };
+                        let color_info = color_info(self.document.solution().palette(), color);
                         let selected = color == self.current_color;
                         let response = swatch(ui, color_info, selected, render_style);
                         let key = palette_shortcut(index).filter(|_| index < shortcuts);
@@ -532,7 +528,7 @@ mod palette_tests {
             .palette
             .insert(Color(3), ColorInfo::default_fg(Color(3)));
 
-        let mut gui = NonogramGui::new(doc(fancy)).editor_gui;
+        let mut gui = NonogramGui::new(doc(fancy)).canvas;
         gui.current_color = Color(3);
         gui.drag_start_color = Color(3);
 
@@ -697,7 +693,7 @@ mod palette_tests {
             .insert(Color(2), ColorInfo::default_fg(Color(2)));
 
         // In color order: the background, then 1, then 2.
-        let mut gui = NonogramGui::new(doc(fancy)).editor_gui;
+        let mut gui = NonogramGui::new(doc(fancy)).canvas;
         assert_eq!(gui.current_color, Color(1));
 
         gui.cycle_color(1);
@@ -716,20 +712,8 @@ mod palette_tests {
     /// doesn't offer it, so neither does the wheel.
     #[test]
     fn cycling_steps_past_unknown_while_solving() {
-        let mut solving = Solution::blank_bw(3, 3);
-        solving.palette.insert(
-            UNSOLVED,
-            ColorInfo {
-                ch: '?',
-                name: "unknown".to_string(),
-                rgb: (128, 128, 128),
-                color: UNSOLVED,
-                corner: None,
-            },
-        );
-
-        let mut gui = NonogramGui::new(doc(solving)).editor_gui;
-        gui.solving = true;
+        let mut gui = NonogramGui::new_solving(doc(Solution::blank_bw(3, 3))).canvas;
+        assert_eq!(gui.current_color, Color(1));
 
         gui.cycle_color(1);
         assert_eq!(gui.current_color, BACKGROUND);
@@ -739,7 +723,7 @@ mod palette_tests {
 
     #[test]
     fn a_color_the_new_palette_still_has_is_left_alone() {
-        let mut gui = NonogramGui::new(doc(Solution::blank_bw(3, 3))).editor_gui;
+        let mut gui = NonogramGui::new(doc(Solution::blank_bw(3, 3))).canvas;
         gui.current_color = BACKGROUND;
         gui.drag_start_color = BACKGROUND;
 

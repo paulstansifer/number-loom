@@ -685,14 +685,14 @@ mod canvas_tests {
             DynSolution::Square(Solution::blank_bw(5, 5)),
             "test".to_string(),
         ))
-        .editor_gui;
+        .canvas;
         gui.current_tool = tool;
         gui.current_color = Color(1);
         gui
     }
 
     fn cell(gui: &CanvasGui, cell: CellIdx) -> Color {
-        gui.document.solution().cells()[cell]
+        gui.cell(cell)
     }
 
     fn painted(gui: &CanvasGui) -> Vec<CellIdx> {
@@ -889,7 +889,7 @@ mod canvas_tests {
         let mut solution = Solution::blank_bw(5, 5);
         solution.cells[at(0, 0)] = Color(1);
         let doc = Document::from_solution(DynSolution::Square(solution), "test".to_string());
-        let mut gui = NonogramGui::new_solving(doc).solve_gui.unwrap().canvas;
+        let mut gui = NonogramGui::new_solving(doc).canvas;
 
         gui.current_color = BACKGROUND;
         tap(&mut gui);

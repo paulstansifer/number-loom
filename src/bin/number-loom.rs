@@ -78,7 +78,7 @@ fn main() -> anyhow::Result<()> {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(document.into_document_with_backtracking());
+            .block_on(document.into_document_with_deadline());
         // (If there's no picture, that's the error to report.)
         if let Ok(document) = &mut document {
             warn(document.quality_check());

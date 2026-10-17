@@ -36,7 +36,7 @@ impl NonogramGui {
         // This resizer is inherently square: it adds and removes whole rows and columns.
         // Triangular puzzles resize by nudging one of six bounds instead — see `tri_resize`.
         // (`resize_controls` only offers each resizer for its own shape.)
-        let Some(picture) = self.editor_gui.document.solution().as_square() else {
+        let Some(picture) = self.canvas.document.solution().as_square() else {
             return;
         };
         let mut g = picture.to_columns();
@@ -86,7 +86,7 @@ impl NonogramGui {
             }
         }
 
-        let mut new_doc = Box::new(self.editor_gui.document.clone());
+        let mut new_doc = Box::new(self.canvas.document.clone());
         {
             let solution = new_doc.solution_mut();
             *solution = DynSolution::Square(Solution::from_columns(
@@ -95,7 +95,7 @@ impl NonogramGui {
                 g,
             ));
         }
-        self.editor_gui.perform(
+        self.canvas.perform(
             Action::ReplaceDocument { document: new_doc },
             ActionMood::Normal,
         );
@@ -107,7 +107,7 @@ impl NonogramGui {
         let Some(lines) = self.resize_lines() else {
             return;
         };
-        let Some(tri) = self.editor_gui.document.solution().as_tri() else {
+        let Some(tri) = self.canvas.document.solution().as_tri() else {
             return; // See `square_resize`.
         };
         let delta = if add { lines as i32 } else { -(lines as i32) };
@@ -117,13 +117,13 @@ impl NonogramGui {
             } else {
                 "can't shrink any further"
             };
-            self.editor_gui.status.set(StatusMessage::error(message));
+            self.canvas.status.set(StatusMessage::error(message));
             return;
         };
 
-        let mut new_doc = Box::new(self.editor_gui.document.clone());
+        let mut new_doc = Box::new(self.canvas.document.clone());
         *new_doc.solution_mut() = DynSolution::Tri(resized);
-        self.editor_gui.perform(
+        self.canvas.perform(
             Action::ReplaceDocument { document: new_doc },
             ActionMood::Normal,
         );
@@ -133,7 +133,7 @@ impl NonogramGui {
         ui.vertical_centered(|ui| {
             ui.label(format!(
                 "Canvas size: {}",
-                self.editor_gui.document.dims_label()
+                self.canvas.document.dims_label()
             ));
         });
 
@@ -185,7 +185,7 @@ impl NonogramGui {
         ui.vertical_centered(|ui| {
             ui.label(format!(
                 "Outline size: {}",
-                self.editor_gui.document.dims_label()
+                self.canvas.document.dims_label()
             ));
         });
 
@@ -193,7 +193,7 @@ impl NonogramGui {
         // not to decide what clicking it does, `tri_resize` re-checks that against a fresh
         // `Solution` on its own.
         let outline = self
-            .editor_gui
+            .canvas
             .document
             .solution()
             .as_tri()

@@ -1,7 +1,7 @@
 use crate::formats::partial_cells;
 use crate::geometry::{CellIdx, GridKind, Shape, Square, Tri};
 use crate::puzzle::{
-    ClueStyle, Color, ColorInfo, Document, DynSolution, PartialSolution, Solution,
+    ClueStyle, Color, ColorInfo, Document, DynSolution, PartialSolution, Solution, UNSOLVED,
 };
 use anyhow::{Error, bail};
 use base64::{Engine as _, engine::general_purpose};
@@ -739,7 +739,12 @@ mod tests {
 impl TryFrom<WovenVersion0> for Document {
     type Error = Error;
     fn try_from(s_doc: WovenVersion0) -> anyhow::Result<Self> {
-        let solution: DynSolution = (&s_doc.solution).into();
+        let mut solution: DynSolution = (&s_doc.solution).into();
+        if solution.cells().contains(&UNSOLVED) {
+            bail!("Unsolved cells in solution?");
+        }
+        // No picture uses it, so it's not a color.
+        solution.palette_mut().remove(&UNSOLVED);
         let mut in_progress = None;
         if !s_doc.in_progress.is_empty() {
             let Some(ch_to_color) = s_doc.solution.ch_to_color() else {
@@ -863,8 +868,8 @@ impl From<&SerializableSolution> for DynSolution {
 #[cfg(test)]
 mod golden_tests {
     use super::*;
-    use crate::geometry::{Geometry, Outline, Rect};
-    use crate::puzzle::{BACKGROUND, Corner, UNSOLVED, UncertainDocument};
+    use crate::geometry::{Geometry, Rect};
+    use crate::puzzle::{BACKGROUND, Corner, UncertainDocument};
     use crate::solve::line_solve::Cell;
     use std::collections::{BTreeMap, HashMap};
     use std::path::{Path, PathBuf};
@@ -1039,39 +1044,6 @@ mod golden_tests {
             ),
         ));
 
-        // A triddler, mid-edit: an `Outline` that isn't a regular hexagon (so the six bounds are
-        // all distinguishable) and cells still set to `UNSOLVED`. A triddler's cells don't form
-        // rows a picture could show, so this one is built by index.
-        let geometry = Geometry::<Tri>::new(Outline {
-            a: (0, 3),
-            b: (0, 2),
-            c: (-1, 1),
-        });
-        let mut tri_palette = crate::import::bw_palette();
-        tri_palette.insert(
-            UNSOLVED,
-            color('?', "unsolved", (128, 128, 128), UNSOLVED, None),
-        );
-        let cells: Vec<Color> = (0..geometry.cell_count())
-            .map(|i| match i % 3 {
-                0 => BACKGROUND,
-                1 => Color(1),
-                _ => UNSOLVED,
-            })
-            .collect();
-        fixtures.push((
-            "triddler_partial",
-            Document::from_solution(
-                DynSolution::Tri(Solution::new(
-                    ClueStyle::Nono,
-                    tri_palette,
-                    geometry,
-                    cells.into(),
-                )),
-                "triddler_partial.woven".to_string(),
-            ),
-        ));
-
         // Someone partway through solving: a cell they know, one they know nothing about, and one
         // they've narrowed down to two of the three colors. Red is drawn as `?`, which progress
         // needs for itself, so writing this renames it.
@@ -1117,6 +1089,14 @@ mod golden_tests {
 
         fixtures
     }
+
+    /// Fixtures that this version refuses to load, on purpose. Their share strings stay, as a
+    /// record of what shipped; what's checked is that they're refused cleanly, rather than read
+    /// as something they never meant.
+    ///
+    /// `triddler_partial` is a picture with some cells left `UNSOLVED`, which is how ambiguous
+    /// puzzles used to be written down — losing their clues (see `TryFrom<WovenVersion0>`).
+    const REFUSED: &[&str] = &["triddler_partial"];
 
     /// One fixture: the `.json`, and every `.woven` recorded for it, oldest first.
     struct Fixture {
@@ -1246,6 +1226,23 @@ mod golden_tests {
     #[test]
     fn share_strings_stay_compatible() {
         for fixture in fixtures() {
+            if REFUSED.contains(&fixture.name.as_str()) {
+                for (_, path) in &fixture.wovens {
+                    let text = read(path);
+                    assert!(
+                        decode_woven(&text).is_ok(),
+                        "{}: no longer decodes at all",
+                        path.display()
+                    );
+                    assert!(
+                        from_woven(&text, String::new()).is_err(),
+                        "{}: is supposed to be refused",
+                        path.display()
+                    );
+                }
+                continue;
+            }
+
             let (oldest_number, oldest_path) = &fixture.wovens[0];
             let expected = canonical_form_of_share_string(oldest_path);
 
@@ -1348,7 +1345,10 @@ mod golden_tests {
     /// order through makes the same document encode differently every time it is saved.
     #[test]
     fn encoding_does_not_depend_on_hash_order() {
-        for fixture in fixtures() {
+        for fixture in fixtures()
+            .into_iter()
+            .filter(|f| !REFUSED.contains(&f.name.as_str()))
+        {
             // Each load builds a fresh `HashMap`, so a few rounds is enough to shake out an
             // order that isn't fully determined by the palette itself.
             let path = &fixture.wovens[0].1;
@@ -1444,10 +1444,9 @@ mod triangular_tests {
         palette
     }
 
-    /// The point of giving `Solution` a geometry: a triddler that is still being worked on, with
-    /// some cells not yet decided, must survive being saved and loaded.
+    /// A picture with undecided cells (as older versions wrote ambiguous puzzles) is refused.
     #[test]
-    fn an_ambiguous_triddler_round_trips() {
+    fn a_partial_picture_is_refused() {
         let geometry = crate::geometry::Geometry::<Tri>::new(Outline::hexagon(2));
         let cells: Vec<Color> = (0..geometry.cell_count())
             .map(|i| match i % 3 {
@@ -1456,26 +1455,24 @@ mod triangular_tests {
                 _ => UNSOLVED, // still undecided
             })
             .collect();
-
         let solution = Solution::new(
             ClueStyle::Nono,
             palette_with_unsolved(),
-            geometry.clone(),
-            cells.clone().into(),
+            geometry,
+            cells.into(),
         );
-        let doc = Document::from_solution(DynSolution::Tri(solution), "wip.woven".to_string());
+        let s_doc = WovenDocument::V0(WovenVersion0 {
+            title: String::new(),
+            description: String::new(),
+            author: String::new(),
+            id: None,
+            license: None,
+            solution: (&solution).into(),
+            in_progress: String::new(),
+        });
 
-        let share_string = to_woven(&doc).unwrap();
-        let reloaded = from_woven(&share_string, "wip.woven".to_string()).unwrap();
-        let reloaded_solution = reloaded.solution();
-
-        assert_eq!(reloaded_solution.shape(), geometry.shape());
-        assert_eq!(reloaded_solution.cells().raw, cells[..]);
-        assert!(
-            reloaded_solution.cells().contains(&UNSOLVED),
-            "the undecided cells must still be undecided"
-        );
-        assert!(!reloaded.is_complete());
+        let share_string = encode_woven(&s_doc).unwrap();
+        assert!(from_woven(&share_string, "wip.woven".to_string()).is_err());
     }
 
     #[test]

@@ -136,14 +136,24 @@ impl CanvasGui {
         };
 
         let mut shapes = vec![];
-        let disambiguator = self.disambiguator.get_if_fresh(self.version);
+        // The editor's aids, which have nothing to say about solving. (The solver's `version` is
+        // its own, so they could look fresh by coincidence.)
+        let editing = !self.solving;
+        let disambiguator = self
+            .disambiguator
+            .get_if_fresh(self.version)
+            .filter(|_| editing);
         let disambig_report = disambiguator.and_then(|d| d.report.as_ref());
-        let solved_mask = self.solved_mask.get_if_fresh(self.version);
+        let solved_mask = self
+            .solved_mask
+            .get_if_fresh(self.version)
+            .filter(|_| editing);
         let overlays_suppress_unsolved =
             disambig_report.is_some() || disambiguator.is_some_and(|d| d.running());
 
         let picture = self.document.solution();
         let palette = picture.palette();
+        let cells = self.cells();
 
         // The one place the shape matters when drawing. After this match the loop is fully
         // monomorphized: the inner iterator just walks a slice and advances an `f32`.
@@ -151,7 +161,7 @@ impl CanvasGui {
             for row in sol.geometry.rows() {
                 for drawn in row.cells() {
                     let index = drawn.cell;
-                    let color_info = &palette[&sol.cells[index]];
+                    let color_info = color_info(palette, cells[index]);
                     let solved =
                         solved_mask.is_none_or(|sm| sm.1[index]) || overlays_suppress_unsolved;
                     let dr = match disambig_report {
@@ -266,8 +276,11 @@ impl CanvasGui {
         painter.extend(shapes);
 
         // After the picture's own shapes, so the marks land on top of the cells, the grid guides
-        // and the lasso's ants.
-        self.draw_annotations(ui, &painter, scale, &to_screen);
+        // and the lasso's ants. Only while solving: they stay put while editing, for when solving
+        // resumes, but they're no use there.
+        if self.solving {
+            self.draw_annotations(ui, &painter, scale, &to_screen);
+        }
 
         // Last of all, so that nothing covers it.
         if self.touch_area.is_some() {

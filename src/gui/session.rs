@@ -37,14 +37,10 @@ pub(super) fn dead_receiver<T>() -> mpsc::Receiver<T> {
     mpsc::channel().1
 }
 
-/// Stand-ins for `SolveGui::clues` and `intended_solution`, which deserializing needs a value for
-/// but `NonogramGui::reconnect` replaces straight away.
-pub(super) fn placeholder_solution() -> DynSolution {
-    DynSolution::Square(Solution::blank_bw(1, 1))
-}
-
+/// A stand-in for `SolveGui::clues`, which deserializing needs a value for, but
+/// `NonogramGui::reconnect` replaces straight away.
 pub(super) fn placeholder_puzzle() -> crate::puzzle::DynPuzzle {
-    placeholder_solution().to_puzzle()
+    DynSolution::Square(Solution::blank_bw(1, 1)).to_puzzle()
 }
 
 /// `#[serde(with = "session::document")]`: a `Document` as WOVEN's serializable form, plus the
@@ -52,8 +48,8 @@ pub(super) fn placeholder_puzzle() -> crate::puzzle::DynPuzzle {
 ///
 /// TODO: this isn't quite an exact round trip. When a document carries `in_progress`, WOVEN
 /// reserves `?`, `[` and `]` for spelling it, and `make_chs_unique` renames any palette `ch`
-/// that uses one. The solver canvas's own palette always has `UNSOLVED` as `?`, so a restored
-/// session's palette `ch`s can differ from the ones that were saved.
+/// that uses one, so a restored session's palette `ch`s can differ from the ones that were
+/// saved.
 pub(super) mod document {
     use crate::formats::woven::{self, WovenDocument};
     use crate::puzzle::Document;
@@ -128,47 +124,38 @@ impl NonogramGui {
     /// The counterpart to `encode`, plus putting back what the session doesn't hold.
     pub(super) fn from_session_string(saved: &str) -> anyhow::Result<NonogramGui> {
         let mut gui: NonogramGui = serde_json::from_slice(&decode_and_decompress(saved)?)?;
+        anyhow::ensure!(
+            gui.solve_gui.is_some() == gui.canvas.solving,
+            "Inconsistent about solve mode"
+        );
         gui.reconnect();
         Ok(gui)
     }
 
-    /// Put back what deserializing can't. Some of it isn't saved, because it's derived from
-    /// something that is, and some of it is *shared*, which a deserialized copy wouldn't be.
+    /// Put back what deserializing can't, because it's derived from something that's saved.
     fn reconnect(&mut self) {
         if let Some(solve_gui) = &mut self.solve_gui {
-            // Just as `enter_solve_mode` makes them: from the editor's document, which can't
-            // change while solving. (The solver canvas's own document is no good: its cells are
-            // the user's progress, not the answer.)
-            let mut document = self.editor_gui.document.clone();
-            solve_gui.clues = document.puzzle().clone();
-            solve_gui.intended_solution = document.into_solution();
-
-            // One status bar and one progress bar, whichever canvas is talking.
-            solve_gui.canvas.status = Rc::clone(&self.editor_gui.status);
-            solve_gui.canvas.progress = Rc::clone(&self.editor_gui.progress);
+            // Just as `enter_solve_mode` makes them.
+            solve_gui.clues = self.canvas.document.puzzle().clone();
         }
     }
 
-    /// Run `f` on this GUI with both canvases' undo and redo stacks emptied, then put them back.
+    /// Run `f` on this GUI with the undo and redo stacks emptied (the editor's and the
+    /// solver's), then put them back.
     fn without_history<R>(&mut self, f: impl FnOnce(&Self) -> R) -> R {
         use std::mem::take;
-        let editor = (
-            take(&mut self.editor_gui.undo_stack),
-            take(&mut self.editor_gui.redo_stack),
+        let canvas = &mut self.canvas;
+        let in_use = (take(&mut canvas.undo_stack), take(&mut canvas.redo_stack));
+        let set_aside = (
+            take(&mut canvas.other_mode.undo_stack),
+            take(&mut canvas.other_mode.redo_stack),
         );
-        let solver = self.solve_gui.as_mut().map(|solve_gui| {
-            (
-                take(&mut solve_gui.canvas.undo_stack),
-                take(&mut solve_gui.canvas.redo_stack),
-            )
-        });
 
         let result = f(self);
 
-        (self.editor_gui.undo_stack, self.editor_gui.redo_stack) = editor;
-        if let (Some(solve_gui), Some(stacks)) = (&mut self.solve_gui, solver) {
-            (solve_gui.canvas.undo_stack, solve_gui.canvas.redo_stack) = stacks;
-        }
+        let canvas = &mut self.canvas;
+        (canvas.undo_stack, canvas.redo_stack) = in_use;
+        (canvas.other_mode.undo_stack, canvas.other_mode.redo_stack) = set_aside;
         result
     }
 }
@@ -209,7 +196,7 @@ impl NonogramGui {
         let json = match serde_json::to_vec(self) {
             Ok(json) => json,
             Err(e) => {
-                self.editor_gui
+                self.canvas
                     .status
                     .set(StatusMessage::error(format!("Unable to save: {e}")));
                 return;
@@ -236,14 +223,14 @@ impl NonogramGui {
         match without {
             Ok(()) => {
                 if !self.saving.history_left_out {
-                    self.editor_gui.status.set(StatusMessage::error(
+                    self.canvas.status.set(StatusMessage::error(
                         "Undo history is very large; omitted from save file.",
                     ));
                 }
                 self.saving.history_left_out = true;
             }
             Err(_) => {
-                self.editor_gui
+                self.canvas
                     .status
                     .set(StatusMessage::error(format!("Unable to save: {save_err}")));
             }
@@ -261,8 +248,9 @@ mod tests {
         NonogramGui::from_session_string(&encode(&json).unwrap()).unwrap()
     }
 
+    /// As the canvas shows them: the picture, or while solving, the progress.
     fn cells(canvas: &CanvasGui) -> Vec<Color> {
-        canvas.document.solution().cells().raw.to_vec()
+        canvas.cells().raw.to_vec()
     }
 
     fn paint(canvas: &mut CanvasGui, cells: &[u32], color: Color) {
@@ -292,35 +280,35 @@ mod tests {
             DynSolution::Square(Solution::blank_bw(5, 5)),
             "test.png".to_string(),
         ));
-        paint(&mut gui.editor_gui, &[0, 6, 12], Color(1));
+        paint(&mut gui.canvas, &[0, 6, 12], Color(1));
         let bigger = Document::from_solution(
             DynSolution::Square(Solution::blank_bw(7, 6)),
             "test.png".to_string(),
         );
-        gui.editor_gui.perform(
+        gui.canvas.perform(
             Action::ReplaceDocument {
                 document: Box::new(bigger),
             },
             ActionMood::Normal,
         );
-        paint(&mut gui.editor_gui, &[3], Color(1));
+        paint(&mut gui.canvas, &[3], Color(1));
 
         let mut restored = round_trip(&gui);
-        assert_eq!(cells(&restored.editor_gui), cells(&gui.editor_gui));
-        assert_eq!(restored.editor_gui.document.file, "test.png");
-        assert_eq!(restored.editor_gui.undo_stack.len(), 3);
+        assert_eq!(cells(&restored.canvas), cells(&gui.canvas));
+        assert_eq!(restored.canvas.document.file, "test.png");
+        assert_eq!(restored.canvas.undo_stack.len(), 3);
 
         for _ in 0..3 {
-            gui.editor_gui.un_or_re_do(true);
-            restored.editor_gui.un_or_re_do(true);
-            assert_eq!(cells(&restored.editor_gui), cells(&gui.editor_gui));
+            gui.canvas.un_or_re_do(true);
+            restored.canvas.un_or_re_do(true);
+            assert_eq!(cells(&restored.canvas), cells(&gui.canvas));
         }
-        assert_eq!(cells(&restored.editor_gui), vec![BACKGROUND; 25]);
+        assert_eq!(cells(&restored.canvas), vec![BACKGROUND; 25]);
 
         // And redo, which has its own stack.
-        restored.editor_gui.un_or_re_do(false);
+        restored.canvas.un_or_re_do(false);
         assert_eq!(
-            cells(&restored.editor_gui)[..13]
+            cells(&restored.canvas)[..13]
                 .iter()
                 .filter(|c| **c == Color(1))
                 .count(),
@@ -329,15 +317,13 @@ mod tests {
     }
 
     /// Partway through a solve: the progress (unknown cells included), a checked-off clue, the
-    /// clues and the answer all come back, and the solver's canvas shares the editor's status
-    /// bar again.
+    /// clues and the answer all come back.
     #[test]
     fn a_solve_in_progress_survives() {
         let mut gui = NonogramGui::new_solving(top_row());
-        let solve_gui = gui.solve_gui.as_mut().unwrap();
-        paint(&mut solve_gui.canvas, &[0, 1], Color(1));
-        paint(&mut solve_gui.canvas, &[5], BACKGROUND);
-        solve_gui.canvas.perform(
+        paint(&mut gui.canvas, &[0, 1], Color(1));
+        paint(&mut gui.canvas, &[5], BACKGROUND);
+        gui.canvas.perform(
             Action::ToggleClue {
                 clue: (LaneIdx(0), 0),
             },
@@ -345,60 +331,50 @@ mod tests {
         );
 
         let restored = round_trip(&gui);
-        let (before, after) = (
-            gui.solve_gui.as_ref().unwrap(),
-            restored.solve_gui.as_ref().unwrap(),
+        let (before, after) = (&gui.canvas, &restored.canvas);
+        assert!(after.solving);
+        assert_eq!(cells(after), cells(before));
+        assert!(cells(after).contains(&UNSOLVED));
+        assert_eq!(after.checked_clues, before.checked_clues);
+        assert_eq!(after.undo_stack.len(), 3);
+        assert_eq!(after.document.solution(), before.document.solution());
+        assert_eq!(
+            restored.solve_gui.as_ref().unwrap().clues,
+            gui.solve_gui.as_ref().unwrap().clues
         );
-        assert_eq!(cells(&after.canvas), cells(&before.canvas));
-        assert!(cells(&after.canvas).contains(&UNSOLVED));
-        assert_eq!(after.canvas.checked_clues, before.canvas.checked_clues);
-        assert_eq!(after.canvas.undo_stack.len(), 3);
-        assert_eq!(after.clues, before.clues);
-        assert_eq!(after.intended_solution, before.intended_solution);
-        assert!(after.canvas.solving);
-
-        assert!(Rc::ptr_eq(
-            &after.canvas.status,
-            &restored.editor_gui.status
-        ));
-        assert!(Rc::ptr_eq(
-            &after.canvas.progress,
-            &restored.editor_gui.progress
-        ));
-        after.canvas.status.set(StatusMessage::info("hello"));
-        assert_eq!(restored.editor_gui.status.get().unwrap().text, "hello");
     }
 
     /// What `save_session` falls back to when storage is full: the session without undo or redo
-    /// history. The history in memory is untouched.
+    /// history, the editor's or the solver's. The history in memory is untouched.
     #[test]
     fn history_can_be_left_out() {
-        let mut gui = NonogramGui::new_solving(top_row());
-        paint(&mut gui.editor_gui, &[24], Color(1));
-        paint(&mut gui.solve_gui.as_mut().unwrap().canvas, &[0], Color(1));
-        gui.solve_gui.as_mut().unwrap().canvas.un_or_re_do(true);
+        let mut gui = NonogramGui::new(top_row());
+        paint(&mut gui.canvas, &[24], Color(1));
+        gui.enter_solve_mode();
+        paint(&mut gui.canvas, &[0], Color(1));
+        gui.canvas.un_or_re_do(true);
 
         let json = gui.without_history(|gui| serde_json::to_vec(gui).unwrap());
-        let restored = NonogramGui::from_session_string(&encode(&json).unwrap()).unwrap();
-        assert!(restored.editor_gui.undo_stack.is_empty());
-        let solver = &restored.solve_gui.as_ref().unwrap().canvas;
-        assert!(solver.undo_stack.is_empty() && solver.redo_stack.is_empty());
-        assert_eq!(cells(&restored.editor_gui), cells(&gui.editor_gui));
+        let mut restored = NonogramGui::from_session_string(&encode(&json).unwrap()).unwrap();
+        assert!(restored.canvas.undo_stack.is_empty() && restored.canvas.redo_stack.is_empty());
+        assert_eq!(
+            restored.canvas.document.solution(),
+            gui.canvas.document.solution()
+        );
+        restored.exit_solve_mode();
+        assert!(restored.canvas.undo_stack.is_empty());
 
-        assert_eq!(gui.editor_gui.undo_stack.len(), 1);
-        assert_eq!(gui.solve_gui.as_ref().unwrap().canvas.redo_stack.len(), 1);
+        assert_eq!(gui.canvas.redo_stack.len(), 1);
+        gui.exit_solve_mode();
+        assert_eq!(gui.canvas.undo_stack.len(), 1);
     }
 
     /// A link opened over a restored session doesn't throw the session away: the earlier puzzle
-    /// is one undo away in the editor (though its solving progress isn't).
+    /// is one undo away in the editor, with the progress there was on it.
     #[test]
     fn a_link_leaves_the_earlier_puzzle_behind_undo() {
         let mut gui = round_trip(&NonogramGui::new_solving(top_row()));
-        paint(
-            &mut gui.solve_gui.as_mut().unwrap().canvas,
-            &[0, 1],
-            Color(1),
-        );
+        paint(&mut gui.canvas, &[0, 1], Color(1));
 
         let mut left_column = Solution::blank_bw(5, 5);
         for y in 0..5 {
@@ -406,20 +382,20 @@ mod tests {
         }
         let left_column = DynSolution::Square(left_column);
         let link = Document::from_solution(left_column.clone(), "linked.woven".to_string());
-        assert!(gui.open_linked(link));
+        gui.open_linked(link);
 
-        let solver = &gui.solve_gui.as_ref().unwrap().canvas;
-        assert!(cells(solver).iter().all(|c| *c == UNSOLVED));
-        assert_eq!(
-            gui.solve_gui.as_ref().unwrap().intended_solution,
-            left_column
-        );
+        assert!(cells(&gui.canvas).iter().all(|c| *c == UNSOLVED));
+        assert_eq!(gui.canvas.document.solution(), &left_column);
 
         gui.exit_solve_mode();
-        gui.editor_gui.un_or_re_do(true);
-        assert_eq!(gui.editor_gui.document.solution(), top_row().solution());
-        gui.editor_gui.un_or_re_do(false);
-        assert_eq!(gui.editor_gui.document.solution(), &left_column);
+        gui.canvas.un_or_re_do(true);
+        assert_eq!(gui.canvas.document.solution(), top_row().solution());
+        gui.enter_solve_mode();
+        assert_eq!(cells(&gui.canvas)[..3], [Color(1), Color(1), UNSOLVED]);
+
+        gui.exit_solve_mode();
+        gui.canvas.un_or_re_do(false);
+        assert_eq!(gui.canvas.document.solution(), &left_column);
     }
 
     #[test]

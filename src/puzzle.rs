@@ -517,9 +517,8 @@ macro_rules! with_solution {
     };
 }
 
-/// How long `plain_solve` lets the backtracking solver run before settling for line logic's
-/// answer.
-pub const PLAIN_SOLVE_BACKTRACK_BUDGET: web_time::Duration = web_time::Duration::from_secs(2);
+/// How long `find_picture_with_deadline` lets the backtracking solver run before giving up.
+pub const PICTURE_SEARCH_BUDGET: web_time::Duration = web_time::Duration::from_secs(2);
 
 pub trait PuzzleDynOps {
     fn palette(&self) -> &HashMap<Color, ColorInfo>;
@@ -650,33 +649,64 @@ impl PuzzleDynOps for DynPuzzle {
 }
 
 impl DynPuzzle {
-    /// Solve the puzzle, with a deadline of `PLAINSOLVE_BACKTRACK_BUDGET` for the backtracking solver.
-    pub async fn plain_solve(&self) -> anyhow::Result<crate::solve::grid_solve::Report> {
+    /// A picture that fits these clues: the one line logic finds, or, if it gets stuck, the
+    /// first one the search comes to. So for clues with several solutions, it's just one of them.
+    /// It's an error if there's none at all.
+    pub fn find_picture(&self) -> anyhow::Result<DynSolution> {
         let report = self.line_solve()?;
         if report.cells_left == 0 {
-            return Ok(report);
+            return Ok(report.solution);
+        }
+        let report = with_puzzle!(self, |p| {
+            crate::solve::conprop::conprop_solve(p, &Self::first_solution())
+        })?;
+        Self::the_picture(report)
+    }
+
+    /// As `find_picture`, but taking turns with the GUI (see `spawn_async`), and giving up
+    /// after `PICTURE_SEARCH_BUDGET`.
+    pub async fn find_picture_with_deadline(&self) -> anyhow::Result<DynSolution> {
+        let report = self.line_solve()?;
+        if report.cells_left == 0 {
+            return Ok(report.solution);
         }
 
         let (progress, _) = std::sync::mpsc::channel(); // Nobody's watching
         let (terminate, terminate_r) = std::sync::mpsc::channel();
-        let deadline = web_time::Instant::now() + PLAIN_SOLVE_BACKTRACK_BUDGET;
-        crate::gui::send_after(PLAIN_SOLVE_BACKTRACK_BUDGET, terminate);
+        let deadline = web_time::Instant::now() + PICTURE_SEARCH_BUDGET;
+        crate::gui::send_after(PICTURE_SEARCH_BUDGET, terminate);
 
         let outcome = with_puzzle!(self, |p| {
             crate::solve::conprop::conprop_solve_in_background(
                 p,
-                &SolveOptions::default(),
+                &Self::first_solution(),
                 progress,
                 terminate_r,
             )
             .await
         });
         match outcome {
-            Ok(report) => Ok(report),
-            // Out of time: settle for what line logic got.
-            Err(_) if web_time::Instant::now() >= deadline => Ok(report),
+            Ok(report) => Self::the_picture(report),
+            Err(_) if web_time::Instant::now() >= deadline => {
+                anyhow::bail!("Unable to solve puzzle in alotted time!")
+            }
             Err(e) => Err(e), // No solution at all
         }
+    }
+
+    /// How `find_picture` searches: it only needs *a* picture, not proof that it's the only one.
+    fn first_solution() -> SolveOptions {
+        SolveOptions {
+            stop_at_first_solution: true,
+            ..SolveOptions::default()
+        }
+    }
+
+    /// The picture a search stopping at its first solution found. (It only stops short of one if
+    /// there's none to find.)
+    fn the_picture(report: crate::solve::grid_solve::Report) -> anyhow::Result<DynSolution> {
+        anyhow::ensure!(report.cells_left == 0, "Puzzle is unsolvable");
+        Ok(report.solution)
     }
 
     pub fn shape(&self) -> Shape {
@@ -844,23 +874,32 @@ impl DynSolution {
         with_solution!(self, |s| s.geometry.guides())
     }
 
-    /// How far a run of the same color extends from a cell along each clue family.
-    pub fn runs_at_cell(&self, cell: CellIdx) -> Vec<(usize, usize)> {
+    /// How far a run of the same color extends from a cell along each clue family, in `cells`
+    /// (which are this picture's own, or some progress towards it).
+    pub fn runs_at_cell(
+        &self,
+        cells: &TiSlice<CellIdx, Color>,
+        cell: CellIdx,
+    ) -> Vec<(usize, usize)> {
         with_solution!(self, |s| {
-            let target = s.cells[cell];
-            s.geometry.runs(cell, |c| s.cells[c] == target)
+            let target = cells[cell];
+            s.geometry.runs(cell, |c| cells[c] == target)
         })
     }
 
     /// The whole contiguous same-color block through a cell, as `(lane, length)` per clue family:
     /// the two arms `runs_at_cell` reports, plus the cell itself. `memberships` and `runs` are
     /// both in family order, so the two line up.
-    pub fn blocks_at_cell(&self, cell: CellIdx) -> Vec<(LaneIdx, usize)> {
+    pub fn blocks_at_cell(
+        &self,
+        cells: &TiSlice<CellIdx, Color>,
+        cell: CellIdx,
+    ) -> Vec<(LaneIdx, usize)> {
         with_solution!(self, |s| {
-            let target = s.cells[cell];
+            let target = cells[cell];
             s.geometry.lane_map.memberships[cell]
                 .iter()
-                .zip(s.geometry.runs(cell, |c| s.cells[c] == target))
+                .zip(s.geometry.runs(cell, |c| cells[c] == target))
                 .map(|(m, (back, fwd))| (m.lane, back + fwd + 1))
                 .collect()
         })
@@ -1155,8 +1194,9 @@ pub fn infer_format(path: &str, format_arg: Option<NonogramFormat>) -> NonogramF
 #[derive(Clone, Debug)]
 pub struct UncertainDocument {
     /// At least one of `p` and `s` is present. When both are, `p` is the authority: an
-    /// ambiguous puzzle's `s` is only as much of the picture as its clues pin down.
+    /// ambiguous puzzle's `s` is just one of the pictures its clues allow.
     p: Option<DynPuzzle>,
+    /// Never has any `UNSOLVED` cells.
     s: Option<DynSolution>,
     /// Someone's progress towards solving the puzzle.
     in_progress: Option<PartialSolution>,
@@ -1172,11 +1212,10 @@ pub struct UncertainDocument {
 /// A puzzle that has a solution (not necessarily a *unique* one -- perhaps a canonical solution
 /// the user designed).
 ///
-/// The picture can still have `UNSOLVED` cells, though.
+/// The picture never has `UNSOLVED` cells: the only place for those is `in_progress`.
 #[derive(Clone, Debug)]
 pub struct Document {
     p: Option<DynPuzzle>,
-    // TODO: we shouldn't put `UNSOLVED` cells in here:
     s: DynSolution,
     /// Someone's progress towards solving the puzzle. The GUI starts a solve from it, and offers
     /// to save it again; any edit to the cells throws it away (see `solution_mut`).
@@ -1264,7 +1303,7 @@ impl UncertainDocument {
     }
 
     pub fn quality_check(&mut self) -> Vec<String> {
-        let _ = self.solution(); // Not there for contradictory clues, which the check reports.
+        self.known_solution();
         self.puzzle();
         quality_problems(&self.author, self.s.as_ref(), self.p.as_ref().unwrap())
     }
@@ -1284,38 +1323,51 @@ impl UncertainDocument {
         self.p.as_ref().unwrap()
     }
 
-    /// The picture, worked out from the clues by line logic if there isn't one. That can leave
-    /// cells `UNSOLVED`, but it's an error if the clues contradict each other.
+    /// The picture, worked out from the clues if there isn't one (see `DynPuzzle::find_picture`,
+    /// which may take a while). It's an error if the clues contradict each other.
     pub fn solution(&mut self) -> anyhow::Result<&DynSolution> {
         if self.s.is_none() {
-            self.s = Some(self.p.as_ref().unwrap().line_solve()?.solution)
+            self.s = Some(self.p.as_ref().unwrap().find_picture()?)
         }
         Ok(self.s.as_ref().unwrap())
     }
 
-    /// Whether the picture is there, or can be worked out by line logic, without any cells left
-    /// `UNSOLVED`. (So an ambiguous puzzle saved in a format that saved the solution is complete.)
-    pub fn has_complete_solution(&mut self) -> anyhow::Result<bool> {
-        Ok(!self.solution()?.cells().contains(&UNSOLVED))
+    /// The picture, if there is one, or if line logic alone can work it out — so, without
+    /// guessing, which could take a while, and could land on one of several possibilities.
+    pub fn known_solution(&mut self) -> Option<&DynSolution> {
+        if self.s.is_none() {
+            let report = self.p.as_ref().unwrap().line_solve().ok()?;
+            if report.cells_left == 0 {
+                self.s = Some(report.solution);
+            }
+        }
+        self.s.as_ref()
     }
 
-    /// With the picture worked out (if needed) by line logic. See `solution`.
+    /// With the picture worked out, if needed. See `solution`.
     pub fn into_document(mut self) -> anyhow::Result<Document> {
         self.solution()?;
         Ok(self.into_document_unchecked())
     }
 
-    /// With the picture worked out (if needed) by `plain_solve`, which tries backtracking, but
-    /// has a deadline.
-    pub async fn into_document_with_backtracking(mut self) -> anyhow::Result<Document> {
+    /// As `into_document`, but working out the picture in the background (see `spawn_async`),
+    /// and giving up after `PICTURE_SEARCH_BUDGET`.
+    pub async fn into_document_with_deadline(mut self) -> anyhow::Result<Document> {
         if self.s.is_none() {
-            self.s = Some(self.p.as_ref().unwrap().plain_solve().await?.solution);
+            self.s = Some(
+                self.p
+                    .as_ref()
+                    .unwrap()
+                    .find_picture_with_deadline()
+                    .await?,
+            );
         }
         Ok(self.into_document_unchecked())
     }
 
     /// Only once `s` is known to be there.
     fn into_document_unchecked(self) -> Document {
+        Document::check_picture(self.s.as_ref().expect("the picture was just worked out"));
         Document {
             p: self.p,
             s: self.s.expect("the picture was just worked out"),
@@ -1355,7 +1407,16 @@ impl From<Document> for UncertainDocument {
 }
 
 impl Document {
+    /// The invariant: no `UNSOLVED` cells (see `Document`).
+    fn check_picture(picture: &DynSolution) {
+        debug_assert!(
+            !picture.cells().contains(&UNSOLVED),
+            "a `Document`'s picture can't have undecided cells"
+        );
+    }
+
     pub fn from_solution(solution: DynSolution, file: String) -> Self {
+        Document::check_picture(&solution);
         Document {
             p: None,
             s: solution,
@@ -1383,11 +1444,6 @@ impl Document {
         self.s.cells().hash(&mut hasher);
         let hash = hasher.finish().to_le_bytes();
         mnemonic::to_string(&hash[0..4])
-    }
-
-    /// Whether the picture has no `UNSOLVED` cells.
-    pub fn is_complete(&self) -> bool {
-        !self.s.cells().contains(&UNSOLVED)
     }
 
     /// A short, shape-appropriate size label for labels and thumbnails — "8x8" for a square
@@ -1432,6 +1488,14 @@ impl Document {
     pub fn set_in_progress(&mut self, in_progress: Option<PartialSolution>) {
         self.in_progress = in_progress;
     }
+
+    /// The progress, for changing. If there wasn't any, it starts out knowing nothing.
+    pub fn progress_mut(&mut self) -> &mut PartialSolution {
+        let cell_count = self.s.cells().len();
+        self.in_progress.get_or_insert_with(|| {
+            vec![crate::solve::line_solve::Cell::new_anything(); cell_count].into()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1451,8 +1515,8 @@ mod block_tests {
             let picture = doc.solution();
 
             for cell in picture.lane_map().cells() {
-                let runs = picture.runs_at_cell(cell);
-                let blocks = picture.blocks_at_cell(cell);
+                let runs = picture.runs_at_cell(picture.cells(), cell);
+                let blocks = picture.blocks_at_cell(picture.cells(), cell);
                 assert_eq!(runs.len(), blocks.len(), "{path}: one entry per family");
 
                 for (family, ((back, fwd), (lane, len))) in runs
@@ -1577,6 +1641,56 @@ mod resize_tests {
 mod into_document_tests {
     use super::*;
 
+    /// Clues with two solutions (either diagonal of a 2x2).
+    fn ambiguous() -> UncertainDocument {
+        let picture = crate::formats::char_grid::char_grid_to_solution("#.\n.#\n").unwrap();
+        UncertainDocument::from_puzzle(picture.to_puzzle(), "clues.g".to_string())
+    }
+
+    /// Clues with several solutions get one of them, which has no undecided cells, and has the
+    /// very same clues.
+    #[test]
+    fn ambiguous_clues_get_one_of_their_pictures() {
+        let mut clues = ambiguous();
+        let clues = clues.puzzle().clone();
+        let mut doc = ambiguous().into_document().unwrap();
+        assert!(!doc.solution().cells().contains(&UNSOLVED));
+        assert_eq!(doc.solution().to_puzzle(), clues);
+        assert_eq!(*doc.puzzle(), clues);
+    }
+
+    /// Which is enough for a share string, which holds only the picture, to keep the clues.
+    #[test]
+    fn ambiguous_clues_survive_a_share_string() {
+        let mut clues = ambiguous();
+        let bytes =
+            crate::export::to_bytes(&mut ambiguous(), None, Some(NonogramFormat::Woven)).unwrap();
+        let mut reloaded = crate::formats::woven::from_woven(
+            std::str::from_utf8(&bytes).unwrap(),
+            "shared.woven".to_string(),
+        )
+        .unwrap();
+        assert_eq!(reloaded.puzzle(), clues.puzzle());
+    }
+
+    /// And for disambiguation, which needs some picture to start from.
+    #[test]
+    fn ambiguous_clues_can_be_disambiguated() {
+        let doc = ambiguous().into_document().unwrap();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(crate::solve::grid_solve::disambig_candidates(
+                doc.solution(),
+                std::sync::mpsc::channel().0,
+                std::sync::mpsc::channel().1,
+            ));
+        assert!(matches!(
+            result,
+            crate::solve::grid_solve::DisambigResult::Report(_)
+        ));
+    }
+
     /// Line logic stalls on this one (see `a_puzzle_that_needs_a_guess` in `conprop.rs`), but the
     /// search finishes it.
     #[test]
@@ -1592,7 +1706,7 @@ mod into_document_tests {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(doc.into_document_with_backtracking())
+            .block_on(doc.into_document_with_deadline())
             .unwrap();
         assert_eq!(*doc.solution(), picture);
     }

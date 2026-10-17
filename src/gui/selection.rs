@@ -590,7 +590,7 @@ mod lasso_tests {
             DynSolution::Square(sol),
             "test".to_string(),
         ))
-        .editor_gui;
+        .canvas;
         gui.current_tool = Tool::Lasso;
         gui
     }

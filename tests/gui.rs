@@ -25,7 +25,7 @@ mod tests {
     /// Hardcoding one goes stale every time the layout around the canvas shifts.
     fn canvas_point(nonogram_gui: &NonogramGui) -> Pos2 {
         nonogram_gui
-            .editor_gui
+            .canvas
             .picture_rect
             .expect("the canvas hasn't been drawn yet")
             .center()
@@ -61,10 +61,10 @@ mod tests {
                 rect.width() / extent.x
             };
 
-            let editing = cell_size(&mut harness.state_mut().editor_gui);
+            let editing = cell_size(&mut harness.state_mut().canvas);
             harness.get_by_label("Puzzle").click();
             harness.run();
-            let solving = cell_size(&mut harness.state_mut().solve_gui.as_mut().unwrap().canvas);
+            let solving = cell_size(&mut harness.state_mut().canvas);
             (editing, solving)
         };
 
@@ -99,7 +99,7 @@ mod tests {
     /// The backtracking-solve button spawns the search on a background thread and reports back
     /// over a channel, so the result doesn't land on the very frame the click does; this polls a
     /// few frames to give it a chance to. It also shades the canvas with the solve mask, sharing
-    /// `editor_gui.solved_mask` with the plain `Solve` button.
+    /// `canvas.solved_mask` with the plain `Solve` button.
     #[test]
     fn test_backtrack_solve_button() {
         let doc = load("examples/png/apron.png");
@@ -125,10 +125,10 @@ mod tests {
         }
         assert!(found, "backtracking solve never reported back");
 
-        let editor_gui = &harness.state().editor_gui;
-        let solved_mask = &editor_gui.solved_mask;
+        let canvas = &harness.state().canvas;
+        let solved_mask = &canvas.solved_mask;
         assert!(
-            solved_mask.fresh(editor_gui.version),
+            solved_mask.fresh(canvas.version),
             "the backtracking solve should have refreshed the solve mask"
         );
         assert!(
@@ -137,7 +137,7 @@ mod tests {
         );
     }
 
-    /// Both solve buttons write into `editor_gui.solved_mask` (see `test_backtrack_solve_button`),
+    /// Both solve buttons write into `canvas.solved_mask` (see `test_backtrack_solve_button`),
     /// but each keeps its own report label. `Solve` used to read its own report text back out of
     /// `solved_mask` via `get_or_refresh`, treating it as fresh (and so skipping a real re-solve)
     /// whenever *anything* had marked it fresh for the current version — including a backtracking
@@ -204,7 +204,7 @@ mod tests {
         let mut harness = app_harness(nonogram_gui);
 
         assert_eq!(
-            harness.state().editor_gui.current_color,
+            harness.state().canvas.current_color,
             number_loom::puzzle::Color(1)
         );
 
@@ -218,7 +218,7 @@ mod tests {
 
         let nonogram_gui = harness.state();
         assert_eq!(
-            nonogram_gui.editor_gui.current_color,
+            nonogram_gui.canvas.current_color,
             number_loom::puzzle::BACKGROUND
         );
     }
@@ -234,8 +234,7 @@ mod tests {
         harness.run();
 
         let name_of = |harness: &Harness<NonogramGui>| {
-            harness.state().editor_gui.document.solution().palette()
-                [&number_loom::puzzle::BACKGROUND]
+            harness.state().canvas.document.solution().palette()[&number_loom::puzzle::BACKGROUND]
                 .name
                 .clone()
         };
@@ -294,12 +293,12 @@ mod tests {
         press_key(&mut harness, egui::Key::Num1);
 
         assert_eq!(
-            harness.state().editor_gui.current_tool,
+            harness.state().canvas.current_tool,
             Tool::Pencil,
             "typing a name shouldn't switch tools"
         );
         assert_eq!(
-            harness.state().editor_gui.current_color,
+            harness.state().canvas.current_color,
             number_loom::puzzle::Color(1),
             "typing a name shouldn't repaint the palette choice"
         );
@@ -319,7 +318,7 @@ mod tests {
         // Everything in the sidebar has to stay left of the canvas beside it.
         let canvas_left = harness
             .state()
-            .editor_gui
+            .canvas
             .picture_rect
             .expect("the canvas hasn't been drawn yet")
             .min
@@ -370,20 +369,20 @@ mod tests {
 
         press_key(&mut harness, egui::Key::Num1);
         assert_eq!(
-            harness.state().editor_gui.current_color,
+            harness.state().canvas.current_color,
             number_loom::puzzle::BACKGROUND
         );
 
         press_key(&mut harness, egui::Key::Num2);
         assert_eq!(
-            harness.state().editor_gui.current_color,
+            harness.state().canvas.current_color,
             number_loom::puzzle::Color(1)
         );
 
         // A key past the end of the palette leaves the choice alone.
         press_key(&mut harness, egui::Key::Num9);
         assert_eq!(
-            harness.state().editor_gui.current_color,
+            harness.state().canvas.current_color,
             number_loom::puzzle::Color(1)
         );
     }
@@ -400,7 +399,7 @@ mod tests {
         let mut harness = app_harness(nonogram_gui);
         harness.run();
 
-        assert_eq!(harness.state().editor_gui.current_tool, Tool::Pencil);
+        assert_eq!(harness.state().canvas.current_tool, Tool::Pencil);
 
         for (key, tool) in [
             (egui::Key::L, Tool::LineAlongLane),
@@ -409,7 +408,7 @@ mod tests {
             (egui::Key::P, Tool::Pencil),
         ] {
             press_key(&mut harness, key);
-            assert_eq!(harness.state().editor_gui.current_tool, tool);
+            assert_eq!(harness.state().canvas.current_tool, tool);
         }
 
         harness.get_by_label("Puzzle").click();
@@ -418,15 +417,7 @@ mod tests {
 
         // The solver offers the pencil and the line tool, but not flood fill or the lasso.
         press_key(&mut harness, egui::Key::L);
-        let solve_tool = |harness: &Harness<NonogramGui>| {
-            harness
-                .state()
-                .solve_gui
-                .as_ref()
-                .unwrap()
-                .canvas
-                .current_tool
-        };
+        let solve_tool = |harness: &Harness<NonogramGui>| harness.state().canvas.current_tool;
         assert_eq!(solve_tool(&harness), Tool::LineAlongLane);
 
         press_key(&mut harness, egui::Key::S);
@@ -450,7 +441,7 @@ mod tests {
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
-        let tool = |harness: &Harness<NonogramGui>| harness.state().editor_gui.current_tool;
+        let tool = |harness: &Harness<NonogramGui>| harness.state().canvas.current_tool;
 
         assert_eq!(tool(&harness), Tool::Pencil);
 
@@ -495,19 +486,19 @@ mod tests {
         };
 
         assert_eq!(
-            harness.state().editor_gui.current_color,
+            harness.state().canvas.current_color,
             number_loom::puzzle::Color(1)
         );
 
         // A black-and-white palette holds just the background and the one drawing color.
         notch(&mut harness);
         assert_eq!(
-            harness.state().editor_gui.current_color,
+            harness.state().canvas.current_color,
             number_loom::puzzle::BACKGROUND
         );
         notch(&mut harness);
         assert_eq!(
-            harness.state().editor_gui.current_color,
+            harness.state().canvas.current_color,
             number_loom::puzzle::Color(1)
         );
     }
@@ -529,19 +520,11 @@ mod tests {
         let picture_rect = |harness: &Harness<NonogramGui>| {
             harness
                 .state()
-                .editor_gui
+                .canvas
                 .picture_rect
                 .expect("the canvas hasn't been drawn yet")
         };
-        let cells = |harness: &Harness<NonogramGui>| {
-            harness
-                .state()
-                .editor_gui
-                .document
-                .solution()
-                .cells()
-                .to_vec()
-        };
+        let cells = |harness: &Harness<NonogramGui>| harness.state().canvas.cells().to_vec();
 
         let before_rect = picture_rect(&harness);
         let before_cells = cells(&harness);
@@ -591,7 +574,7 @@ mod tests {
         harness.run();
 
         press_key(&mut harness, egui::Key::A);
-        assert_eq!(harness.state().editor_gui.current_tool, Tool::Pencil);
+        assert_eq!(harness.state().canvas.current_tool, Tool::Pencil);
     }
 
     #[test]
@@ -620,10 +603,7 @@ mod tests {
         harness.run();
 
         let nonogram_gui = harness.state();
-        assert_ne!(
-            nonogram_gui.editor_gui.document.solution().cells(),
-            original_grid
-        );
+        assert_ne!(nonogram_gui.canvas.cells().to_vec(), original_grid);
     }
 
     #[test]
@@ -651,37 +631,19 @@ mod tests {
         });
         harness.run();
 
-        let modified_grid = harness
-            .state()
-            .editor_gui
-            .document
-            .solution()
-            .cells()
-            .to_vec();
+        let modified_grid = harness.state().canvas.cells().to_vec();
         assert_ne!(modified_grid, original_grid);
 
         harness.get_by_label("\u{e166}").click();
         harness.run();
 
-        let undone_grid = harness
-            .state()
-            .editor_gui
-            .document
-            .solution()
-            .cells()
-            .to_vec();
+        let undone_grid = harness.state().canvas.cells().to_vec();
         assert_eq!(undone_grid, original_grid);
 
         harness.get_by_label("\u{e15a}").click();
         harness.run();
 
-        let redone_grid = harness
-            .state()
-            .editor_gui
-            .document
-            .solution()
-            .cells()
-            .to_vec();
+        let redone_grid = harness.state().canvas.cells().to_vec();
         assert_eq!(redone_grid, modified_grid);
     }
 
@@ -701,13 +663,7 @@ mod tests {
         let mut harness = app_harness(nonogram_gui);
         harness.run();
 
-        let before = harness
-            .state()
-            .editor_gui
-            .document
-            .solution()
-            .cells()
-            .to_vec();
+        let before = harness.state().canvas.cells().to_vec();
         assert_eq!(before.len(), 96, "a hexagon of side 4 has 6 * 4^2 cells");
 
         // Somewhere inside this puzzle's (smaller) canvas.
@@ -726,13 +682,7 @@ mod tests {
         });
         harness.run();
 
-        let after = harness
-            .state()
-            .editor_gui
-            .document
-            .solution()
-            .cells()
-            .to_vec();
+        let after = harness.state().canvas.cells().to_vec();
         assert_ne!(before, after, "clicking the canvas should paint a triangle");
         assert_eq!(before.len(), after.len(), "painting must not resize");
         assert_eq!(
@@ -755,10 +705,10 @@ mod tests {
         harness.run();
 
         let gui = harness.state();
-        let solve_gui = gui.solve_gui.as_ref().expect("solve mode is on");
-        // Solve mode blanks the picture (bar whatever background it can infer immediately), so
-        // most of it should still be undecided.
-        let cells = solve_gui.canvas.document.solution().cells();
+        assert!(gui.solve_gui.is_some(), "solve mode is on");
+        // Solve mode starts from nothing known (bar whatever background it can infer
+        // immediately), so most of it should still be undecided.
+        let cells = gui.canvas.cells();
         let unsolved = cells
             .iter()
             .filter(|c| **c == number_loom::puzzle::UNSOLVED)
@@ -791,7 +741,7 @@ mod tests {
         harness.get_by_label("Ok").click();
         harness.run();
 
-        let solution = harness.state().editor_gui.document.solution().clone();
+        let solution = harness.state().canvas.document.solution().clone();
         assert!(
             matches!(
                 solution.shape(),
@@ -824,13 +774,7 @@ mod tests {
             modifiers: Modifiers::NONE,
         });
         harness.run();
-        let after = harness
-            .state()
-            .editor_gui
-            .document
-            .solution()
-            .cells()
-            .to_vec();
+        let after = harness.state().canvas.cells().to_vec();
         assert_ne!(
             before, after,
             "clicking a fresh triddler should paint a triangle"
@@ -877,18 +821,7 @@ mod tests {
         harness.get_by_label("Puzzle").click();
         harness.run();
 
-        let solve_cells = |harness: &Harness<NonogramGui>| {
-            harness
-                .state()
-                .solve_gui
-                .as_ref()
-                .unwrap()
-                .canvas
-                .document
-                .solution()
-                .cells()
-                .to_vec()
-        };
+        let solve_cells = |harness: &Harness<NonogramGui>| harness.state().canvas.cells().to_vec();
         let click_at = |harness: &mut Harness<NonogramGui>, pos: Pos2| {
             for pressed in [true, false] {
                 harness.input_mut().events.push(Event::PointerButton {
@@ -903,9 +836,6 @@ mod tests {
 
         let center = harness
             .state()
-            .solve_gui
-            .as_ref()
-            .unwrap()
             .canvas
             .picture_rect
             .expect("the solver's canvas hasn't been drawn yet")
@@ -961,7 +891,7 @@ mod tests {
         // one-pixel border; the gutter beside it is not.
         const SCALE: f32 = 16.0; // `NonogramGui`'s starting zoom
         let box_side = SCALE * 0.9;
-        let picture = solve_gui.canvas.picture_rect.unwrap();
+        let picture = harness.state().canvas.picture_rect.unwrap();
         let at = Pos2::new(
             picture.min.x - 1.0 - SCALE * number_loom::layout::CLUE_PAD - box_side / 2.0,
             picture.min.y - 1.0 + (row as f32 + 0.5) * SCALE,
@@ -978,16 +908,7 @@ mod tests {
             }
             harness.run();
         };
-        let checked = |harness: &Harness<NonogramGui>| {
-            harness
-                .state()
-                .solve_gui
-                .as_ref()
-                .unwrap()
-                .canvas
-                .checked_clues
-                .clone()
-        };
+        let checked = |harness: &Harness<NonogramGui>| harness.state().canvas.checked_clues.clone();
 
         click(&mut harness);
         assert_eq!(
@@ -1001,38 +922,20 @@ mod tests {
 
         // Check-offs are undoable like anything else, and a redo puts them back.
         click(&mut harness);
-        harness
-            .state_mut()
-            .solve_gui
-            .as_mut()
-            .unwrap()
-            .canvas
-            .un_or_re_do(true);
+        harness.state_mut().canvas.un_or_re_do(true);
         harness.run();
         assert!(
             checked(&harness).is_empty(),
             "undo should un-check the clue"
         );
-        harness
-            .state_mut()
-            .solve_gui
-            .as_mut()
-            .unwrap()
-            .canvas
-            .un_or_re_do(false);
+        harness.state_mut().canvas.un_or_re_do(false);
         harness.run();
         assert_eq!(
             checked(&harness).iter().copied().collect::<Vec<_>>(),
             vec![clue],
             "redo should check it off again"
         );
-        harness
-            .state_mut()
-            .solve_gui
-            .as_mut()
-            .unwrap()
-            .canvas
-            .un_or_re_do(true);
+        harness.state_mut().canvas.un_or_re_do(true);
         harness.run();
 
         // Once the solver has checked a clue off itself, clicks on it do nothing.
@@ -1042,14 +945,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .mark_fixed_clues = true;
-        let solution = harness
-            .state()
-            .solve_gui
-            .as_ref()
-            .unwrap()
-            .intended_solution
-            .cells()
-            .to_vec();
+        let solution = harness.state().canvas.document.solution().cells().to_vec();
         let changes = solution
             .iter()
             .enumerate()
@@ -1057,9 +953,6 @@ mod tests {
             .collect();
         harness
             .state_mut()
-            .solve_gui
-            .as_mut()
-            .unwrap()
             .canvas
             .perform(Action::ChangeColor { changes }, ActionMood::Normal);
         // `step`, not `run`: the finished solve's replay asks to be repainted forever.
@@ -1138,7 +1031,7 @@ mod tests {
         assert!(fixed(&harness).iter().all(|line| line.is_empty()));
 
         let solve_gui = harness.state().solve_gui.as_ref().unwrap();
-        let solution = solve_gui.intended_solution.cells().to_vec();
+        let solution = harness.state().canvas.document.solution().cells().to_vec();
         // One clue count per lane, in `lane_map` order: families, then lines within each.
         let clue_counts: Vec<usize> = with_puzzle!(&solve_gui.clues, |p| p
             .lines
@@ -1153,9 +1046,6 @@ mod tests {
             .collect();
         harness
             .state_mut()
-            .solve_gui
-            .as_mut()
-            .unwrap()
             .canvas
             .perform(Action::ChangeColor { changes }, ActionMood::Normal);
         // `step`, not `run`: the finished solve's replay asks to be repainted, which `run` treats
@@ -1244,14 +1134,7 @@ mod tests {
         assert!(harness.state().solve_gui.as_ref().unwrap().replay.is_none());
 
         // Fill in the answer in three goes, so the replay has more than one step to play.
-        let solution = harness
-            .state()
-            .solve_gui
-            .as_ref()
-            .unwrap()
-            .intended_solution
-            .cells()
-            .to_vec();
+        let solution = harness.state().canvas.document.solution().cells().to_vec();
         let third = solution.len().div_ceil(3);
         for chunk in 0..3 {
             let changes = solution
@@ -1263,9 +1146,6 @@ mod tests {
                 .collect();
             harness
                 .state_mut()
-                .solve_gui
-                .as_mut()
-                .unwrap()
                 .canvas
                 .perform(Action::ChangeColor { changes }, ActionMood::Normal);
         }
@@ -1303,9 +1183,18 @@ mod tests {
             });
         }
         harness.step();
-        let solve_gui = harness.state().solve_gui.as_ref().unwrap();
-        assert_eq!(solve_gui.replay.as_ref().unwrap().step(), 0);
-        assert_eq!(solve_gui.canvas.document.solution().cells(), solution);
+        let gui = harness.state();
+        assert_eq!(
+            gui.solve_gui
+                .as_ref()
+                .unwrap()
+                .replay
+                .as_ref()
+                .unwrap()
+                .step(),
+            0
+        );
+        assert_eq!(gui.canvas.cells().to_vec(), solution);
     }
 
     /// Drives the annotate tool through the real solve-mode canvas: the pointer positions, the
@@ -1326,9 +1215,6 @@ mod tests {
 
         let rect = harness
             .state()
-            .solve_gui
-            .as_ref()
-            .unwrap()
             .canvas
             .picture_rect
             .expect("the solve canvas hasn't been drawn yet");
@@ -1339,13 +1225,7 @@ mod tests {
     fn annotations<'a>(
         harness: &'a Harness<'a, NonogramGui>,
     ) -> &'a [number_loom::gui::Annotation] {
-        &harness
-            .state()
-            .solve_gui
-            .as_ref()
-            .unwrap()
-            .canvas
-            .annotations
+        &harness.state().canvas.annotations
     }
 
     /// Press, move and release, one frame each, so the drag actually reads as a drag.
@@ -1393,28 +1273,10 @@ mod tests {
 
         let (mut harness, rect, cell) = solving_harness();
         press_key(&mut harness, egui::Key::A);
-        assert_eq!(
-            harness
-                .state()
-                .solve_gui
-                .as_ref()
-                .unwrap()
-                .canvas
-                .current_tool,
-            Tool::Annotate
-        );
+        assert_eq!(harness.state().canvas.current_tool, Tool::Annotate);
 
-        let before = harness.state().solve_gui.as_ref().unwrap().canvas.version;
-        let grid = harness
-            .state()
-            .solve_gui
-            .as_ref()
-            .unwrap()
-            .canvas
-            .document
-            .solution()
-            .cells()
-            .to_vec();
+        let before = harness.state().canvas.version;
+        let grid = harness.state().canvas.cells().to_vec();
 
         // From inside column 0, along the middle of row 2, to inside column 3. A mark runs cell
         // to cell, so that covers columns 0 through 3 inclusive: four cells.
@@ -1425,10 +1287,10 @@ mod tests {
         assert_eq!(annotations(&harness).len(), 1);
         assert_eq!(annotations(&harness)[0].cells_covered(), 4);
 
-        let canvas = &harness.state().solve_gui.as_ref().unwrap().canvas;
+        let canvas = &harness.state().canvas;
         assert_eq!(canvas.version, before);
         assert!(canvas.undo_stack.is_empty());
-        assert_eq!(canvas.document.solution().cells(), grid);
+        assert_eq!(canvas.cells().to_vec(), grid);
     }
 
     /// Holding shift borrows the annotate tool for the length of one drag without giving up the
@@ -1439,16 +1301,7 @@ mod tests {
 
         let (mut harness, rect, cell) = solving_harness();
         // The line tool is the solver's default, and the one shift is meant to be borrowed from.
-        assert_eq!(
-            harness
-                .state()
-                .solve_gui
-                .as_ref()
-                .unwrap()
-                .canvas
-                .current_tool,
-            Tool::LineAlongLane
-        );
+        assert_eq!(harness.state().canvas.current_tool, Tool::LineAlongLane);
 
         let y = rect.min.y + 2.5 * cell.y;
         let at = |column: f32| Pos2::new(rect.min.x + (column + 0.5) * cell.x, y);
@@ -1457,27 +1310,9 @@ mod tests {
         assert_eq!(annotations(&harness).len(), 1);
         assert_eq!(annotations(&harness)[0].cells_covered(), 3);
         // Shift is momentary: the line tool is still the one that's selected.
-        assert_eq!(
-            harness
-                .state()
-                .solve_gui
-                .as_ref()
-                .unwrap()
-                .canvas
-                .current_tool,
-            Tool::LineAlongLane
-        );
+        assert_eq!(harness.state().canvas.current_tool, Tool::LineAlongLane);
         // ...and shift-dragging painted nothing, since annotating never touches the picture.
-        assert!(
-            harness
-                .state()
-                .solve_gui
-                .as_ref()
-                .unwrap()
-                .canvas
-                .undo_stack
-                .is_empty()
-        );
+        assert!(harness.state().canvas.undo_stack.is_empty());
 
         // The clear button only exists while there's something to clear, and Escape does the
         // same job.
@@ -1495,7 +1330,7 @@ mod tests {
 
         let pointer = Pos2::new(500.0, 300.0);
         let fraction = |harness: &Harness<NonogramGui>| {
-            let picture = harness.state().editor_gui.picture_rect.unwrap();
+            let picture = harness.state().canvas.picture_rect.unwrap();
             (pointer - picture.min) / picture.size()
         };
         harness
@@ -1504,14 +1339,14 @@ mod tests {
             .push(Event::PointerMoved(pointer));
         harness.run();
         let before = fraction(&harness);
-        let width = harness.state().editor_gui.picture_rect.unwrap().width();
+        let width = harness.state().canvas.picture_rect.unwrap().width();
 
         for _ in 0..3 {
             harness.input_mut().events.push(Event::Zoom(1.25));
             harness.run();
         }
 
-        assert!(harness.state().editor_gui.picture_rect.unwrap().width() > 1.5 * width);
+        assert!(harness.state().canvas.picture_rect.unwrap().width() > 1.5 * width);
         let after = fraction(&harness);
         assert!(
             (after - before).length() < 0.01,
@@ -1689,7 +1524,7 @@ mod tests {
         #[test]
         fn solve_mode_has_its_bars() {
             let harness = phone(NonogramGui::new_solving(apron()));
-            let canvas = &harness.state().solve_gui.as_ref().unwrap().canvas;
+            let canvas = &harness.state().canvas;
 
             // The top bar.
             for icon in [icons::ICON_MENU, icons::ICON_UNDO, icons::ICON_REDO] {
@@ -1741,7 +1576,7 @@ mod tests {
             ] {
                 assert_tappable(&harness.get_by_label(icon));
             }
-            for (color, name) in color_names(&harness.state().editor_gui) {
+            for (color, name) in color_names(&harness.state().canvas) {
                 assert_ne!(color, UNSOLVED);
                 assert_tappable(&harness.get_by_label(&name));
             }
@@ -1871,7 +1706,7 @@ mod tests {
         #[test]
         fn the_resize_window_leaves_the_grid_alone() {
             let mut harness = phone(NonogramGui::new(apron()));
-            let picture = harness.state().editor_gui.picture_rect.unwrap();
+            let picture = harness.state().canvas.picture_rect.unwrap();
 
             harness.get_by_label(icons::ICON_RESIZE).click();
             harness.run();
@@ -1886,7 +1721,7 @@ mod tests {
             assert!(bounds.y1 < bottom_bar.y0);
             assert!(bounds.y0 > picture.top() as f64);
             // The grid didn't move to make room for it.
-            assert_eq!(harness.state().editor_gui.picture_rect, Some(picture));
+            assert_eq!(harness.state().canvas.picture_rect, Some(picture));
             assert_all_tappable(&harness);
 
             // Its button closes it again.
@@ -1898,20 +1733,20 @@ mod tests {
         #[test]
         fn colors_are_added_and_edited_from_the_palette() {
             let mut harness = phone(NonogramGui::new(apron()));
-            let before = color_names(&harness.state().editor_gui);
+            let before = color_names(&harness.state().canvas);
 
             harness.get_by_label(icons::ICON_ADD).click();
             harness.run();
-            let after = color_names(&harness.state().editor_gui);
+            let after = color_names(&harness.state().canvas);
             assert_eq!(after.len(), before.len() + 1);
             let (added, name) = after.last().unwrap().clone();
 
             // A long press opens a color's dialog (and with a mouse, so does a right-click).
             right_click(&mut harness, &name);
-            assert_eq!(harness.state().editor_gui.current_color, added);
+            assert_eq!(harness.state().canvas.current_color, added);
             harness.get_by_label(icons::ICON_DELETE).click();
             harness.run();
-            assert_eq!(color_names(&harness.state().editor_gui), before);
+            assert_eq!(color_names(&harness.state().canvas), before);
             assert!(harness.query_by_label(icons::ICON_DELETE).is_none());
 
             // The background can't be deleted.
@@ -1929,7 +1764,7 @@ mod tests {
             let mut harness = phone(NonogramGui::new(apron()));
             harness
                 .state()
-                .editor_gui
+                .canvas
                 .status
                 .set(StatusMessage::info("Something happened"));
             harness.run();
@@ -1939,7 +1774,7 @@ mod tests {
 
             harness
                 .state()
-                .editor_gui
+                .canvas
                 .status
                 .set(StatusMessage::error("Something broke"));
             harness.run();
@@ -1947,20 +1782,21 @@ mod tests {
             harness.get_by_label(icons::ICON_CLOSE).click();
             harness.run();
             assert!(harness.query_by_label("Something broke").is_none());
-            assert!(harness.state().editor_gui.status.get().is_none());
+            assert!(harness.state().canvas.status.get().is_none());
         }
 
         #[test]
         fn solving_it_is_announced_once() {
             let mut harness = phone(NonogramGui::new_solving(apron()));
-            let solve_gui = harness.state_mut().solve_gui.as_mut().unwrap();
-            let changes = solve_gui
-                .intended_solution
+            let canvas = &mut harness.state_mut().canvas;
+            let changes = canvas
+                .document
+                .solution()
                 .cells()
                 .iter_enumerated()
                 .map(|(cell, color)| (cell, *color))
                 .collect();
-            solve_gui.canvas.perform(
+            canvas.perform(
                 number_loom::gui::Action::ChangeColor { changes },
                 number_loom::gui::ActionMood::Normal,
             );
@@ -1995,25 +1831,25 @@ mod tests {
         #[test]
         fn errors_show_in_the_top_bar() {
             let mut harness = phone(NonogramGui::new_solving(apron()));
-            let solve_gui = harness.state_mut().solve_gui.as_mut().unwrap();
+            let gui = harness.state_mut();
             // A cell painted with a color that isn't the answer's.
             let (cell, wrong) = {
-                let answer = solve_gui.intended_solution.cells();
+                let answer = gui.canvas.document.solution().cells();
                 let cell = number_loom::geometry::CellIdx(0);
-                let wrong = color_names(&solve_gui.canvas)
+                let wrong = color_names(&gui.canvas)
                     .into_iter()
                     .map(|(color, _)| color)
                     .find(|color| *color != answer[cell] && *color != UNSOLVED)
                     .unwrap();
                 (cell, wrong)
             };
-            solve_gui.canvas.perform(
+            gui.canvas.perform(
                 number_loom::gui::Action::ChangeColor {
                     changes: [(cell, wrong)].into(),
                 },
                 number_loom::gui::ActionMood::Normal,
             );
-            let auto = solve_gui.detect_errors;
+            let auto = gui.solve_gui.as_ref().unwrap().detect_errors;
             harness.run();
             assert_eq!(harness.query_by_label("Error detected").is_some(), auto);
 
@@ -2053,12 +1889,7 @@ mod tests {
         }
 
         fn picture(harness: &Harness<NonogramGui>) -> egui::Rect {
-            let gui = harness.state();
-            match &gui.solve_gui {
-                Some(solve_gui) => solve_gui.canvas.picture_rect,
-                None => gui.editor_gui.picture_rect,
-            }
-            .unwrap()
+            harness.state().canvas.picture_rect.unwrap()
         }
 
         /// A puzzle comes up zoomed to fit the screen, clues and all, at a whole number of points
@@ -2222,7 +2053,7 @@ mod tests {
             harness.get_by_label(icons::ICON_MENU).click();
             harness.run();
 
-            let undo_len = harness.state().editor_gui.undo_stack.len();
+            let undo_len = harness.state().canvas.undo_stack.len();
             // A tap in the drawer's empty space, over the canvas.
             let at = Pos2::new(100.0, 600.0);
             let touch = |phase| Event::Touch {
@@ -2253,7 +2084,7 @@ mod tests {
                 touch(TouchPhase::End),
             ]);
             harness.run();
-            assert_eq!(harness.state().editor_gui.undo_stack.len(), undo_len);
+            assert_eq!(harness.state().canvas.undo_stack.len(), undo_len);
             // It's still open.
             harness.get_by_label("Library");
         }

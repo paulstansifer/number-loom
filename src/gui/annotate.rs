@@ -610,7 +610,7 @@ mod annotate_tests {
             DynSolution::Square(Solution::blank_bw(6, 6)),
             "test".to_string(),
         ))
-        .editor_gui;
+        .canvas;
         gui.current_tool = Tool::Annotate;
         gui.solving = true;
         gui
@@ -885,7 +885,7 @@ mod annotate_tests {
             DynSolution::Tri(sol),
             "test".to_string(),
         ))
-        .editor_gui;
+        .canvas;
         gui.current_tool = Tool::Annotate;
         gui.solving = true;
 

@@ -2,11 +2,11 @@ use super::compact::Toggled as _;
 use super::session::never;
 use super::{
     Action, ActionMood, CanvasGui, ClueId, ScreenLayout, Staleable, Version, auto_button,
-    outline_text,
+    color_info, outline_text,
 };
 use crate::{
     geometry::{CellIdx, FamilyIdx, LaneIdx},
-    puzzle::{Color, Document, DynPuzzle, DynSolution, PuzzleDynOps, UNSOLVED},
+    puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
     solve::grid_solve::LineStatus,
     user_settings::{UserSettings, consts},
 };
@@ -16,16 +16,17 @@ use std::collections::HashSet;
 use typed_index_collections::TiVec;
 use web_time::Instant;
 
-/// Saved with the session (see `session.rs`). `clues` and `intended_solution` aren't: they come
-/// from the editor's document, which can't change while solving, so `NonogramGui::reconnect`
-/// rebuilds them from there.
+/// What only the solving view has. It shares the canvas (and so the document) with the editor:
+/// the answer is the document's picture, and the progress towards it is the document's
+/// `in_progress` (see `CanvasGui::set_solving`).
+///
+/// Saved with the session (see `session.rs`), except for `clues`, which `NonogramGui::reconnect`
+/// works out again from the document.
 #[derive(Serialize, Deserialize)]
 pub struct SolveGui {
-    pub canvas: CanvasGui,
+    /// The document's clues, which can't change while solving.
     #[serde(skip, default = "super::session::placeholder_puzzle")]
     pub clues: DynPuzzle,
-    #[serde(skip, default = "super::session::placeholder_solution")]
-    pub intended_solution: DynSolution,
     pub analyze_lines: bool,
     pub detect_errors: bool,
     pub infer_background: bool,
@@ -119,40 +120,10 @@ impl Aid {
 }
 
 impl SolveGui {
-    pub fn new(
-        mut document: Document,
-        status: super::SharedStatus,
-        progress: super::SharedProgress,
-    ) -> Self {
-        let mut working_doc = document.clone();
-        for cell in working_doc.solution_mut().cells_mut() {
-            *cell = UNSOLVED;
-        }
-        // Pick up where the document left off. (The grid can only show cells that are settled.)
-        if let Some(in_progress) = document.in_progress() {
-            let cells = working_doc.solution_mut().cells_mut();
-            if in_progress.len() == cells.len() {
-                for (cell, progress) in cells.iter_mut().zip(in_progress) {
-                    if progress.is_known() {
-                        *cell = progress.unwrap_color();
-                    }
-                }
-            }
-        }
-        working_doc.solution_mut().palette_mut().insert(
-            UNSOLVED,
-            crate::puzzle::ColorInfo {
-                ch: '?',
-                name: "unknown".to_owned(),
-                rgb: (128, 128, 128),
-                color: UNSOLVED,
-                corner: None,
-            },
-        );
+    /// For solving the puzzle with these clues.
+    pub fn new(clues: DynPuzzle) -> Self {
         SolveGui {
-            canvas: CanvasGui::new(working_doc, true, status, progress),
-            clues: document.puzzle().clone(),
-            intended_solution: document.into_solution(),
+            clues,
             analyze_lines: UserSettings::get_bool(consts::SOLVER_ANALYZE_LINES),
             detect_errors: UserSettings::get_bool(consts::SOLVER_DETECT_ERRORS),
             infer_background: UserSettings::get_bool(consts::SOLVER_INFER_BACKGROUND),
@@ -173,74 +144,69 @@ impl SolveGui {
     /// Check a clue off, or un-check it. Clues the solver has checked off itself never get here:
     /// the gutters swallow those clicks, since un-checking one would last only until the next
     /// repaint.
-    fn toggle_checked_clue(&mut self, id: ClueId) {
-        self.canvas
-            .perform(Action::ToggleClue { clue: id }, ActionMood::Normal);
+    fn toggle_checked_clue(canvas: &mut CanvasGui, id: ClueId) {
+        canvas.perform(Action::ToggleClue { clue: id }, ActionMood::Normal);
     }
 
-    fn detect_any_errors(&self) -> bool {
-        let picture = self.canvas.document.solution();
-        for (cell, intended) in picture.cells().iter().zip(self.intended_solution.cells()) {
-            if *cell != *intended && *cell != UNSOLVED {
-                return true;
-            }
-        }
-        false
+    fn detect_any_errors(canvas: &CanvasGui) -> bool {
+        let answer = canvas.document.solution().cells();
+        canvas
+            .cells()
+            .iter()
+            .zip(answer)
+            .any(|(cell, intended)| *cell != *intended && *cell != UNSOLVED)
     }
 
-    pub(super) fn is_correctly_solved(&self) -> bool {
-        self.canvas.document.solution().cells() == self.intended_solution.cells()
+    pub(super) fn is_correctly_solved(canvas: &CanvasGui) -> bool {
+        *canvas.cells() == *canvas.document.solution().cells()
     }
 
     /// Whether the compact layout's "Correctly solved" window is up: the puzzle has come out
     /// right, and the window hasn't been dismissed yet.
-    pub(super) fn solve_unannounced(&self) -> bool {
-        !self.solved_announced && self.replay.is_some() && self.is_correctly_solved()
+    pub(super) fn solve_unannounced(&self, canvas: &CanvasGui) -> bool {
+        !self.solved_announced && self.replay.is_some() && Self::is_correctly_solved(canvas)
     }
 
-    fn infer_background(&mut self) {
-        let mut grid = self.canvas.document.solution().to_partial();
+    fn infer_background(&mut self, canvas: &mut CanvasGui) {
+        let mut grid = canvas.progress();
 
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
-            let picture = self.canvas.document.solution();
             for (index, cell) in grid.iter_enumerated() {
-                let current_color = picture.cells()[index];
-                if cell.is_known() && cell.known_or() != Some(current_color) {
+                if cell.is_known() && cell.known_or() != Some(canvas.cell(index)) {
                     changes.insert(index, cell.known_or().unwrap());
                 }
             }
 
             if !changes.is_empty() {
-                self.canvas
-                    .perform(Action::ChangeColor { changes }, ActionMood::Merge);
+                canvas.perform(Action::ChangeColor { changes }, ActionMood::Merge);
             }
         }
     }
 
     /// What the solver does every frame, whichever layout is on screen and whatever it shows.
-    pub(super) fn solver_frame(&mut self) {
+    pub(super) fn solver_frame(&mut self, canvas: &CanvasGui) {
         // The first time the picture comes out right, freeze the solve for playback. Later
         // completions (after an undo and a redo, say) reuse this one rather than recapturing.
-        if self.replay.is_none() && self.is_correctly_solved() {
-            self.replay = Some(Replay::new(&self.canvas));
+        if self.replay.is_none() && Self::is_correctly_solved(canvas) {
+            self.replay = Some(Replay::new(canvas));
         }
     }
 
-    pub fn sidebar(&mut self, ui: &mut egui::Ui) {
+    pub fn sidebar(&mut self, ui: &mut egui::Ui, canvas: &mut CanvasGui) {
         ui.vertical(|ui| {
-            self.title_and_author(ui);
-            self.replay(ui);
+            Self::title_and_author(ui, canvas);
+            self.replay(ui, canvas);
 
-            if self.is_correctly_solved() {
+            if Self::is_correctly_solved(canvas) {
                 ui.colored_label(egui::Color32::DARK_GREEN, "Correctly solved");
-                self.description(ui);
+                Self::description(ui, canvas);
             }
 
-            self.canvas.common_sidebar_items(ui);
+            canvas.common_sidebar_items(ui);
 
             ui.separator();
-            self.rosette(ui);
+            self.rosette(ui, canvas);
 
             ui.separator();
             self.render_style_picker(ui, ScreenLayout::Desktop);
@@ -251,38 +217,38 @@ impl SolveGui {
                 if pressed.auto.changed() {
                     self.auto_changed(aid);
                 }
-                self.run_aid(aid, pressed.button.clicked());
-                if aid == Aid::DetectErrors && self.errors_detected() {
+                self.run_aid(aid, pressed.button.clicked(), canvas);
+                if aid == Aid::DetectErrors && self.errors_detected(canvas) {
                     ui.colored_label(egui::Color32::DARK_RED, "Error detected");
                 }
             }
         });
     }
 
-    pub(super) fn title_and_author(&self, ui: &mut egui::Ui) {
-        if !self.canvas.document.title.is_empty() {
-            ui.label(RichText::new(&self.canvas.document.title).strong());
+    pub(super) fn title_and_author(ui: &mut egui::Ui, canvas: &CanvasGui) {
+        if !canvas.document.title.is_empty() {
+            ui.label(RichText::new(&canvas.document.title).strong());
         }
-        if !self.canvas.document.author.is_empty() {
-            ui.label(format!("by {}", &self.canvas.document.author));
+        if !canvas.document.author.is_empty() {
+            ui.label(format!("by {}", &canvas.document.author));
         }
     }
 
     /// The solve, played back, once there is one.
-    pub(super) fn replay(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn replay(&mut self, ui: &mut egui::Ui, canvas: &CanvasGui) {
         if let Some(replay) = &mut self.replay {
-            replay.show(ui, &self.canvas);
+            replay.show(ui, canvas);
         }
     }
 
-    pub(super) fn description(&self, ui: &mut egui::Ui) {
-        if !self.canvas.document.description.is_empty() {
-            ui.label(&self.canvas.document.description);
+    pub(super) fn description(ui: &mut egui::Ui, canvas: &CanvasGui) {
+        if !canvas.document.description.is_empty() {
+            ui.label(&canvas.document.description);
         }
     }
 
     /// The cell under the pointer, and the runs of its color through it in each direction.
-    fn rosette(&self, ui: &mut egui::Ui) {
+    fn rosette(&self, ui: &mut egui::Ui, canvas: &CanvasGui) {
         let scale = 20.0;
         // A triddler's rosette has six rhombus arms instead of a square grid's four square
         // ones, and a rhombus is wider across its short diagonal than it is long — so it
@@ -295,23 +261,32 @@ impl SolveGui {
         };
 
         if let Some(cell) = self.hovered_cell {
-            let picture = self.canvas.document.solution();
+            let picture = canvas.document.solution();
+            let cells = canvas.cells();
 
             let (resp, painter) =
                 ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
             let rect = resp.rect;
 
             if triangular {
-                super::triddler::draw_rosette(ui, &painter, picture, cell, rect.center(), scale);
+                super::triddler::draw_rosette(
+                    ui,
+                    &painter,
+                    picture,
+                    &cells,
+                    cell,
+                    rect.center(),
+                    scale,
+                );
             } else {
-                let color = picture.cells()[cell];
-                let rgb = picture.palette()[&color].rgb;
+                let color = cells[cell];
+                let rgb = color_info(picture.palette(), color).rgb;
                 let text = if color == UNSOLVED { "?" } else { " " };
 
                 // One run per clue family: two arms each for a square grid.
                 // `arm_directions` lists each family's two directions adjacently, matching
                 // the `(backward, forward)` pairs `runs_at_cell` returns.
-                let runs = picture.runs_at_cell(cell);
+                let runs = picture.runs_at_cell(&cells, cell);
                 let dirs = picture.arm_directions();
                 let size = Vec2::new(20.0, 20.0);
                 let center = rect.min + Vec2::new(scale, scale);
@@ -409,30 +384,28 @@ impl SolveGui {
 
     /// Run the aid if it was `requested`, or if it runs after every move, unless what it would
     /// work out is already up to date.
-    pub(super) fn run_aid(&mut self, aid: Aid, requested: bool) {
+    pub(super) fn run_aid(&mut self, aid: Aid, requested: bool, canvas: &mut CanvasGui) {
         let run = requested || *self.auto_mut(aid);
         match aid {
             Aid::AnalyzeLines if run => {
                 let clues = &self.clues;
-                let picture = self.canvas.document.solution();
-                let grid = picture.to_partial();
-                self.line_analysis
-                    .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
+                self.line_analysis.get_or_refresh(canvas.version, || {
+                    Some(clues.analyze_lines(&canvas.progress()))
+                });
             }
             Aid::MarkResolvedClues if run => {
                 let clues = &self.clues;
-                let picture = self.canvas.document.solution();
-                let grid = picture.to_partial();
-                self.fixed_clues
-                    .get_or_refresh(self.canvas.version, || Some(clues.fixed_clues(&grid)));
+                self.fixed_clues.get_or_refresh(canvas.version, || {
+                    Some(clues.fixed_clues(&canvas.progress()))
+                });
             }
             // Checked as the answer is shown, by `errors_detected`.
             Aid::DetectErrors if requested => {
-                self.errors_checked = Some(self.canvas.version);
+                self.errors_checked = Some(canvas.version);
             }
-            Aid::InferBackground if run && self.last_inferred_version != self.canvas.version => {
-                self.infer_background();
-                self.last_inferred_version = self.canvas.version;
+            Aid::InferBackground if run && self.last_inferred_version != canvas.version => {
+                self.infer_background(canvas);
+                self.last_inferred_version = canvas.version;
             }
             _ => {}
         }
@@ -440,9 +413,9 @@ impl SolveGui {
 
     /// Whether "Detect errors" has something to say: there's a cell that doesn't match the
     /// answer, and the aid is either on, or was run since the last move.
-    pub(super) fn errors_detected(&self) -> bool {
-        (self.detect_errors || self.errors_checked == Some(self.canvas.version))
-            && self.detect_any_errors()
+    pub(super) fn errors_detected(&self, canvas: &CanvasGui) -> bool {
+        (self.detect_errors || self.errors_checked == Some(canvas.version))
+            && Self::detect_any_errors(canvas)
     }
 
     /// The block of one color under the pointer, for the gutters to report. `None` when the
@@ -451,18 +424,19 @@ impl SolveGui {
     /// This lags the pointer by a frame — `hovered_cell` is set by the canvas, which is drawn
     /// after the gutters — but so does the sidebar's rosette, and egui repaints on every pointer
     /// move anyway.
-    fn hover_blocks(&self) -> Option<super::HoverBlocks> {
+    fn hover_blocks(&self, canvas: &CanvasGui) -> Option<super::HoverBlocks> {
         let cell = self.hovered_cell?;
-        let picture = self.canvas.document.solution();
+        let picture = canvas.document.solution();
+        let cells = canvas.cells();
         Some(super::HoverBlocks {
-            by_family: picture.blocks_at_cell(cell),
-            rgb: picture.palette()[&picture.cells()[cell]].rgb,
+            by_family: picture.blocks_at_cell(&cells, cell),
+            rgb: color_info(picture.palette(), cells[cell]).rgb,
         })
     }
 
-    pub fn body(&mut self, ui: &mut egui::Ui, scale: f32) {
-        let is_stale = !self.line_analysis.fresh(self.canvas.version);
-        let hover = self.hover_blocks();
+    pub fn body(&mut self, ui: &mut egui::Ui, scale: f32, canvas: &mut CanvasGui) {
+        let is_stale = !self.line_analysis.fresh(canvas.version);
+        let hover = self.hover_blocks(canvas);
 
         // A hexagon's three clue blocks run along the lane directions, so they can't be laid out
         // as panels beside the grid; they share the picture's painter instead.
@@ -475,14 +449,13 @@ impl SolveGui {
                 hover,
             };
             let (hovered, clicked) =
-                self.canvas
-                    .canvas_with_clues(ui, scale, self.render_style, Some(overlay));
+                canvas.canvas_with_clues(ui, scale, self.render_style, Some(overlay));
             self.hovered_cell = hovered;
             // A finger's tap belongs to the cursor, which can't reach the clues.
             if let Some(id) = clicked
-                && self.canvas.touch_area.is_none()
+                && canvas.touch_area.is_none()
             {
-                self.toggle_checked_clue(id);
+                Self::toggle_checked_clue(canvas, id);
             }
             return;
         }
@@ -492,12 +465,7 @@ impl SolveGui {
         let hint = |family: FamilyIdx| -> Option<BlockHint> {
             let hover = hover.as_ref()?;
             let &(lane, len) = hover.by_family.get(usize::from(family))?;
-            let (_, line) = self
-                .canvas
-                .document
-                .solution()
-                .lane_map()
-                .split_family(lane);
+            let (_, line) = self.clues.lane_map().split_family(lane);
             Some(BlockHint {
                 line,
                 len,
@@ -522,7 +490,7 @@ impl SolveGui {
                     // so one family's worth is the slice over that family's range. Family 0 is
                     // the rows, family 1 the columns.
                     let lane_map = self.clues.lane_map();
-                    let checked = &self.canvas.checked_clues;
+                    let checked = &canvas.checked_clues;
                     // The gutter numbers its lines within the family, so it gets plain slices:
                     // an index into one of these is a line number, not a `LaneIdx`.
                     let marks = |family: FamilyIdx, hint: Option<BlockHint>| GutterMarks {
@@ -550,16 +518,16 @@ impl SolveGui {
                     );
                     // A click lands in one gutter or the other, never both.
                     clicked_clue = col_clicked.or(row_clicked);
-                    self.hovered_cell = self.canvas.canvas(ui, scale, self.render_style);
+                    self.hovered_cell = canvas.canvas(ui, scale, self.render_style);
                     ui.end_row();
                 });
         });
 
         // A finger's tap belongs to the cursor, which can't reach the clues.
         if let Some(id) = clicked_clue
-            && self.canvas.touch_area.is_none()
+            && canvas.touch_area.is_none()
         {
-            self.toggle_checked_clue(id);
+            Self::toggle_checked_clue(canvas, id);
         }
     }
 }
@@ -629,17 +597,16 @@ impl Replay {
 
     /// The picture as it stood after `step` painting steps of the solve.
     ///
-    /// Each undo entry holds the colors its step painted over, so starting from the picture as it
-    /// stands *now* and applying them newest-first walks backwards through the solve. Anything
+    /// Each undo entry holds the colors its step painted over, so starting from the progress as
+    /// it stands *now* and applying them newest-first walks backwards through the solve. Anything
     /// the user painted after finishing gets unwound on the way past.
     fn frame(&self, canvas: &CanvasGui, step: usize) -> TiVec<CellIdx, Color> {
         let frames = self.frames(canvas);
         let position = frames[step.min(frames.len() - 1)];
-        let mut cells: TiVec<CellIdx, Color> =
-            canvas.document.solution().cells().raw.to_vec().into();
+        let mut cells = canvas.cells().into_owned();
         for undone in canvas.undo_stack[position..].iter().rev() {
             // Painting is the only thing that reaches the solver's undo stack: its palette editor
-            // is read-only, and every `ReplaceDocument` in the app goes to the editor's canvas.
+            // is read-only, and every `ReplaceDocument` in the app goes to the editor.
             if let Action::ChangeColor { changes } = undone {
                 for (cell, was) in changes {
                     cells[*cell] = *was;
@@ -685,17 +652,13 @@ impl Replay {
         for (cell, color) in cells.iter_enumerated() {
             // Unknown is gray whatever the render style is: the traditional styles leave it the
             // same white as the background, which would make most of a replay invisible.
-            let fill = if *color == UNSOLVED {
-                Color32::from_rgb(128, 128, 128)
-            } else {
-                let (r, g, b) = palette[color].rgb;
-                Color32::from_rgb(r, g, b)
-            };
+            let (r, g, b) = color_info(palette, *color).rgb;
+            let fill = Color32::from_rgb(r, g, b);
             let origin = picture.cell_origin(cell);
             // A `Corner` color is a half-square — a trianogram's diagonal — and the canvas draws
             // it as one, so the replay has to as well. (A triddler's triangular *cells* are a
             // different thing, and come out of the geometry below.)
-            shapes.push(match palette[color].corner {
+            shapes.push(match color_info(palette, *color).corner {
                 Some(corner) => super::triano::half_cell(
                     corner,
                     fill,
@@ -1199,14 +1162,14 @@ pub fn draw_dyn_clues(
 mod replay_tests {
     use super::*;
     use crate::gui::NonogramGui;
-    use crate::puzzle::{BACKGROUND, Solution};
+    use crate::puzzle::{BACKGROUND, Document, DynSolution, Solution};
 
     fn canvas() -> CanvasGui {
         NonogramGui::new(Document::from_solution(
             DynSolution::Square(Solution::blank_bw(3, 3)),
             "test".to_string(),
         ))
-        .editor_gui
+        .canvas
     }
 
     fn paint(canvas: &mut CanvasGui, cells: &[CellIdx], color: Color) {
@@ -1219,7 +1182,7 @@ mod replay_tests {
     }
 
     fn cells(canvas: &CanvasGui) -> TiVec<CellIdx, Color> {
-        canvas.document.solution().cells().raw.to_vec().into()
+        canvas.cells().into_owned()
     }
 
     /// The replay's `n`th frame is the picture as it stood after `n` actions — including the

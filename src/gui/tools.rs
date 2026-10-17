@@ -244,14 +244,9 @@ impl CanvasGui {
     /// The lasso never arrives here: it has to keep tracking the pointer once it leaves the
     /// grid, so `canvas_with_clues` deals with it before there is a cell to speak of.
     pub(super) fn pointer_tool_input(&mut self, cell: CellIdx, pointer: PaintPointer, tool: Tool) {
-        let picture = self.document.solution();
         // The meaning of "erase" differs depending on the mode:
-        let erased = if picture.palette().contains_key(&UNSOLVED) {
-            UNSOLVED
-        } else {
-            BACKGROUND
-        };
-        let under_pointer = picture.cells()[cell];
+        let erased = if self.solving { UNSOLVED } else { BACKGROUND };
+        let under_pointer = self.cell(cell);
         let paint_color = match pointer.intent {
             PaintIntent::Erase => erased,
             // While solving, a cell that's already been ruled out goes back to undecided, so the
@@ -265,15 +260,13 @@ impl CanvasGui {
             PaintIntent::Current => BACKGROUND,
         };
         // Paranoia, since it would cause a crash.
+        let palette = self.document.solution().palette();
+        let paintable = palette.contains_key(&paint_color) || paint_color == erased;
         debug_assert!(
-            picture.palette().contains_key(&paint_color),
+            paintable,
             "painting with {paint_color:?}, which is not in the palette"
         );
-        let paint_color = if picture.palette().contains_key(&paint_color) {
-            paint_color
-        } else {
-            BACKGROUND
-        };
+        let paint_color = if paintable { paint_color } else { BACKGROUND };
 
         match tool {
             Tool::Pencil => {
@@ -457,7 +450,7 @@ mod line_tool_tests {
             DynSolution::Square(sol),
             "test".to_string(),
         ))
-        .editor_gui;
+        .canvas;
         gui.current_tool = Tool::LineAlongLane;
         gui.drag_start_color = Color(1);
         gui
@@ -524,7 +517,7 @@ mod line_tool_tests {
             DynSolution::Tri(sol),
             "test".to_string(),
         ))
-        .editor_gui;
+        .canvas;
         gui.current_tool = Tool::LineAlongLane;
         gui.drag_start_color = Color(1);
 
@@ -596,7 +589,7 @@ mod paint_pointer_tests {
             DynSolution::Square(Solution::blank_bw(5, 5)),
             "test".to_string(),
         ))
-        .editor_gui;
+        .canvas;
         gui.current_tool = tool;
         gui.current_color = Color(1);
         gui
@@ -609,13 +602,13 @@ mod paint_pointer_tests {
             solution.cells[at(x, 0)] = Color(1);
         }
         let doc = Document::from_solution(DynSolution::Square(solution), "test".to_string());
-        let mut canvas = NonogramGui::new_solving(doc).solve_gui.unwrap().canvas;
+        let mut canvas = NonogramGui::new_solving(doc).canvas;
         canvas.current_color = Color(1);
         canvas
     }
 
     fn cell(gui: &CanvasGui, cell: CellIdx) -> Color {
-        gui.document.solution().cells()[cell]
+        gui.cell(cell)
     }
 
     /// The pencil paints with whatever the press found to do, for the whole drag, and a press on

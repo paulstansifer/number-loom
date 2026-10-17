@@ -38,7 +38,7 @@ const NEW_TRI_SIDE: i32 = 5;
 impl NonogramGui {
     fn share_string(&self) -> String {
         let woven = share_string(
-            &self.editor_gui.document,
+            &self.canvas.document,
             self.share_progress.as_ref(),
             self.save_solve_progress,
         );
@@ -98,7 +98,7 @@ impl NonogramGui {
     }
 
     pub(super) fn open_new_dialog(&mut self) {
-        let clue_style = self.editor_gui.document.solution().clue_style();
+        let clue_style = self.canvas.document.solution().clue_style();
         self.new_dialog = Some(NewPuzzleDialog {
             shape: NewPuzzleShape::Square,
             clue_style,
@@ -118,7 +118,7 @@ impl NonogramGui {
 
     pub(super) fn open_save_share(&mut self) {
         self.share_progress = self.solve_progress();
-        self.quality_warnings = self.editor_gui.document.quality_check();
+        self.quality_warnings = self.canvas.document.quality_check();
         self.show_save_share_window = true;
         self.share_string.clear(); // needs to be regenerated
     }
@@ -133,10 +133,10 @@ impl NonogramGui {
             ScreenLayout::Compact => ctx.content_rect().width() - 2.0 * compact::DIALOG_MARGIN,
         };
 
+        // Whatever this ends up being, it lands in the editor (see `replace_document`), and some
+        // of it is then opened for solving. Deferred, rather than done in the button handler,
+        // because `dialog` borrows out of `self`.
         let mut new_document = None;
-        // A new puzzle is something to draw, so it always lands in the editor. Deferred,
-        // rather than done in the button handler, because `dialog` borrows out of `self`.
-        let mut leave_solve_mode = false;
         if let Some(dialog) = self.new_dialog.as_mut() {
             let (_, back) = compact::dialog(
                 ctx,
@@ -198,7 +198,6 @@ impl NonogramGui {
                             new_solution,
                             "blank.xml".to_owned(),
                         ));
-                        leave_solve_mode = true;
                     }
                 },
             );
@@ -335,7 +334,7 @@ impl NonogramGui {
                     if compact::can_share() {
                         if ui.button(icons::ICON_SHARE).clicked() {
                             compact::share(
-                                &self.editor_gui.document.title,
+                                &self.canvas.document.title,
                                 &self.share_string,
                                 self.share_as_link,
                             );
@@ -344,12 +343,12 @@ impl NonogramGui {
                         ctx.copy_text(self.share_string.clone());
                         // There's nothing else to show that it happened, on a phone.
                         if layout == ScreenLayout::Compact {
-                            self.editor_gui.status.set(StatusMessage::info("Copied"));
+                            self.canvas.status.set(StatusMessage::info("Copied"));
                         }
                     }
 
-                    if self.editor_gui.document.license == CC_BY {
-                        if self.editor_gui.document.author.trim().is_empty() {
+                    if self.canvas.document.license == CC_BY {
+                        if self.canvas.document.author.trim().is_empty() {
                             ui.label(
                                 "(The author field in your puzzle is empty; please use \
                                 'anonymous' if that's what you want.)",
@@ -389,7 +388,7 @@ impl NonogramGui {
                                 next_enter_solve_mode = true;
                             }
                             Err(e) => {
-                                self.editor_gui.status.set(StatusMessage::error(format!(
+                                self.canvas.status.set(StatusMessage::error(format!(
                                     "Error loading WOVEN puzzle: {e:#}"
                                 )));
                             }
@@ -409,14 +408,14 @@ impl NonogramGui {
                     ui.horizontal(|ui| {
                         let filename_label = ui.label("Filename:");
                         ui.add(
-                            egui::TextEdit::singleline(&mut self.editor_gui.document.file)
+                            egui::TextEdit::singleline(&mut self.canvas.document.file)
                                 .desired_width(text_width.min(450.0)),
                         )
                         .labelled_by(filename_label.id);
                     });
                     if ui.button("Save").clicked() {
                         let mut document_copy: UncertainDocument = document_to_save(
-                            &self.editor_gui.document,
+                            &self.canvas.document,
                             self.share_progress.as_ref(),
                             self.save_solve_progress,
                         )
@@ -457,36 +456,28 @@ impl NonogramGui {
         // Out here, so that an error still gets reported if the window was closed while the file
         // dialog was open.
         if let Ok(Err(e)) = self.save_result_receiver.try_recv() {
-            self.editor_gui
+            self.canvas
                 .status
                 .set(StatusMessage::error(format!("Error saving file: {e:#}")));
         }
 
         if let Some(new_document) = new_document {
-            let document = Box::new(new_document);
-            self.editor_gui
-                .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
+            self.replace_document(new_document);
             self.new_dialog = None;
             self.library_dialog = None;
             self.show_save_share_window = false;
-        }
-        if leave_solve_mode {
-            self.exit_solve_mode();
         }
         if next_enter_solve_mode {
             self.enter_solve_mode();
         }
     }
 
-    /// The grid as it's being solved (or, outside of solve mode, as it was loaded), if anything
-    /// on it is known.
+    /// The progress towards solving the puzzle, if anything is known.
     fn solve_progress(&mut self) -> Option<PartialSolution> {
-        let progress = match &mut self.solve_gui {
-            Some(solve_gui) => solve_gui.canvas.document.solution().to_partial(),
-            None => self.editor_gui.document.in_progress()?.clone(),
-        };
-        let palette = self.editor_gui.document.solution().palette();
-        has_progress(&progress.raw, palette.keys().copied()).then_some(progress)
+        let document = &self.canvas.document;
+        let progress = document.in_progress()?;
+        let palette = document.solution().palette();
+        has_progress(&progress.raw, palette.keys().copied()).then(|| progress.clone())
     }
 
     /// Ask for a file to open. It turns up in `receive_opened_file`.
@@ -503,7 +494,7 @@ impl NonogramGui {
                 // We need a picture to edit it:
                 let document =
                     match crate::import::load(&handle.file_name(), handle.read().await, None) {
-                        Ok(document) => document.into_document_with_backtracking().await,
+                        Ok(document) => document.into_document_with_deadline().await,
                         Err(e) => Err(e),
                     };
 
@@ -515,13 +506,9 @@ impl NonogramGui {
     fn receive_opened_file(&mut self) {
         if let Ok(result) = self.opened_file_receiver.try_recv() {
             match result {
-                Ok(document) => {
-                    let document = Box::new(document);
-                    self.editor_gui
-                        .perform(Action::ReplaceDocument { document }, ActionMood::Normal);
-                }
+                Ok(document) => self.replace_document(document),
                 Err(e) => {
-                    self.editor_gui
+                    self.canvas
                         .status
                         .set(StatusMessage::error(format!("Error loading file: {e:#}")));
                 }
