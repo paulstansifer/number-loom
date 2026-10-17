@@ -45,7 +45,6 @@ pub struct SolveGui {
     errors_checked: Option<Version>,
     /// Whether the compact layout has announced that the puzzle is solved (and the user has
     /// dismissed the announcement), so that it doesn't again.
-    #[serde(default)]
     pub(super) solved_announced: bool,
     #[serde(skip)]
     pub hovered_cell: Option<CellIdx>,

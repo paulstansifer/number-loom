@@ -1,7 +1,7 @@
 //! The document-wide controls across the top of the window, and the three dialogs they open.
 //!
 //! The New, Library, and Save/share windows are opened from here (or from the compact layout's
-//! menu), and drawn and dismissed by `dialogs`.
+//! menu), and drawn and dismissed by `dialogs`, which has a method for each.
 
 use super::*;
 use crate::formats::partial_cells::has_progress;
@@ -35,15 +35,69 @@ const NEW_SQUARE_SIZE: (usize, usize) = (20, 20);
 /// puzzle's size, presumably).
 const NEW_TRI_SIDE: i32 = 5;
 
-impl NonogramGui {
-    fn share_string(&self) -> String {
-        let woven = share_string(
-            &self.canvas.document,
-            self.share_progress.as_ref(),
-            self.save_solve_progress,
-        );
+impl NewPuzzleDialog {
+    /// A blank puzzle, of the shape and with the clues chosen.
+    fn new_document(&self) -> Document {
+        let new_solution = match self.shape {
+            NewPuzzleShape::Square => {
+                let (x_size, y_size) = NEW_SQUARE_SIZE;
+                DynSolution::Square(Solution::new(
+                    self.clue_style,
+                    match self.clue_style {
+                        ClueStyle::Nono => import::bw_palette(),
+                        ClueStyle::Triano => import::triano_palette(),
+                    },
+                    crate::geometry::Geometry::new(crate::geometry::Rect {
+                        width: x_size,
+                        height: y_size,
+                    }),
+                    vec![BACKGROUND; x_size * y_size].into(),
+                ))
+            }
+            NewPuzzleShape::Triangular => {
+                let geometry =
+                    crate::geometry::Geometry::new(crate::geometry::Outline::hexagon(NEW_TRI_SIDE));
+                let cells = vec![BACKGROUND; geometry.cell_count()].into();
+                DynSolution::Tri(Solution::new(
+                    ClueStyle::Nono,
+                    import::bw_palette(),
+                    geometry,
+                    cells,
+                ))
+            }
+        };
+        Document::from_solution(new_solution, "blank.xml".to_owned())
+    }
+}
 
-        if self.share_as_link {
+/// The Save/share window, while it's open.
+pub(super) struct SaveShareDialog {
+    /// The solve progress there was when the window was opened, if there was any.
+    progress: Option<PartialSolution>,
+    /// Whether to put `progress` in what this saves and shares.
+    save_progress: bool,
+    /// Whether to share a link, rather than a bare share string.
+    as_link: bool,
+    /// What there is to share, as things stand: empty when it needs working out again.
+    shared: String,
+    /// A share string pasted in, to load.
+    pasted: String,
+    quality_warnings: Vec<String>,
+}
+
+impl SaveShareDialog {
+    /// `document`, as this saves and shares it: with `progress` in it if `save_progress` (and
+    /// none otherwise, even if it was loaded with some).
+    fn document_to_save(&self, document: &Document) -> Document {
+        let mut document = document.clone();
+        document.set_in_progress(self.progress.clone().filter(|_| self.save_progress));
+        document
+    }
+
+    /// What to share: a share string, or a link with one in it.
+    fn shared(&self, document: &Document) -> String {
+        let woven = crate::formats::woven::to_woven(&self.document_to_save(document)).unwrap();
+        if self.as_link {
             // A share string is broken into lines, which a link can't be. (Reading it back
             // ignores whitespace either way.)
             let woven: String = woven.split_whitespace().collect();
@@ -52,7 +106,9 @@ impl NonogramGui {
             woven
         }
     }
+}
 
+impl NonogramGui {
     /// The document-wide controls across the top: zoom, the New/Library/Open/Save dialogs, and
     /// the Edit/Puzzle mode toggle. Runs before the sidebar and canvas each frame, so a mode
     /// switched here takes effect on the same frame.
@@ -65,12 +121,12 @@ impl NonogramGui {
             if ui.button(icons::ICON_ZOOM_IN).clicked()
                 || (!typing && ui.input(|i| i.key_pressed(egui::Key::Equals)))
             {
-                self.scale = (self.scale + ZOOM_STEP).min(MAX_SCALE);
+                self.view.zoom_in();
             }
             if ui.button(icons::ICON_ZOOM_OUT).clicked()
                 || (!typing && ui.input(|i| i.key_pressed(egui::Key::Minus)))
             {
-                self.scale = (self.scale - ZOOM_STEP).max(MIN_SCALE);
+                self.view.zoom_out();
             }
             if ui.button("New").clicked() {
                 self.open_new_dialog();
@@ -82,7 +138,7 @@ impl NonogramGui {
                 self.open_file();
             }
             if ui.button("Save/share").clicked() {
-                self.open_save_share();
+                self.open_save_share(false);
             }
 
             ui.separator();
@@ -116,359 +172,329 @@ impl NonogramGui {
         });
     }
 
-    pub(super) fn open_save_share(&mut self) {
-        self.share_progress = self.solve_progress();
-        self.quality_warnings = self.canvas.document.quality_check();
-        self.show_save_share_window = true;
-        self.share_string.clear(); // needs to be regenerated
+    /// Open the Save/share window, offering a link to start with if `as_link`, and otherwise a
+    /// bare share string.
+    pub(super) fn open_save_share(&mut self, as_link: bool) {
+        self.save_share = Some(SaveShareDialog {
+            progress: self.solve_progress(),
+            save_progress: false,
+            as_link,
+            shared: String::new(),
+            pasted: String::new(),
+            quality_warnings: self.canvas.document.quality_check(),
+        });
     }
 
     /// The New, Library and Save/share dialogs, whichever are open, and what comes back from the
     /// file and library loads they (and Open) started. Floating windows on the desktop; the
     /// whole screen in the compact layout.
     pub(super) fn dialogs(&mut self, ctx: &egui::Context, layout: ScreenLayout) {
-        // How wide the Save/share window's text boxes are.
+        // Each of these can come back with a document to open. It lands in the editor (see
+        // `replace_document`), and the Library's and pasted ones are then opened for solving.
+        let new_puzzle = self.new_puzzle_dialog(ctx, layout).map(|doc| (doc, false));
+        self.receive_library();
+        let from_library = self.library_dialog(ctx, layout).map(|doc| (doc, true));
+        self.receive_opened_file();
+        let pasted = self.save_share_dialog(ctx, layout).map(|doc| (doc, true));
+        self.receive_save_result();
+
+        if let Some((document, for_solving)) = pasted.or(from_library).or(new_puzzle) {
+            self.replace_document(document);
+            self.new_dialog = None;
+            self.library_dialog = None;
+            self.save_share = None;
+            if for_solving {
+                self.enter_solve_mode();
+            }
+        }
+    }
+
+    /// The New puzzle dialog, if it's open. Returns the new puzzle, once it's been asked for.
+    fn new_puzzle_dialog(&mut self, ctx: &egui::Context, layout: ScreenLayout) -> Option<Document> {
+        let dialog = self.new_dialog.as_mut()?;
+        let mut new_document = None;
+        let (_, back) = compact::dialog(
+            ctx,
+            layout,
+            egui::Window::new("New puzzle"),
+            "New puzzle",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut dialog.shape, NewPuzzleShape::Square, "Square");
+                    ui.radio_value(&mut dialog.shape, NewPuzzleShape::Triangular, "Triddler");
+                });
+
+                // Trianogram clues on a triddler are rejected at construction, so the clue style
+                // is only a choice for a square puzzle.
+                if dialog.shape == NewPuzzleShape::Square {
+                    ui.radio_value(&mut dialog.clue_style, ClueStyle::Nono, "Nonogram");
+                    ui.radio_value(&mut dialog.clue_style, ClueStyle::Triano, "Trianogram");
+                }
+
+                if ui.button("Ok").clicked() {
+                    new_document = Some(dialog.new_document());
+                }
+            },
+        );
+        if back {
+            self.new_dialog = None;
+        }
+        new_document
+    }
+
+    /// Take in the library, if it has arrived since the Library button asked for it.
+    fn receive_library(&mut self) {
+        if let Ok(result) = self.library_receiver.try_recv() {
+            self.library_dialog = Some(match result {
+                Ok(library) => LibraryStatus::Loaded(library),
+                // `{:#}` rather than `to_string`, so the dialog shows the whole context chain
+                // ("couldn't fetch https://...: HTTP status 404") and not just its last link.
+                Err(e) => LibraryStatus::Failed(format!("{e:#}")),
+            });
+        }
+    }
+
+    /// The Library dialog, if it's open. Returns the puzzle chosen from it, if one was.
+    fn library_dialog(&mut self, ctx: &egui::Context, layout: ScreenLayout) -> Option<Document> {
+        let status = self.library_dialog.as_ref()?;
+        // The previews are a fixed width, so a phone only has room for one across.
+        let columns = match layout {
+            ScreenLayout::Desktop => 2,
+            ScreenLayout::Compact => 1,
+        };
+        let mut chosen = None;
+        let mut close = false;
+        let (_, back) = compact::dialog(
+            ctx,
+            layout,
+            egui::Window::new("Puzzle Library").max_size(ctx.content_rect().size() * 0.9),
+            "Puzzle Library",
+            |ui| {
+                match status {
+                    LibraryStatus::Loading => {
+                        ui.vertical_centered(|ui| {
+                            ui.add(egui::Spinner::new());
+                            ui.label("Loading library...");
+                        });
+                    }
+                    LibraryStatus::Loaded(docs) => {
+                        let mut grid = |ui: &mut egui::Ui| {
+                            egui::Grid::new("library_grid").show(ui, |ui| {
+                                for (i, doc) in docs.iter().enumerate() {
+                                    if gallery::gallery_puzzle_preview(ui, doc).clicked() {
+                                        chosen = Some(doc.clone());
+                                    }
+                                    if i % columns == columns - 1 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                        };
+                        match layout {
+                            ScreenLayout::Desktop => {
+                                egui::ScrollArea::vertical().show(ui, grid);
+                            }
+                            // The whole screen scrolls already.
+                            ScreenLayout::Compact => grid(ui),
+                        }
+                    }
+                    LibraryStatus::Failed(e) => {
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new(format!("Failed to load library: {}", e))
+                                    .color(Color32::DARK_RED),
+                            );
+                        });
+                    }
+                }
+                // The compact layout's dialogs close with their back button.
+                if layout == ScreenLayout::Desktop {
+                    ui.separator();
+                    close = ui.button("Cancel").clicked();
+                }
+            },
+        );
+        if close || back {
+            self.library_dialog = None;
+        }
+        chosen
+    }
+
+    /// The Save/share window, if it's open. Returns a puzzle pasted into it to load, if one was.
+    fn save_share_dialog(&mut self, ctx: &egui::Context, layout: ScreenLayout) -> Option<Document> {
+        let dialog = self.save_share.as_mut()?;
+        let canvas = &mut self.canvas;
+        // How wide the text boxes are.
         let text_width = match layout {
             ScreenLayout::Desktop => 730.0,
             ScreenLayout::Compact => ctx.content_rect().width() - 2.0 * compact::DIALOG_MARGIN,
         };
-
-        // Whatever this ends up being, it lands in the editor (see `replace_document`), and some
-        // of it is then opened for solving. Deferred, rather than done in the button handler,
-        // because `dialog` borrows out of `self`.
-        let mut new_document = None;
-        if let Some(dialog) = self.new_dialog.as_mut() {
-            let (_, back) = compact::dialog(
-                ctx,
-                layout,
-                egui::Window::new("New puzzle"),
-                "New puzzle",
-                |ui| {
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut dialog.shape, NewPuzzleShape::Square, "Square");
-                        ui.radio_value(&mut dialog.shape, NewPuzzleShape::Triangular, "Triddler");
-                    });
-
-                    // Trianogram clues on a triddler are rejected at construction, so the clue
-                    // style is only a choice for a square puzzle.
-                    if dialog.shape == NewPuzzleShape::Square {
-                        ui.radio_value(
-                            &mut dialog.clue_style,
-                            crate::puzzle::ClueStyle::Nono,
-                            "Nonogram",
-                        );
-                        ui.radio_value(
-                            &mut dialog.clue_style,
-                            crate::puzzle::ClueStyle::Triano,
-                            "Trianogram",
-                        );
-                    }
-
-                    if ui.button("Ok").clicked() {
-                        let new_solution = match dialog.shape {
-                            NewPuzzleShape::Square => {
-                                let (x_size, y_size) = NEW_SQUARE_SIZE;
-                                DynSolution::Square(Solution::new(
-                                    dialog.clue_style,
-                                    match dialog.clue_style {
-                                        ClueStyle::Nono => import::bw_palette(),
-                                        ClueStyle::Triano => import::triano_palette(),
-                                    },
-                                    crate::geometry::Geometry::new(crate::geometry::Rect {
-                                        width: x_size,
-                                        height: y_size,
-                                    }),
-                                    vec![BACKGROUND; x_size * y_size].into(),
-                                ))
-                            }
-                            NewPuzzleShape::Triangular => {
-                                let geometry = crate::geometry::Geometry::new(
-                                    crate::geometry::Outline::hexagon(NEW_TRI_SIDE),
-                                );
-                                let cells = vec![BACKGROUND; geometry.cell_count()].into();
-                                DynSolution::Tri(Solution::new(
-                                    ClueStyle::Nono,
-                                    import::bw_palette(),
-                                    geometry,
-                                    cells,
-                                ))
-                            }
-                        };
-                        new_document = Some(Document::from_solution(
-                            new_solution,
-                            "blank.xml".to_owned(),
-                        ));
-                    }
-                },
-            );
-            if back {
-                self.new_dialog = None;
-            }
+        if dialog.shared.is_empty() {
+            dialog.shared = dialog.shared(&canvas.document);
         }
 
-        if let Ok(result) = self.library_receiver.try_recv() {
-            match result {
-                Ok(library) => self.library_dialog = Some(LibraryStatus::Loaded(library)),
-                // `{:#}` rather than `to_string`, so the dialog shows the whole context chain
-                // ("couldn't fetch https://...: HTTP status 404") and not just its last link.
-                Err(e) => self.library_dialog = Some(LibraryStatus::Failed(format!("{e:#}"))),
-            }
-        }
-
-        let mut next_enter_solve_mode = false;
-        let mut close_library = false;
-        if let Some(status) = &self.library_dialog {
-            // The previews are a fixed width, so a phone only has room for one across.
-            let columns = match layout {
-                ScreenLayout::Desktop => 2,
-                ScreenLayout::Compact => 1,
-            };
-            let (_, back) = compact::dialog(
-                ctx,
-                layout,
-                egui::Window::new("Puzzle Library").max_size(ctx.content_rect().size() * 0.9),
-                "Puzzle Library",
-                |ui| {
-                    match status {
-                        LibraryStatus::Loading => {
-                            ui.vertical_centered(|ui| {
-                                ui.add(egui::Spinner::new());
-                                ui.label("Loading library...");
-                            });
-                        }
-                        LibraryStatus::Loaded(docs) => {
-                            let mut grid = |ui: &mut egui::Ui| {
-                                egui::Grid::new("library_grid").show(ui, |ui| {
-                                    for (i, doc) in docs.iter().enumerate() {
-                                        if gallery::gallery_puzzle_preview(ui, doc).clicked() {
-                                            new_document = Some(doc.clone());
-                                            next_enter_solve_mode = true;
-                                            close_library = true;
-                                        }
-                                        if i % columns == columns - 1 {
-                                            ui.end_row();
-                                        }
-                                    }
-                                });
-                            };
-                            match layout {
-                                ScreenLayout::Desktop => {
-                                    egui::ScrollArea::vertical().show(ui, grid);
-                                }
-                                // The whole screen scrolls already.
-                                ScreenLayout::Compact => grid(ui),
-                            }
-                        }
-                        LibraryStatus::Failed(e) => {
-                            ui.vertical_centered(|ui| {
-                                ui.label(
-                                    RichText::new(format!("Failed to load library: {}", e))
-                                        .color(Color32::DARK_RED),
-                                );
-                            });
-                        }
-                    }
-                    // The compact layout's dialogs close with their back button.
-                    if layout == ScreenLayout::Desktop {
-                        ui.separator();
-                        if ui.button("Cancel").clicked() {
-                            close_library = true;
-                        }
-                    }
-                },
-            );
-            close_library |= back;
-        }
-        if close_library {
-            self.library_dialog = None;
-        }
-
-        self.receive_opened_file();
-
-        if self.show_save_share_window {
-            if self.share_string.is_empty() {
-                self.share_string = self.share_string();
-            }
-            let (_, back) = compact::dialog(
-                ctx,
-                layout,
-                egui::Window::new("Save/share")
-                    .open(&mut self.show_save_share_window)
-                    .default_width(780.0),
-                "Save/share",
-                |ui| {
-                    if !self.quality_warnings.is_empty() {
-                        if self.quality_warnings.len() == 1 {
-                            ui.label("Warning:");
-                        } else {
-                            ui.label("Warnings:");
-                        }
-                        for warning in &self.quality_warnings {
-                            ui.label(warning);
-                        }
-                        ui.separator();
-                    }
-                    let sh_ui_1 = ui.add_enabled(
-                        self.share_progress.is_some(),
-                        egui::Checkbox::new(&mut self.save_solve_progress, "save solve progress"),
-                    );
-                    let sh_ui_2 = ui.radio_value(&mut self.share_as_link, false, "Share string:");
-                    let sh_ui_3 = ui.radio_value(&mut self.share_as_link, true, "Share link:");
-
-                    if sh_ui_1.changed() || sh_ui_2.changed() || sh_ui_3.changed() {
-                        self.share_string.clear();
-                    }
-
-                    let chosen = if self.share_as_link {
-                        &sh_ui_3
+        let mut open = true;
+        let mut loaded = None;
+        let mut save = false;
+        let (_, back) = compact::dialog(
+            ctx,
+            layout,
+            egui::Window::new("Save/share")
+                .open(&mut open)
+                .default_width(780.0),
+            "Save/share",
+            |ui| {
+                if !dialog.quality_warnings.is_empty() {
+                    if dialog.quality_warnings.len() == 1 {
+                        ui.label("Warning:");
                     } else {
-                        &sh_ui_2
-                    };
-                    ui.add(
-                        // Read-only: an `&str` can be selected and copied, but not edited.
-                        egui::TextEdit::multiline(&mut self.share_string.as_str())
-                            .font(TextStyle::Monospace)
-                            .desired_width(text_width),
-                    )
-                    .labelled_by(chosen.id);
-                    if compact::can_share() {
-                        if ui.button(icons::ICON_SHARE).clicked() {
-                            compact::share(
-                                &self.canvas.document.title,
-                                &self.share_string,
-                                self.share_as_link,
-                            );
-                        }
-                    } else if ui.button("Copy to clipboard").clicked() {
-                        ctx.copy_text(self.share_string.clone());
-                        // There's nothing else to show that it happened, on a phone.
-                        if layout == ScreenLayout::Compact {
-                            self.canvas.status.set(StatusMessage::info("Copied"));
-                        }
+                        ui.label("Warnings:");
                     }
+                    for warning in &dialog.quality_warnings {
+                        ui.label(warning);
+                    }
+                    ui.separator();
+                }
+                let sh_ui_1 = ui.add_enabled(
+                    dialog.progress.is_some(),
+                    egui::Checkbox::new(&mut dialog.save_progress, "save solve progress"),
+                );
+                let sh_ui_2 = ui.radio_value(&mut dialog.as_link, false, "Share string:");
+                let sh_ui_3 = ui.radio_value(&mut dialog.as_link, true, "Share link:");
 
-                    if self.canvas.document.license == CC_BY {
-                        if self.canvas.document.author.trim().is_empty() {
-                            ui.label(
-                                "(The author field in your puzzle is empty; please use \
-                                'anonymous' if that's what you want.)",
-                            );
-                        }
-                        ui.add(
-                            egui::Hyperlink::from_label_and_url(
-                                "Contribute this puzzle to Number Loom",
-                                "https://forms.gle/WXxWVsEMqy3NHXmK9",
-                            )
-                            .open_in_new_tab(true),
-                        );
-                    } else {
+                if sh_ui_1.changed() || sh_ui_2.changed() || sh_ui_3.changed() {
+                    dialog.shared.clear();
+                }
+
+                let chosen = if dialog.as_link { &sh_ui_3 } else { &sh_ui_2 };
+                ui.add(
+                    // Read-only: an `&str` can be selected and copied, but not edited.
+                    egui::TextEdit::multiline(&mut dialog.shared.as_str())
+                        .font(TextStyle::Monospace)
+                        .desired_width(text_width),
+                )
+                .labelled_by(chosen.id);
+                if compact::can_share() {
+                    if ui.button(icons::ICON_SHARE).clicked() {
+                        compact::share(&canvas.document.title, &dialog.shared, dialog.as_link);
+                    }
+                } else if ui.button("Copy to clipboard").clicked() {
+                    ctx.copy_text(dialog.shared.clone());
+                    // There's nothing else to show that it happened, on a phone.
+                    if layout == ScreenLayout::Compact {
+                        canvas.status.set(StatusMessage::info("Copied"));
+                    }
+                }
+
+                if canvas.document.license == CC_BY {
+                    if canvas.document.author.trim().is_empty() {
                         ui.label(
-                            "If you'd like to contribute your puzzle to Number Loom's \
-                            library, please set the license to 'CC BY 4.0'",
+                            "(The author field in your puzzle is empty; please use \
+                            'anonymous' if that's what you want.)",
                         );
                     }
-
-                    ui.separator();
-
-                    let paste_label = ui.label("Paste a 'WOVEN' string to load:");
                     ui.add(
-                        egui::TextEdit::multiline(&mut self.pasted_string)
-                            .font(TextStyle::Monospace)
-                            .desired_width(text_width),
-                    )
-                    .labelled_by(paste_label.id);
+                        egui::Hyperlink::from_label_and_url(
+                            "Contribute this puzzle to Number Loom",
+                            "https://forms.gle/WXxWVsEMqy3NHXmK9",
+                        )
+                        .open_in_new_tab(true),
+                    );
+                } else {
+                    ui.label(
+                        "If you'd like to contribute your puzzle to Number Loom's \
+                        library, please set the license to 'CC BY 4.0'",
+                    );
+                }
 
-                    if ui.button("Load").clicked() {
-                        match crate::formats::woven::from_woven(
-                            &self.pasted_string,
-                            "unknown.woven".to_string(),
-                        ) {
-                            Ok(doc) => {
-                                new_document = Some(doc);
-                                next_enter_solve_mode = true;
-                            }
-                            Err(e) => {
-                                self.canvas.status.set(StatusMessage::error(format!(
-                                    "Error loading WOVEN puzzle: {e:#}"
-                                )));
-                            }
+                ui.separator();
+
+                let paste_label = ui.label("Paste a 'WOVEN' string to load:");
+                ui.add(
+                    egui::TextEdit::multiline(&mut dialog.pasted)
+                        .font(TextStyle::Monospace)
+                        .desired_width(text_width),
+                )
+                .labelled_by(paste_label.id);
+
+                if ui.button("Load").clicked() {
+                    match crate::formats::woven::from_woven(
+                        &dialog.pasted,
+                        "unknown.woven".to_string(),
+                    ) {
+                        Ok(doc) => loaded = Some(doc),
+                        Err(e) => {
+                            canvas.status.set(StatusMessage::error(format!(
+                                "Error loading WOVEN puzzle: {e:#}"
+                            )));
                         }
                     }
+                }
 
-                    ui.separator();
+                ui.separator();
 
-                    ui.label("Supported file types:");
-                    ui.label("  .png (or other image formats): solution image");
-                    ui.label("  .xml/.pbn: the format used by the \"pbnsolve\" solver");
-                    ui.label("  .txt: grid of characters");
-                    ui.label("  .g: the format used by the Olšák solver");
-                    ui.label("  .woven: Number Loom's custom format");
-                    ui.label("  .html: printable puzzle");
+                ui.label("Supported file types:");
+                ui.label("  .png (or other image formats): solution image");
+                ui.label("  .xml/.pbn: the format used by the \"pbnsolve\" solver");
+                ui.label("  .txt: grid of characters");
+                ui.label("  .g: the format used by the Olšák solver");
+                ui.label("  .woven: Number Loom's custom format");
+                ui.label("  .html: printable puzzle");
 
-                    ui.horizontal(|ui| {
-                        let filename_label = ui.label("Filename:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.canvas.document.file)
-                                .desired_width(text_width.min(450.0)),
-                        )
-                        .labelled_by(filename_label.id);
-                    });
-                    if ui.button("Save").clicked() {
-                        let mut document_copy: UncertainDocument = document_to_save(
-                            &self.canvas.document,
-                            self.share_progress.as_ref(),
-                            self.save_solve_progress,
-                        )
-                        .into();
+                ui.horizontal(|ui| {
+                    let filename_label = ui.label("Filename:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut canvas.document.file)
+                            .desired_width(text_width.min(450.0)),
+                    )
+                    .labelled_by(filename_label.id);
+                });
+                save = ui.button("Save").clicked();
+            },
+        );
 
-                        let (sender, receiver) = mpsc::channel();
-                        self.save_result_receiver = receiver;
-
-                        spawn_async(async move {
-                            let formats = [&READABLE_FORMATS[..], &[PRINTABLE_FORMAT]].concat();
-                            let handle = with_filters(rfd::AsyncFileDialog::new(), &formats)
-                                .set_file_name(document_copy.file.clone())
-                                .save_file()
-                                .await;
-
-                            if let Some(handle) = handle {
-                                let result = async {
-                                    let bytes = to_bytes(
-                                        &mut document_copy,
-                                        Some(handle.file_name()),
-                                        None,
-                                    )?;
-                                    handle.write(&bytes).await?;
-                                    Ok(())
-                                }
-                                .await;
-                                let _ = sender.send(result); // Don't panic if it's already gone!
-                            }
-                        });
-                    }
-                },
-            );
-            if back {
-                self.show_save_share_window = false;
-            }
+        if save {
+            let document = dialog.document_to_save(&canvas.document);
+            self.save_file(document.into());
         }
+        if back || !open {
+            self.save_share = None;
+        }
+        loaded
+    }
 
-        // Out here, so that an error still gets reported if the window was closed while the file
-        // dialog was open.
+    /// Ask where to save `document`, and save it there. How that went turns up in
+    /// `receive_save_result`.
+    fn save_file(&mut self, mut document: UncertainDocument) {
+        let (sender, receiver) = mpsc::channel();
+        self.save_result_receiver = receiver;
+
+        spawn_async(async move {
+            let formats = [&READABLE_FORMATS[..], &[PRINTABLE_FORMAT]].concat();
+            let handle = with_filters(rfd::AsyncFileDialog::new(), &formats)
+                .set_file_name(document.file.clone())
+                .save_file()
+                .await;
+
+            if let Some(handle) = handle {
+                let result = async {
+                    let bytes = to_bytes(&mut document, Some(handle.file_name()), None)?;
+                    handle.write(&bytes).await?;
+                    Ok(())
+                }
+                .await;
+                let _ = sender.send(result); // Don't panic if it's already gone!
+            }
+        });
+    }
+
+    /// Report a save that went wrong. (Whether or not the Save/share window is still open: it
+    /// may well have been closed while the file dialog was up.)
+    fn receive_save_result(&mut self) {
         if let Ok(Err(e)) = self.save_result_receiver.try_recv() {
             self.canvas
                 .status
                 .set(StatusMessage::error(format!("Error saving file: {e:#}")));
-        }
-
-        if let Some(new_document) = new_document {
-            self.replace_document(new_document);
-            self.new_dialog = None;
-            self.library_dialog = None;
-            self.show_save_share_window = false;
-        }
-        if next_enter_solve_mode {
-            self.enter_solve_mode();
         }
     }
 
@@ -542,26 +568,6 @@ fn with_filters(dialog: rfd::AsyncFileDialog, formats: &[(&str, &[&str])]) -> rf
     )
 }
 
-/// `document`, with `progress` in it if `save_progress` (and none otherwise, even if it was loaded
-/// with some).
-fn document_to_save(
-    document: &Document,
-    progress: Option<&PartialSolution>,
-    save_progress: bool,
-) -> Document {
-    let mut document = document.clone();
-    document.set_in_progress(progress.filter(|_| save_progress).cloned());
-    document
-}
-
-fn share_string(
-    document: &Document,
-    progress: Option<&PartialSolution>,
-    save_progress: bool,
-) -> String {
-    crate::formats::woven::to_woven(&document_to_save(document, progress, save_progress)).unwrap()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,9 +579,9 @@ mod tests {
         let doc =
             crate::formats::woven::from_woven(woven.trim(), "linked.woven".to_string()).unwrap();
         let mut gui = NonogramGui::new(doc.clone());
-        gui.share_as_link = true;
+        gui.open_save_share(true);
 
-        let link = gui.share_string();
+        let link = gui.save_share.unwrap().shared(&gui.canvas.document);
         assert!(!link.contains(char::is_whitespace), "{link:?}");
         let (_, hash) = link.split_once('#').unwrap();
         let opened = crate::formats::woven::from_woven(hash, "linked.woven".to_string()).unwrap();

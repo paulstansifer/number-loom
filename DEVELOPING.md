@@ -21,6 +21,7 @@ doesn't cover code comments, documentation for developers (like this file), or p
     gui/
       compact.rs - small-screen layout
       canvas.rs - drawing the picture, and the pointer hit test
+      view.rs - zoom/pan the puzzle in the window
       annotate.rs - the solver's scratch marks for counting out a line (undo never sees them)
       selection.rs - the lasso: drawing a loop, what it caught, and moving the catch around
       tools.rs - the other tools (pencil, line, flood fill)

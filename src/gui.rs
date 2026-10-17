@@ -16,6 +16,7 @@ mod tools;
 mod touch;
 mod triano;
 mod triddler;
+mod view;
 
 pub use crate::geometry::{CellIdx, FamilyIdx, LaneIdx, LanePos};
 pub use annotate::{AnnotateDrag, Annotation};
@@ -26,7 +27,7 @@ pub use input_mode::InputMode;
 pub use palette::default_color;
 pub use selection::{Selection, cells_in_lasso};
 pub use toolbar::LibraryStatus;
-use toolbar::NewPuzzleDialog;
+use toolbar::{NewPuzzleDialog, SaveShareDialog};
 pub use tools::Tool;
 pub use typed_index_collections::{TiSlice, TiVec};
 
@@ -501,7 +502,8 @@ pub struct CanvasGui {
 pub struct NonogramGui {
     // The `pub`s are solely for tests/gui.rs
     pub canvas: CanvasGui,
-    scale: f32,
+    /// Where the picture sits in the window.
+    view: view::View,
     #[serde(skip, default = "session::dead_receiver")]
     opened_file_receiver: mpsc::Receiver<anyhow::Result<Document>>,
     #[serde(skip, default = "session::dead_receiver")]
@@ -512,20 +514,9 @@ pub struct NonogramGui {
     library_dialog: Option<LibraryStatus>,
     #[serde(skip)]
     new_dialog: Option<NewPuzzleDialog>,
-    auto_solve: bool,
+    /// The editor's `Solve` button.
+    line_solver: LineSolver,
     lines_to_affect_string: String,
-    #[serde(skip)]
-    solve_report: String,
-    /// The `canvas.version` `solve_report` was computed for, if any — independent of
-    /// `canvas.solved_mask`'s own freshness, which the backtracking solve also writes to
-    /// (see `BacktrackSolver::widget`). Without this, `solved_mask.get_or_refresh` would see
-    /// backtracking's fresher write and skip re-running line logic, leaving `solve_report`
-    /// showing backtracking's text under the `Solve` button.
-    #[serde(skip)]
-    solve_report_version: Option<Version>,
-    /// How many cells the line solve behind `solve_report` left unsolved.
-    #[serde(skip)]
-    solve_cells_left: Option<usize>,
     pub solve_gui: Option<SolveGui>,
     /// What the compact layout has open: the menu drawer, and its dialogs that don't belong to
     /// the desktop's toolbar.
@@ -534,49 +525,9 @@ pub struct NonogramGui {
     /// The browser's back button closes what's open, rather than leaving the app.
     #[serde(skip)]
     back_button: back_button::BackButton,
+    /// The Save/share window, while it's open.
     #[serde(skip)]
-    show_save_share_window: bool,
-    #[serde(skip)]
-    share_as_link: bool,
-    #[serde(skip)]
-    share_string: String,
-    /// The solve progress there was when the Save/share window was opened, if there was any.
-    #[serde(skip)]
-    share_progress: Option<PartialSolution>,
-    /// Whether to put `share_progress` in what the Save/share window saves and shares.
-    #[serde(skip)]
-    save_solve_progress: bool,
-    #[serde(skip)]
-    pasted_string: String,
-    #[serde(skip)]
-    quality_warnings: Vec<String>,
-    /// Whether the picture is too big for the space it's shown in, and so has somewhere to pan
-    /// to. Measured from the scroll area as it was drawn last frame.
-    #[serde(skip)]
-    pannable: bool,
-    /// Whether a middle-drag pan is in flight right now.
-    #[serde(skip)]
-    panning: bool,
-    /// Where to scroll the canvas to on the next frame: what zooming (or fitting) last frame
-    /// worked out, now that the canvas is drawn at the new scale.
-    #[serde(skip)]
-    pending_scroll: Option<Vec2>,
-    /// Whether a fit (see `CanvasGui::needs_fit`) is under way: the first frame of one zooms
-    /// straight to the scale it measures, and any after it only zoom out, until it fits.
-    #[serde(skip)]
-    fitting: bool,
-    /// The render scale and the size of what was drawn at it, as of last frame, while fitting.
-    #[serde(skip)]
-    fit_measured: Option<(f32, Vec2)>,
-    /// The size of the canvas's viewport as of last frame, and how big the drawing in it will
-    /// come out this frame (which, after a zoom, is a guess), for centering it.
-    #[serde(skip)]
-    last_viewport: Vec2,
-    #[serde(skip)]
-    expected_drawing: Option<Vec2>,
-    /// Mousewheel motion that hasn't yet added up to a whole step through the palette.
-    #[serde(skip)]
-    wheel_remainder: f32,
+    save_share: Option<SaveShareDialog>,
     /// Mouse or touch, by whichever was used last. Not saved: the first touch or hover after a
     /// restore says which.
     #[serde(skip)]
@@ -1138,35 +1089,18 @@ impl NonogramGui {
 
         NonogramGui {
             canvas: CanvasGui::new(document),
-            scale: 16.0,
+            view: view::View::default(),
             opened_file_receiver: mpsc::channel().1,
             save_result_receiver: mpsc::channel().1,
             library_receiver: mpsc::channel().1,
             new_dialog: None,
             library_dialog: None,
-            auto_solve: UserSettings::get_bool(consts::EDITOR_AUTO_SOLVE),
+            line_solver: LineSolver::new(),
             lines_to_affect_string: "5".to_string(),
-            solve_report: "".to_string(),
-            solve_report_version: None,
-            solve_cells_left: None,
             solve_gui: None,
             compact: Default::default(),
             back_button: Default::default(),
-            show_save_share_window: false,
-            share_as_link: false,
-            share_string: "".to_string(),
-            share_progress: None,
-            save_solve_progress: false,
-            pasted_string: "".to_string(),
-            quality_warnings: vec![],
-            pannable: false,
-            panning: false,
-            pending_scroll: None,
-            fitting: false,
-            fit_measured: None,
-            last_viewport: Vec2::ZERO,
-            expected_drawing: None,
-            wheel_remainder: 0.0,
+            save_share: None,
             input_mode: InputMode::default(),
             saving: session::SaveState::default(),
         }
@@ -1186,7 +1120,7 @@ impl NonogramGui {
 
             ui.separator();
 
-            self.line_solve_controls(ui);
+            self.line_solver.widget(ui, &mut self.canvas);
 
             ui.separator();
 
@@ -1225,78 +1159,6 @@ impl NonogramGui {
             .get_or_refresh(version, Disambiguator::default);
         disambiguator.poll(&canvas.status);
         *canvas.progress.borrow_mut() = backtrack_progress.or(disambiguator.running_progress());
-    }
-
-    /// Run the line solve if `requested`, or if it runs after every change, unless it's already
-    /// up to date.
-    fn update_line_solve(&mut self, requested: bool) {
-        // Tracked separately from `solved_mask`'s own freshness: the backtracking solve writes
-        // there too (see `BacktrackSolver::poll`).
-        if !(requested || self.auto_solve) || self.solve_report_version == Some(self.canvas.version)
-        {
-            return;
-        }
-        let puzzle = self.canvas.document.solution().to_puzzle();
-
-        let (report, mask) = match puzzle.line_solve() {
-            Ok(grid_solve::Report {
-                solve_counts,
-                cells_left,
-                solved_mask,
-                ..
-            }) => {
-                self.solve_cells_left = Some(cells_left);
-                (
-                    // Unsolved cells first: that's the number that says whether the puzzle
-                    // works. The skim/scrub counts are solver diagnostics.
-                    format!("unsolved cells: {cells_left}\n{solve_counts}"),
-                    Some(solved_mask),
-                )
-            }
-            // Can't happen, because the puzzle has a solution!
-            Err(e) => {
-                self.solve_cells_left = None;
-                (format!("Error: {e:#}"), None)
-            }
-        };
-        self.solve_report = report.clone();
-        self.solve_report_version = Some(self.canvas.version);
-        if let Some(mask) = mask {
-            self.canvas
-                .solved_mask
-                .update((report, mask), self.canvas.version);
-        }
-    }
-
-    /// Switch line-solving after every change on or off, and remember it.
-    fn set_auto_solve(&mut self, auto_solve: bool) {
-        self.auto_solve = auto_solve;
-        let _ = UserSettings::set(consts::EDITOR_AUTO_SOLVE, &self.auto_solve.to_string());
-        if !self.auto_solve {
-            // The shading clears itself (it's only drawn while fresh), but the report is plain
-            // text that would otherwise linger after the aid is switched off.
-            self.solve_report.clear();
-            self.solve_report_version = None;
-            self.solve_cells_left = None;
-        }
-    }
-
-    /// The line solve's button, its "after every change" toggle, and its report.
-    fn line_solve_controls(&mut self, ui: &mut egui::Ui) {
-        let solve = auto_button(ui, "Solve", &mut self.auto_solve);
-        if solve.auto.changed() {
-            self.set_auto_solve(self.auto_solve);
-        }
-        self.update_line_solve(solve.button.clicked());
-
-        ui.colored_label(
-            if self.solve_report_version == Some(self.canvas.version) {
-                Color32::BLACK
-            } else {
-                Color32::GRAY
-            },
-            &self.solve_report,
-        );
     }
 
     fn backtrack_controls(&mut self, ui: &mut egui::Ui) {
@@ -1375,17 +1237,6 @@ impl NonogramGui {
                 .accessible_name("Custom license");
             radio.labelled_by(field.id);
         });
-    }
-
-    /// What to actually draw at: `scale` is what the zoom controls set, but triddlers are drawn
-    /// `TRIDDLER_ZOOM_STEPS` clicks further in than square puzzles.
-    fn render_scale(&self) -> f32 {
-        let shape = self.canvas.document.solution().shape();
-        if matches!(shape, crate::geometry::Shape::Triangular(_)) {
-            self.scale + TRIDDLER_ZOOM_STEPS * ZOOM_STEP
-        } else {
-            self.scale
-        }
     }
 
     /// Mouse or touch, by whichever was used last (see `InputMode::after`).
@@ -1518,83 +1369,6 @@ fn style_for(layout: ScreenLayout) -> Style {
     }
 }
 
-/// Breathing room between the canvas and the panels around it.
-const CANVAS_MARGIN: i8 = 16;
-
-/// One click of the zoom buttons, in pixels per cell edge.
-pub(crate) const ZOOM_STEP: f32 = 2.0;
-/// How far the zoom controls can go, in pixels per cell edge.
-pub(crate) const MIN_SCALE: f32 = 1.0;
-pub(crate) const MAX_SCALE: f32 = 50.0;
-
-/// How far ahead of the zoom the user set a triddler is drawn. A triangular cell has half a
-/// square one's area, and its three clue gutters are rhombuses full of slanted numerals, so the
-/// same scale buys a good deal less legibility than it does on a square grid.
-const TRIDDLER_ZOOM_STEPS: f32 = 3.0;
-
-/// Where to scroll to after zooming by `factor`, so that whatever was `anchor` (in points from
-/// the top-left of the scroll area's viewport) stays put, from `offset`. Everything on the canvas
-/// is drawn from its top-left corner outwards, in proportion to the zoom, after a centering
-/// margin (see `centering_pad`) that was `pads.0` and will be `pads.1`.
-///
-/// Along a direction in which the drawing will fit in the viewport, there's no scrolling, and
-/// the anchor moves wherever centering puts it.
-fn zoom_scroll_offset(offset: Vec2, anchor: Vec2, pads: (Vec2, Vec2), factor: f32) -> Vec2 {
-    let (pad, new_pad) = pads;
-    (offset + anchor - pad) * factor + new_pad - anchor
-}
-
-/// The margin that centers a drawing `drawing` big in a `viewport`, where it's smaller. In whole
-/// points, so that the grid lines stay on pixels.
-fn centering_pad(layout: ScreenLayout, viewport: Vec2, drawing: Vec2) -> Vec2 {
-    match layout {
-        ScreenLayout::Desktop => Vec2::ZERO,
-        ScreenLayout::Compact => ((viewport - drawing) / 2.0).max(Vec2::ZERO).floor(),
-    }
-}
-
-/// This frame's wheel motion over the canvas, in notches, with the events taken away from the
-/// scroll area beneath — over the canvas the wheel steps through the palette instead of
-/// scrolling. Positive is a notch rolled away from the user.
-///
-/// Read from the events rather than from the scroll delta so that one notch is one step
-/// whatever the platform's scroll speed happens to be set to.
-fn take_wheel_notches(ctx: &egui::Context) -> f32 {
-    // Trackpads report points instead of lines; converting at egui's own rate makes a swipe
-    // that would have scrolled one line's worth count as one notch.
-    let points_per_line = ctx.options(|o| o.input_options.line_scroll_speed).max(1.0);
-
-    ctx.input_mut(|i| {
-        let mut notches = 0.0;
-        i.events.retain(|event| match event {
-            egui::Event::MouseWheel {
-                unit,
-                delta,
-                modifiers,
-                ..
-            } => {
-                // ctrl/cmd-wheel is egui's zoom gesture; that one belongs to `zoom_delta`.
-                if modifiers.ctrl || modifiers.mac_cmd || modifiers.command {
-                    return true;
-                }
-                // Whichever axis moved: shift-wheel arrives as horizontal motion on some
-                // platforms, and there's only the one palette to step through either way.
-                let amount = if delta.y != 0.0 { delta.y } else { delta.x };
-                notches += match unit {
-                    egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => amount,
-                    egui::MouseWheelUnit::Point => amount / points_per_line,
-                };
-                false
-            }
-            _ => true,
-        });
-        // egui spreads a mouse notch over the next few frames, so the leftovers have to go as
-        // well — and they arrive on frames that carry no event of their own.
-        i.smooth_scroll_delta = Vec2::ZERO;
-        notches
-    })
-}
-
 impl eframe::App for NonogramGui {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.main_ui(ui);
@@ -1708,222 +1482,6 @@ impl NonogramGui {
             });
 
         self.canvas_panel(ui, ScreenLayout::Desktop);
-    }
-
-    /// The canvas, in whatever space the panels around it have left.
-    fn canvas_panel(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
-        let ctx = &ui.ctx().clone();
-        let margin = match layout {
-            ScreenLayout::Desktop => CANVAS_MARGIN,
-            ScreenLayout::Compact => compact::CANVAS_MARGIN,
-        };
-        egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.global_style()).inner_margin(margin))
-            .show(ui, |ui| {
-                // The compact layout's touch-sized spacing and bigger text would pad out the clue
-                // gutters, which are laid out as widgets.
-                *ui.spacing_mut() = desktop_spacing();
-                // Nothing on the canvas scrolls by flinging it — the wheel, the middle button and
-                // two fingers all have jobs of their own — so there's nothing to coast or
-                // spring back, and a zoom that leaves the view past the edge should just stop
-                // at it.
-                ui.spacing_mut().scroll.kinetic.rubber_band = false;
-                ui.spacing_mut().scroll.kinetic.decay_time = 0.0;
-                ui.style_mut().text_styles = Style::default().text_styles;
-
-                // Everything below only applies while the pointer is over the canvas: the wheel
-                // and the middle button still mean what they usually do over the sidebar.
-                let pointer_here = ui.rect_contains_pointer(ui.max_rect());
-
-                // A plain wheel steps through the palette rather than scrolling — panning is the
-                // middle button's job below — so the events have to be taken away from the
-                // scroll area before it draws.
-                if pointer_here {
-                    self.wheel_remainder += take_wheel_notches(ctx);
-                    let steps = self.wheel_remainder.trunc();
-                    self.wheel_remainder -= steps;
-                    if steps != 0.0 {
-                        // A notch away from the user goes *up* the palette, the way it would move
-                        // up any other list.
-                        self.canvas.cycle_color(-steps as i32);
-                    }
-                }
-
-                // Middle-drag pans, but only when there's somewhere to pan to; otherwise the
-                // middle button keeps its painting job. A pan that has started holds on until
-                // the button comes up, even if the pointer wanders off the canvas.
-                let (middle_pressed, middle_down, pointer_delta) = ctx.input(|i| {
-                    (
-                        i.pointer.button_pressed(egui::PointerButton::Middle),
-                        i.pointer.middle_down(),
-                        i.pointer.delta(),
-                    )
-                });
-                self.panning = middle_down && (self.panning || (middle_pressed && pointer_here));
-
-                let (pannable, panning) = (self.pannable, self.panning);
-
-                // In touch mode, a finger anywhere in this panel steers the canvas's cursor (see
-                // `touch.rs`), so the panel's whole area is the canvas's to take touches from.
-                let touch_area = (self.input_mode == InputMode::Touch).then(|| ui.max_rect());
-
-                // Read out here, because the closure below borrows `self` mutably.
-                let scale = self.render_scale();
-
-                // Where the drawing is smaller than the viewport, it's centered (on a phone; the
-                // desktop keeps it beside the sidebar). That's done with a margin before it,
-                // inside the scroll area.
-                let pad = match self.expected_drawing {
-                    Some(drawing) => centering_pad(layout, self.last_viewport, drawing),
-                    None => Vec2::ZERO,
-                };
-
-                // A zoomed-in puzzle is routinely bigger than the window in both directions.
-                // `animated(false)` because the only thing that scrolls this programmatically is
-                // the pan below, which has to keep up with the pointer exactly. A finger's drag
-                // belongs to the cursor, not to scrolling.
-                let mut scroll_area = egui::ScrollArea::both().animated(false).scroll_source(
-                    egui::scroll_area::ScrollSource {
-                        drag: if touch_area.is_none() {
-                            egui::scroll_area::DragScroll::Always
-                        } else {
-                            egui::scroll_area::DragScroll::Never
-                        },
-                        ..Default::default()
-                    },
-                );
-                if let Some(offset) = self.pending_scroll.take() {
-                    scroll_area = scroll_area.scroll_offset(offset);
-                }
-                let scrolled = scroll_area.show(ui, |ui| {
-                    if panning {
-                        ui.scroll_with_delta(pointer_delta);
-                    }
-                    // One finger steers the cursor, so two pan (as well as zooming, below).
-                    if touch_area.is_some()
-                        && let Some(touch) = ui.input(|i| i.multi_touch())
-                    {
-                        ui.scroll_with_delta(touch.translation_delta);
-                    }
-                    let drawing_area =
-                        Rect::from_min_size(ui.cursor().min + pad, ui.available_size());
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(drawing_area), |ui| {
-                        self.canvas.middle_pans = pannable;
-                        self.canvas.touch_area = touch_area;
-                        match &mut self.solve_gui {
-                            Some(solve_gui) => solve_gui.body(ui, scale, &mut self.canvas),
-                            None => {
-                                self.canvas.canvas(ui, scale, RenderStyle::Experimental);
-                            }
-                        }
-                    });
-                });
-                let viewport = scrolled.inner_rect.size();
-                let drawing = scrolled.content_size - pad;
-                self.last_viewport = viewport;
-                self.expected_drawing = Some(drawing);
-
-                // What the scroll area just measured decides whether the *next* frame's
-                // middle-drag pans. A frame of lag is invisible beside how long a zoom lasts.
-                self.pannable = scrolled.content_size.x > scrolled.inner_rect.width() + 0.5
-                    || scrolled.content_size.y > scrolled.inner_rect.height() + 0.5;
-
-                // After the canvas, which sets a cursor of its own for whichever tool is up.
-                if panning {
-                    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-                }
-
-                // egui routes ctrl-scroll (and trackpad pinch) into `zoom_delta` rather than
-                // into the scroll offset, and `take_wheel_notches` leaves those events alone.
-                if pointer_here {
-                    let (zoom, anchor) = ui.input(|i| {
-                        // Between the fingers, or under the pointer.
-                        let anchor = i
-                            .multi_touch()
-                            .map(|touch| touch.center_pos)
-                            .or(i.pointer.hover_pos());
-                        (i.zoom_delta(), anchor)
-                    });
-                    if zoom != 1.0 {
-                        let before = self.render_scale();
-                        self.scale = (self.scale * zoom).clamp(MIN_SCALE, MAX_SCALE);
-                        let factor = self.render_scale() / before;
-                        // Everything on the canvas is drawn in proportion to the zoom, so this is
-                        // a good guess at how big it'll come out, and where it'll be centered.
-                        self.expected_drawing = Some(drawing * factor);
-                        if let Some(anchor) = anchor {
-                            let new_pad = centering_pad(layout, viewport, drawing * factor);
-                            self.pending_scroll = Some(zoom_scroll_offset(
-                                scrolled.state.clamped_offset(),
-                                anchor - scrolled.inner_rect.min,
-                                (pad, new_pad),
-                                factor,
-                            ));
-                        }
-                    }
-                }
-
-                match layout {
-                    ScreenLayout::Compact => self.fit_step(ctx, viewport, drawing),
-                    // The desktop has zoom buttons, and keeps whatever zoom they set.
-                    ScreenLayout::Desktop => {
-                        self.canvas.needs_fit = false;
-                        self.fitting = false;
-                    }
-                }
-            });
-    }
-
-    /// One frame's worth of zooming the canvas to fit `viewport`, if it wants to (see
-    /// `CanvasGui::needs_fit`), given that what it drew last came out `content` big.
-    ///
-    /// Not everything in the drawing grows in proportion to the zoom (the borders don't, for
-    /// one), so this measures, zooms, and measures again. The first measurement goes straight to
-    /// the scale it works out; the ones after it only zoom out (by at least a pixel per cell),
-    /// so it can't go back and forth.
-    fn fit_step(&mut self, ctx: &egui::Context, viewport: Vec2, content: Vec2) {
-        if !self.canvas.needs_fit {
-            self.fitting = false;
-            self.fit_measured = None;
-            return;
-        }
-        ctx.request_repaint();
-        if content.x <= 0.0 || content.y <= 0.0 {
-            return; // Nothing drawn yet.
-        }
-
-        // The solver's clue gutters are laid out in an `egui::Grid`, which sizes its columns
-        // from the frame before, so the first frame at a new zoom can come out any size at all.
-        // A measurement only counts once it's come out the same twice running.
-        let render = self.render_scale();
-        if self.fit_measured != Some((render, content)) {
-            self.fit_measured = Some((render, content));
-            return;
-        }
-
-        let ratio = (viewport.x / content.x).min(viewport.y / content.y);
-        // Whole points per cell, so that the grid lines land on pixels.
-        let mut target = (render * ratio).floor();
-        if self.fitting {
-            target = target.min(render - 1.0);
-            if ratio >= 1.0 {
-                target = render; // It fits.
-            }
-        }
-        // `scale` is what's clamped; the triddler's head start (see `render_scale`) rides along.
-        let scale = (target - (render - self.scale)).clamp(MIN_SCALE, MAX_SCALE);
-
-        if scale == self.scale {
-            self.canvas.needs_fit = false;
-            self.fitting = false;
-            self.fit_measured = None;
-        } else {
-            // See the zooming in `canvas_panel`.
-            self.expected_drawing = Some(content * (scale / self.scale));
-            self.scale = scale;
-            self.fitting = true;
-            self.pending_scroll = Some(Vec2::ZERO);
-        }
     }
 }
 
@@ -2093,6 +1651,121 @@ impl Disambiguator {
     }
 }
 
+/// Drives line logic (`DynPuzzle::line_solve`) from the editor's `Solve` button, or after every
+/// change: whether it gets all the way says whether the puzzle can be solved without guessing.
+/// It shades the cells it can't reach by way of `CanvasGui::solved_mask`.
+#[derive(Serialize, Deserialize)]
+pub struct LineSolver {
+    /// Whether it runs after every change. A user setting, too (see `set_auto`).
+    auto: bool,
+    /// What it found, for showing under the button.
+    #[serde(skip)]
+    report: String,
+    /// The `canvas.version` `report` was computed for, if any — independent of
+    /// `canvas.solved_mask`'s own freshness, which the backtracking solve also writes to
+    /// (see `BacktrackSolver::poll`). Without this, `solved_mask.get_or_refresh` would see
+    /// backtracking's fresher write and skip re-running line logic, leaving `report` showing
+    /// backtracking's text under the `Solve` button.
+    #[serde(skip)]
+    report_version: Option<Version>,
+    /// How many cells the line solve behind `report` left unsolved.
+    #[serde(skip)]
+    cells_left: Option<usize>,
+}
+
+impl LineSolver {
+    fn new() -> Self {
+        LineSolver {
+            auto: UserSettings::get_bool(consts::EDITOR_AUTO_SOLVE),
+            report: String::new(),
+            report_version: None,
+            cells_left: None,
+        }
+    }
+
+    /// Whether it runs after every change.
+    pub(super) fn auto(&self) -> bool {
+        self.auto
+    }
+
+    /// Switch running after every change on or off, and remember it.
+    pub(super) fn set_auto(&mut self, auto: bool) {
+        self.auto = auto;
+        let _ = UserSettings::set(consts::EDITOR_AUTO_SOLVE, &auto.to_string());
+        if !auto {
+            // The shading clears itself (it's only drawn while fresh), but the report is plain
+            // text that would otherwise linger after the aid is switched off.
+            self.report.clear();
+            self.report_version = None;
+            self.cells_left = None;
+        }
+    }
+
+    /// Whether what it last found is about the picture as it now stands.
+    fn fresh(&self, canvas: &CanvasGui) -> bool {
+        self.report_version == Some(canvas.version)
+    }
+
+    /// How many cells line logic leaves unsolved in the picture as it now stands, if that's
+    /// known.
+    pub(super) fn cells_left(&self, canvas: &CanvasGui) -> Option<usize> {
+        self.cells_left.filter(|_| self.fresh(canvas))
+    }
+
+    /// Run if `requested`, or if it runs after every change, unless it's already up to date.
+    pub(super) fn update(&mut self, canvas: &mut CanvasGui, requested: bool) {
+        if !(requested || self.auto) || self.fresh(canvas) {
+            return;
+        }
+        let puzzle = canvas.document.solution().to_puzzle();
+
+        let mask = match puzzle.line_solve() {
+            Ok(grid_solve::Report {
+                solve_counts,
+                cells_left,
+                solved_mask,
+                ..
+            }) => {
+                self.cells_left = Some(cells_left);
+                // Unsolved cells first: that's the number that says whether the puzzle works.
+                // The skim/scrub counts are solver diagnostics.
+                self.report = format!("unsolved cells: {cells_left}\n{solve_counts}");
+                Some(solved_mask)
+            }
+            // Can't happen, because the puzzle has a solution!
+            Err(e) => {
+                self.cells_left = None;
+                self.report = format!("Error: {e:#}");
+                None
+            }
+        };
+        self.report_version = Some(canvas.version);
+        if let Some(mask) = mask {
+            canvas
+                .solved_mask
+                .update((self.report.clone(), mask), canvas.version);
+        }
+    }
+
+    /// The desktop's button, its "after every change" toggle, and the report.
+    fn widget(&mut self, ui: &mut egui::Ui, canvas: &mut CanvasGui) {
+        let solve = auto_button(ui, "Solve", &mut self.auto);
+        if solve.auto.changed() {
+            self.set_auto(self.auto);
+        }
+        self.update(canvas, solve.button.clicked());
+
+        ui.colored_label(
+            if self.fresh(canvas) {
+                Color32::BLACK
+            } else {
+                Color32::GRAY
+            },
+            &self.report,
+        );
+    }
+}
+
 /// Drives `conprop::conprop_solve_in_background` from a button.
 #[derive(Default)]
 pub struct BacktrackSolver {
@@ -2238,6 +1911,40 @@ mod background_search_tests {
 #[cfg(test)]
 mod editor_tests {
     use super::*;
+
+    /// The line solve runs when it's asked to, or after every change if it's set to, and only
+    /// says how many cells it left while that's still about the picture as it stands.
+    #[test]
+    fn the_line_solve_only_reports_on_the_current_picture() {
+        let mut canvas = NonogramGui::new(Document::from_solution(
+            DynSolution::Square(Solution::blank_bw(3, 3)),
+            "test".to_string(),
+        ))
+        .canvas;
+        // Not `LineSolver::new`, or `set_auto`: those touch the user's settings.
+        let mut solver = LineSolver {
+            auto: false,
+            report: String::new(),
+            report_version: None,
+            cells_left: None,
+        };
+
+        solver.update(&mut canvas, false);
+        assert_eq!(solver.cells_left(&canvas), None, "not asked to");
+        solver.update(&mut canvas, true);
+        assert_eq!(solver.cells_left(&canvas), Some(0));
+
+        canvas.perform(
+            Action::ChangeColor {
+                changes: [(CellIdx(4), Color(1))].into(),
+            },
+            ActionMood::Normal,
+        );
+        assert_eq!(solver.cells_left(&canvas), None, "out of date");
+        solver.auto = true;
+        solver.update(&mut canvas, false);
+        assert_eq!(solver.cells_left(&canvas), Some(0));
+    }
 
     /// As it is after every change: the id is the title.
     #[test]

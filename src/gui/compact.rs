@@ -389,7 +389,7 @@ impl NonogramGui {
             (Overlay::Solved, solved),
             (Overlay::ColorDialog, compact.color_dialog.is_some()),
             (Overlay::Metadata, compact.metadata_open),
-            (Overlay::SaveShare, self.show_save_share_window),
+            (Overlay::SaveShare, self.save_share.is_some()),
             (Overlay::Library, self.library_dialog.is_some()),
             (Overlay::New, self.new_dialog.is_some()),
             (Overlay::Drawer, compact.drawer_open),
@@ -409,7 +409,7 @@ impl NonogramGui {
             }
             Overlay::ColorDialog => self.compact.color_dialog = None,
             Overlay::Metadata => self.compact.metadata_open = false,
-            Overlay::SaveShare => self.show_save_share_window = false,
+            Overlay::SaveShare => self.save_share = None,
             Overlay::Library => self.library_dialog = None,
             Overlay::New => self.new_dialog = None,
             Overlay::Drawer => self.compact.drawer_open = false,
@@ -441,7 +441,7 @@ impl NonogramGui {
                     solve_gui.run_aid(aid, requested, &mut self.canvas);
                 }
             }
-            None => self.update_line_solve(false),
+            None => self.line_solver.update(&mut self.canvas, false),
         }
 
         let top_bar = egui::Panel::top("compact_top_bar")
@@ -511,8 +511,7 @@ impl NonogramGui {
     /// again while that runs stops it. While the line solve doesn't run after every change and
     /// is out of date, it says "Solve" instead, and runs it.
     fn unsolved_pill(&mut self, ui: &mut egui::Ui) {
-        let fresh = self.solve_report_version == Some(self.canvas.version);
-        let count = self.solve_cells_left.filter(|_| fresh);
+        let count = self.line_solver.cells_left(&self.canvas);
         let running = self.canvas.disambiguator.val.running_progress().is_some();
 
         let label = match count {
@@ -542,7 +541,7 @@ impl NonogramGui {
                 let picture = canvas.document.solution();
                 canvas.disambiguator.val.start(picture);
             } else {
-                self.update_line_solve(true);
+                self.line_solver.update(canvas, true);
             }
         }
     }
@@ -669,11 +668,8 @@ impl NonogramGui {
                     FileItem::New => self.open_new_dialog(),
                     FileItem::Library => self.open_library(),
                     FileItem::Open => self.open_file(),
-                    FileItem::SaveShare => {
-                        self.open_save_share();
-                        // A link is the easiest thing to share from a phone.
-                        self.share_as_link = true;
-                    }
+                    // A link is the easiest thing to share from a phone.
+                    FileItem::SaveShare => self.open_save_share(true),
                 }
                 close = true;
             }
@@ -707,12 +703,12 @@ impl NonogramGui {
             None => {
                 ui.add_space(SECTION_GAP);
                 let label = "Auto-solve";
-                let mut auto_solve = self.auto_solve;
+                let mut auto_solve = self.line_solver.auto();
                 row_with_controls(ui, label, |ui| {
                     toggle_switch(ui, &mut auto_solve, label);
                 });
-                if auto_solve != self.auto_solve {
-                    self.set_auto_solve(auto_solve);
+                if auto_solve != self.line_solver.auto() {
+                    self.line_solver.set_auto(auto_solve);
                 }
                 self.backtrack_controls(ui);
             }
@@ -960,7 +956,7 @@ mod tests {
 
         gui.compact.drawer_open = true;
         gui.compact.resize_open = true;
-        gui.open_save_share();
+        gui.open_save_share(false);
         assert_eq!(
             gui.overlays(ScreenLayout::Compact),
             vec![Overlay::SaveShare, Overlay::Drawer, Overlay::Resize]
