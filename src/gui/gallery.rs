@@ -15,12 +15,11 @@ fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &Document) {
         color_bar_rect.min.y = rect.max.y - 10.0;
 
         let mut current_x = color_bar_rect.min.x;
+        // White last, and otherwise the commonest colors first. (The colors themselves are a
+        // tiebreak, to avoid flickering.)
         for ((r, g, b), &count) in color_counts
             .iter()
-            // Tiebreak to avoid flickering:
-            .sorted_by_key(|((r, g, b), _)| (*r as u32) * 256 * 256 + (*g as u32) * 256 + *b as u32)
-            .sorted_by_key(|(_, count)| *count)
-            .sorted_by_key(|((r, g, b), _)| (*r == 255 && *g == 255 && *b == 255) as u32)
+            .sorted_by_key(|&(&rgb, &count)| (rgb == (255, 255, 255), count, rgb))
             .rev()
         {
             let color = egui::Color32::from_rgb(*r, *g, *b);

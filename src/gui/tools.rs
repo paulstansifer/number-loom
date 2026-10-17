@@ -59,19 +59,60 @@ impl PaintPointer {
     }
 }
 
-/// The icon, bare-key shortcut, and tooltip key-name for each tool.
-fn tool_appearance(tool: Tool) -> (&'static str, egui::Key, char) {
+impl Tool {
+    /// The tool row, in order.
+    const ALL: [Tool; 5] = [
+        Tool::Pencil,
+        Tool::LineAlongLane,
+        Tool::FloodFill,
+        Tool::Lasso,
+        Tool::Annotate,
+    ];
+
+    /// Whether the editor (`!solving`) or the solver (`solving`) offers this tool.
+    fn offered(self, solving: bool) -> bool {
+        match self {
+            Tool::LineAlongLane => true,
+            Tool::Pencil | Tool::FloodFill | Tool::Lasso => !solving,
+            Tool::Annotate => solving,
+        }
+    }
+}
+
+/// The icon, bare-key shortcut, tooltip key-name, and description for each tool.
+fn tool_appearance(tool: Tool) -> (&'static str, egui::Key, char, &'static str) {
     match tool {
-        Tool::Pencil => (icons::ICON_BRUSH, egui::Key::P, 'P'),
-        Tool::LineAlongLane => (icons::ICON_LINE_START, egui::Key::L, 'L'),
-        Tool::FloodFill => (icons::ICON_FORMAT_COLOR_FILL, egui::Key::F, 'F'),
-        Tool::Lasso => (icons::ICON_LASSO_SELECT, egui::Key::S, 'S'),
-        Tool::Annotate => (icons::ICON_SQUARE_FOOT, egui::Key::A, 'A'),
+        Tool::Pencil => (icons::ICON_BRUSH, egui::Key::P, 'P', "Pencil"),
+        Tool::LineAlongLane => (
+            icons::ICON_LINE_START,
+            egui::Key::L,
+            'L',
+            "Line along a lane",
+        ),
+        Tool::FloodFill => (
+            icons::ICON_FORMAT_COLOR_FILL,
+            egui::Key::F,
+            'F',
+            "Flood Fill",
+        ),
+        Tool::Lasso => (
+            icons::ICON_LASSO_SELECT,
+            egui::Key::S,
+            'S',
+            "Lasso select: draw a loop, then drag to move what's inside",
+        ),
+        Tool::Annotate => (
+            icons::ICON_SQUARE_FOOT,
+            egui::Key::A,
+            'A',
+            "Annotate: click to mark one cell, drag to measure a span",
+        ),
     }
 }
 
 /// One entry in the tool row: a toggle button that its key also reaches. `typing` suppresses the
-/// key while a `TextEdit` has the keyboard. Grouped like this so that hiding a tool also disables its shortcut
+/// key while a `TextEdit` has the keyboard. Grouped like this so that hiding a tool also disables
+/// its shortcut.
 ///
 /// Returns whether the tool's key was pressed. The button picks the tool itself, but the key
 /// means "toggle", which only the caller can act on — it's the one that knows what came before.
@@ -80,19 +121,18 @@ fn tool_button(
     current_tool: &mut Tool,
     tool: Tool,
     typing: bool,
-    description: &str,
     layout: ScreenLayout,
 ) -> bool {
-    let (icon, key, ch) = tool_appearance(tool);
-    let icon = egui::RichText::new(icon).size(24.0);
+    let (icon, key, ch, description) = tool_appearance(tool);
     let response = match layout {
-        ScreenLayout::Desktop => ui.selectable_value(current_tool, tool, icon),
+        ScreenLayout::Desktop => ui.selectable_value(
+            current_tool,
+            tool,
+            egui::RichText::new(icon).size(compact::ICON_SIZE),
+        ),
         ScreenLayout::Compact => {
-            let response = ui.add(
-                egui::Button::new(icon)
-                    .toggled(ui, *current_tool == tool)
-                    .min_size(Vec2::splat(compact::TARGET)),
-            );
+            let response =
+                ui.add(compact::icon_button(icon, layout).toggled(ui, *current_tool == tool));
             if response.clicked() {
                 *current_tool = tool;
             }
@@ -110,7 +150,7 @@ fn tool_button(
 impl CanvasGui {
     pub(super) fn tool_selector(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
         let was = self.current_tool;
-        let editing = !self.solving;
+        let solving = self.solving;
 
         // Same story as in `common_sidebar_items`: no modifiers here either.
         let typing = ui.ctx().egui_wants_keyboard_input();
@@ -121,61 +161,11 @@ impl CanvasGui {
         let mut requested = None;
 
         let mut row = |ui: &mut egui::Ui| {
-            if editing
-                && tool_button(
-                    ui,
-                    &mut self.current_tool,
-                    Tool::Pencil,
-                    typing,
-                    "Pencil",
-                    layout,
-                )
-            {
-                requested = Some(Tool::Pencil);
-            }
-            if tool_button(
-                ui,
-                &mut self.current_tool,
-                Tool::LineAlongLane,
-                typing,
-                "Line along a lane",
-                layout,
-            ) {
-                requested = Some(Tool::LineAlongLane);
-            }
-            if editing {
-                if tool_button(
-                    ui,
-                    &mut self.current_tool,
-                    Tool::FloodFill,
-                    typing,
-                    "Flood Fill",
-                    layout,
-                ) {
-                    requested = Some(Tool::FloodFill);
-                }
-
-                if tool_button(
-                    ui,
-                    &mut self.current_tool,
-                    Tool::Lasso,
-                    typing,
-                    "Lasso select: draw a loop, then drag to move what's inside",
-                    layout,
-                ) {
-                    requested = Some(Tool::Lasso);
-                }
-            } else {
-                // Likewise, annotate is solve-only
-                if tool_button(
-                    ui,
-                    &mut self.current_tool,
-                    Tool::Annotate,
-                    typing,
-                    "Annotate: click to mark one cell, drag to measure a span",
-                    layout,
-                ) {
-                    requested = Some(Tool::Annotate);
+            for tool in Tool::ALL {
+                if tool.offered(solving)
+                    && tool_button(ui, &mut self.current_tool, tool, typing, layout)
+                {
+                    requested = Some(tool);
                 }
             }
         };
@@ -221,10 +211,10 @@ impl CanvasGui {
         }
     }
 
-    fn flood_fill(&mut self, start: CellIdx) {
-        let picture = self.document.solution_mut();
+    fn flood_fill(&mut self, start: CellIdx, color: Color) {
+        let picture = self.document.try_solution().unwrap();
         let target_color = picture.cells()[start];
-        if target_color == self.current_color {
+        if target_color == color {
             return; // Nothing to do
         }
 
@@ -236,7 +226,7 @@ impl CanvasGui {
         visited.insert(start);
 
         while let Some(cell) = q.pop_front() {
-            changes.insert(cell, self.current_color);
+            changes.insert(cell, color);
 
             for neighbor in picture.neighbor_cells(cell) {
                 if picture.cells()[neighbor] == target_color && visited.insert(neighbor) {
@@ -245,17 +235,16 @@ impl CanvasGui {
             }
         }
 
-        if !changes.is_empty() {
-            self.perform(Action::ChangeColor { changes }, ActionMood::Normal);
-        }
+        self.perform(Action::ChangeColor { changes }, ActionMood::Normal);
     }
 
-    /// Apply the selected tool at `cell`, in response to a press or drag over the grid.
+    /// Apply `tool` (which is `effective_tool`, not necessarily `current_tool`) at `cell`, in
+    /// response to a press or drag over the grid.
     ///
     /// The lasso never arrives here: it has to keep tracking the pointer once it leaves the
     /// grid, so `canvas_with_clues` deals with it before there is a cell to speak of.
-    pub(super) fn pointer_tool_input(&mut self, cell: CellIdx, pointer: PaintPointer) {
-        let picture = self.document.solution_mut();
+    pub(super) fn pointer_tool_input(&mut self, cell: CellIdx, pointer: PaintPointer, tool: Tool) {
+        let picture = self.document.try_solution().unwrap();
         // The meaning of "erase" differs depending on the mode:
         let erased = if picture.palette().contains_key(&UNSOLVED) {
             UNSOLVED
@@ -286,7 +275,7 @@ impl CanvasGui {
             BACKGROUND
         };
 
-        match self.current_tool {
+        match tool {
             Tool::Pencil => {
                 let mood = if pointer.pressed {
                     self.drag_start_color = paint_color;
@@ -304,10 +293,7 @@ impl CanvasGui {
             }
             Tool::FloodFill => {
                 if pointer.clicked {
-                    let original_color = self.current_color;
-                    self.current_color = paint_color;
-                    self.flood_fill(cell);
-                    self.current_color = original_color;
+                    self.flood_fill(cell, paint_color);
                 }
             }
             Tool::LineAlongLane => {
@@ -337,8 +323,8 @@ impl CanvasGui {
     }
 
     /// The cells between two points along whichever lane best matches the drag.
-    fn line_between(&mut self, start: CellIdx, end: CellIdx) -> HashMap<CellIdx, Color> {
-        let picture = self.document.solution_mut();
+    fn line_between(&self, start: CellIdx, end: CellIdx) -> HashMap<CellIdx, Color> {
+        let picture = self.document.try_solution().unwrap();
 
         let mut changes = HashMap::new();
         if start == end {
@@ -481,7 +467,7 @@ mod line_tool_tests {
     /// to the row: the nearest lane by angle, not an exact row/column match.
     #[test]
     fn a_near_horizontal_drag_snaps_to_the_row() {
-        let mut gui = canvas();
+        let gui = canvas();
         // From (1,1), drag toward (4,2): mostly rightward with a little drop, so the row
         // (angle 0) is closer than the column (angle 90) to the drag direction.
         let changes = gui.line_between(at(1, 1), at(4, 2));
@@ -495,7 +481,7 @@ mod line_tool_tests {
     /// Symmetric case: a near-vertical drag snaps to the column instead.
     #[test]
     fn a_near_vertical_drag_snaps_to_the_column() {
-        let mut gui = canvas();
+        let gui = canvas();
         // From (1,1), drag toward (2,4): mostly downward with a little sideways drift.
         let changes = gui.line_between(at(1, 1), at(2, 4));
 
@@ -508,7 +494,7 @@ mod line_tool_tests {
     /// span behind the origin, not just the endpoint.
     #[test]
     fn dragging_backward_along_a_lane_still_draws_the_span() {
-        let mut gui = canvas();
+        let gui = canvas();
         let changes = gui.line_between(at(4, 2), at(1, 3));
 
         let mut got: Vec<CellIdx> = changes.keys().copied().collect();
@@ -637,14 +623,14 @@ mod paint_pointer_tests {
     #[test]
     fn the_pencil_paints_a_stroke_and_toggles() {
         let mut gui = editor(Tool::Pencil);
-        gui.pointer_tool_input(at(0, 0), press(PaintIntent::Current));
-        gui.pointer_tool_input(at(1, 0), drag(PaintIntent::Current));
-        gui.pointer_tool_input(at(1, 0), release());
+        gui.pointer_tool_input(at(0, 0), press(PaintIntent::Current), gui.current_tool);
+        gui.pointer_tool_input(at(1, 0), drag(PaintIntent::Current), gui.current_tool);
+        gui.pointer_tool_input(at(1, 0), release(), gui.current_tool);
         assert_eq!(cell(&gui, at(0, 0)), Color(1));
         assert_eq!(cell(&gui, at(1, 0)), Color(1));
         assert_eq!(gui.undo_stack.len(), 1, "one stroke is one undo step");
 
-        gui.pointer_tool_input(at(0, 0), press(PaintIntent::Current));
+        gui.pointer_tool_input(at(0, 0), press(PaintIntent::Current), gui.current_tool);
         assert_eq!(cell(&gui, at(0, 0)), BACKGROUND);
     }
 
@@ -664,8 +650,8 @@ mod paint_pointer_tests {
             (PaintIntent::Current, Color(1)),
             (PaintIntent::Erase, UNSOLVED),
         ] {
-            gui.pointer_tool_input(corner, press(intent));
-            gui.pointer_tool_input(corner, release());
+            gui.pointer_tool_input(corner, press(intent), gui.current_tool);
+            gui.pointer_tool_input(corner, release(), gui.current_tool);
             assert_eq!(cell(&gui, corner), want, "after {intent:?}");
         }
     }
@@ -674,9 +660,9 @@ mod paint_pointer_tests {
     #[test]
     fn flood_fill_waits_for_the_click() {
         let mut gui = editor(Tool::FloodFill);
-        gui.pointer_tool_input(at(2, 2), press(PaintIntent::Current));
+        gui.pointer_tool_input(at(2, 2), press(PaintIntent::Current), gui.current_tool);
         assert_eq!(cell(&gui, at(2, 2)), BACKGROUND);
-        gui.pointer_tool_input(at(2, 2), release());
+        gui.pointer_tool_input(at(2, 2), release(), gui.current_tool);
         assert!(
             gui.document
                 .try_solution()
@@ -688,7 +674,7 @@ mod paint_pointer_tests {
 
         let mut ruling_out = release();
         ruling_out.intent = PaintIntent::Background;
-        gui.pointer_tool_input(at(0, 0), ruling_out);
+        gui.pointer_tool_input(at(0, 0), ruling_out, gui.current_tool);
         assert_eq!(cell(&gui, at(4, 4)), BACKGROUND);
     }
 
@@ -697,13 +683,39 @@ mod paint_pointer_tests {
     #[test]
     fn the_line_tool_follows_the_drag() {
         let mut gui = editor(Tool::LineAlongLane);
-        gui.pointer_tool_input(at(0, 1), press(PaintIntent::Current));
-        gui.pointer_tool_input(at(2, 1), drag(PaintIntent::Current));
-        gui.pointer_tool_input(at(3, 1), drag(PaintIntent::Current));
-        gui.pointer_tool_input(at(3, 1), release());
+        gui.pointer_tool_input(at(0, 1), press(PaintIntent::Current), gui.current_tool);
+        gui.pointer_tool_input(at(2, 1), drag(PaintIntent::Current), gui.current_tool);
+        gui.pointer_tool_input(at(3, 1), drag(PaintIntent::Current), gui.current_tool);
+        gui.pointer_tool_input(at(3, 1), release(), gui.current_tool);
         let row: Vec<Color> = (0..5).map(|x| cell(&gui, at(x, 1))).collect();
         assert_eq!(row, [Color(1), Color(1), Color(1), Color(1), BACKGROUND]);
         assert!(gui.line_tool_state.is_none());
         assert_eq!(gui.undo_stack.len(), 1);
+    }
+
+    /// Picking another tool partway through a line (with its key, say) leaves the line in charge
+    /// until the drag is over — and then lets go of it, rather than leaving the line tool stuck.
+    #[test]
+    fn switching_tools_mid_line_still_finishes_the_line() {
+        let ctx = egui::Context::default();
+        // As the canvas does it: whichever tool `effective_tool` says is driving the pointer.
+        let step = |gui: &mut CanvasGui, at: CellIdx, pointer: PaintPointer| {
+            let mut tool = gui.current_tool;
+            ctx.run_ui(egui::RawInput::default(), |ui| {
+                tool = gui.effective_tool(ui)
+            })
+            .drop_without_applying_deltas();
+            gui.pointer_tool_input(at, pointer, tool);
+        };
+
+        let mut gui = editor(Tool::LineAlongLane);
+        step(&mut gui, at(0, 1), press(PaintIntent::Current));
+        gui.current_tool = Tool::Lasso;
+        step(&mut gui, at(3, 1), drag(PaintIntent::Current));
+        step(&mut gui, at(3, 1), release());
+
+        let row: Vec<Color> = (0..5).map(|x| cell(&gui, at(x, 1))).collect();
+        assert_eq!(row, [Color(1), Color(1), Color(1), Color(1), BACKGROUND]);
+        assert!(gui.line_tool_state.is_none());
     }
 }

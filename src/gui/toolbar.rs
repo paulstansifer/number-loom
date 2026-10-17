@@ -28,7 +28,10 @@ pub(super) struct NewPuzzleDialog {
 /// the sidebar is the way to get to any other shape.
 const NEW_SQUARE_SIZE: (usize, usize) = (20, 20);
 
-/// Hexagon side length for a new triddler: 5 is equivalent to a
+/// Hexagon side length for a new triddler.
+///
+/// TODO: this said "5 is equivalent to a", and stopped. Finish the comparison (to a square
+/// puzzle's size, presumably).
 const NEW_TRI_SIDE: i32 = 5;
 
 impl NonogramGui {
@@ -94,7 +97,12 @@ impl NonogramGui {
     }
 
     pub(super) fn open_new_dialog(&mut self) {
-        let clue_style = self.editor_gui.document.solution_mut().clue_style();
+        let clue_style = self
+            .editor_gui
+            .document
+            .try_solution()
+            .unwrap()
+            .clue_style();
         self.new_dialog = Some(NewPuzzleDialog {
             shape: NewPuzzleShape::Square,
             clue_style,
@@ -260,7 +268,7 @@ impl NonogramGui {
                             ui.vertical_centered(|ui| {
                                 ui.label(
                                     RichText::new(format!("Failed to load library: {}", e))
-                                        .color(Color32::RED),
+                                        .color(Color32::DARK_RED),
                                 );
                             });
                         }
@@ -322,7 +330,8 @@ impl NonogramGui {
                         &sh_ui_2
                     };
                     ui.add(
-                        egui::TextEdit::multiline(&mut self.share_string.clone())
+                        // Read-only: an `&str` can be selected and copied, but not edited.
+                        egui::TextEdit::multiline(&mut self.share_string.as_str())
                             .font(TextStyle::Monospace)
                             .desired_width(text_width),
                     )
@@ -343,7 +352,7 @@ impl NonogramGui {
                         }
                     }
 
-                    if self.editor_gui.document.license == "CC BY 4.0" {
+                    if self.editor_gui.document.license == CC_BY {
                         if self.editor_gui.document.author.trim().is_empty() {
                             ui.label(
                                 "(The author field in your puzzle is empty; please use \
@@ -385,8 +394,7 @@ impl NonogramGui {
                             }
                             Err(e) => {
                                 self.editor_gui.status.set(StatusMessage::error(format!(
-                                    "Error loading WOVEN puzzle: {:?}",
-                                    e
+                                    "Error loading WOVEN puzzle: {e:#}"
                                 )));
                             }
                         }
@@ -421,17 +429,8 @@ impl NonogramGui {
                         self.save_result_receiver = receiver;
 
                         spawn_async(async move {
-                            let handle = rfd::AsyncFileDialog::new()
-                                .add_filter(
-                                    "all recognized formats",
-                                    &["png", "gif", "bmp", "xml", "pbn", "txt", "g", "html"],
-                                )
-                                .add_filter("image", &["png", "gif", "bmp"])
-                                .add_filter("PBN", &["xml", "pbn"])
-                                .add_filter("chargrid", &["txt"])
-                                .add_filter("Olšák", &["g"])
-                                .add_filter("woven", &["woven"])
-                                .add_filter("HTML (for printing)", &["html"])
+                            let formats = [&READABLE_FORMATS[..], &[PRINTABLE_FORMAT]].concat();
+                            let handle = with_filters(rfd::AsyncFileDialog::new(), &formats)
                                 .set_file_name(document_copy.file.clone())
                                 .save_file()
                                 .await;
@@ -447,21 +446,23 @@ impl NonogramGui {
                                     Ok(())
                                 }
                                 .await;
-                                sender.send(result).unwrap();
+                                let _ = sender.send(result); // Don't panic if it's already gone!
                             }
                         });
-                    }
-
-                    if let Ok(Err(e)) = self.save_result_receiver.try_recv() {
-                        self.editor_gui
-                            .status
-                            .set(StatusMessage::error(format!("Error saving file: {:?}", e)));
                     }
                 },
             );
             if back {
                 self.show_save_share_window = false;
             }
+        }
+
+        // Out here, so that an error still gets reported if the window was closed while the file
+        // dialog was open.
+        if let Ok(Err(e)) = self.save_result_receiver.try_recv() {
+            self.editor_gui
+                .status
+                .set(StatusMessage::error(format!("Error saving file: {e:#}")));
         }
 
         if let Some(new_document) = new_document {
@@ -497,16 +498,7 @@ impl NonogramGui {
         self.opened_file_receiver = receiver;
 
         spawn_async(async move {
-            let handle = rfd::AsyncFileDialog::new()
-                .add_filter(
-                    "all recognized formats",
-                    &["png", "gif", "bmp", "xml", "pbn", "txt", "g"],
-                )
-                .add_filter("image", &["png", "gif", "bmp"])
-                .add_filter("PBN", &["xml", "pbn"])
-                .add_filter("chargrid", &["txt"])
-                .add_filter("Olsak", &["g"])
-                .add_filter("woven", &["woven"])
+            let handle = with_filters(rfd::AsyncFileDialog::new(), &READABLE_FORMATS)
                 .pick_file()
                 .await;
 
@@ -518,7 +510,7 @@ impl NonogramGui {
                     Err(e) => Err(e),
                 };
 
-                sender.send(document).unwrap();
+                let _ = sender.send(document); // Don't panic if it's already gone!
             }
         });
     }
@@ -534,11 +526,36 @@ impl NonogramGui {
                 Err(e) => {
                     self.editor_gui
                         .status
-                        .set(StatusMessage::error(format!("Error loading file: {:?}", e)));
+                        .set(StatusMessage::error(format!("Error loading file: {e:#}")));
                 }
             }
         }
     }
+}
+
+/// The file types Open can read (and Save can write), as the file dialog names them.
+const READABLE_FORMATS: [(&str, &[&str]); 5] = [
+    ("image", &["png", "gif", "bmp"]),
+    ("PBN", &["xml", "pbn"]),
+    ("chargrid", &["txt"]),
+    ("Olšák", &["g"]),
+    ("woven", &["woven"]),
+];
+
+/// What Save can write, but Open can't read.
+const PRINTABLE_FORMAT: (&str, &[&str]) = ("HTML (for printing)", &["html"]);
+
+/// `dialog`, offering `formats`, each on its own and all of them at once (first, as the default).
+fn with_filters(dialog: rfd::AsyncFileDialog, formats: &[(&str, &[&str])]) -> rfd::AsyncFileDialog {
+    let all: Vec<&str> = formats
+        .iter()
+        .flat_map(|(_, exts)| *exts)
+        .copied()
+        .collect();
+    formats.iter().fold(
+        dialog.add_filter("all recognized formats", &all),
+        |dialog, (name, exts)| dialog.add_filter(*name, exts),
+    )
 }
 
 /// `document`, with `progress` in it if `save_progress` (and none otherwise, even if it was loaded
@@ -584,5 +601,26 @@ mod tests {
             opened.try_solution().unwrap().cells(),
             doc.try_solution().unwrap().cells()
         );
+    }
+
+    /// Progress that came with a puzzle opened in the editor is still there to save after the
+    /// editor has drawn the picture.
+    #[test]
+    fn loaded_progress_survives_the_editor() {
+        use crate::solve::line_solve::Cell;
+
+        let woven = include_str!("../../examples/woven/square_bw.1.woven");
+        let mut doc =
+            crate::formats::woven::from_woven(woven.trim(), "test.woven".to_string()).unwrap();
+        let answer = doc.solution().unwrap().cells().raw.to_vec();
+        let mut progress: PartialSolution = vec![Cell::new_anything(); answer.len()].into();
+        progress[CellIdx(0)] = Cell::from_color(answer[0]);
+        doc.set_in_progress(Some(progress));
+
+        let mut gui = NonogramGui::new(doc);
+        egui::Context::default()
+            .run_ui(egui::RawInput::default(), |ui| gui.main_ui(ui))
+            .drop_without_applying_deltas();
+        assert!(gui.solve_progress().is_some());
     }
 }

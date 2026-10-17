@@ -104,7 +104,7 @@ impl CanvasGui {
             return; // Already lifted; a second drag just changes the offset.
         }
 
-        let picture = self.document.solution_mut();
+        let picture = self.document.try_solution().unwrap();
         let displayed = selection.displayed_cells(picture);
         let cells = picture.cells();
 
@@ -141,7 +141,7 @@ impl CanvasGui {
             return;
         };
 
-        let picture = self.document.solution_mut();
+        let picture = self.document.try_solution().unwrap();
         let mut mask: TiVec<CellIdx, bool> = vec![false; picture.cells().len()].into();
         let mut changes = HashMap::new();
         for (cell, color) in floating {
@@ -173,7 +173,7 @@ impl CanvasGui {
         let Some(selection) = &self.selection else {
             return;
         };
-        let picture = self.document.solution_mut();
+        let picture = self.document.try_solution().unwrap();
         let changes: HashMap<CellIdx, Color> = selection
             .displayed_cells(picture)
             .into_iter()
@@ -186,9 +186,9 @@ impl CanvasGui {
 
     /// Whether the point is inside the selection as it's currently displayed — i.e. whether
     /// pressing there starts a move rather than a new lasso.
-    fn selection_contains(&mut self, p: Point) -> bool {
-        let picture = self.document.solution_mut();
-        let Some(cell) = picture.cell_at(p).and_then(|c| picture.cell_of(c)) else {
+    fn selection_contains(&self, p: Point) -> bool {
+        let picture = self.document.try_solution().unwrap();
+        let Some(cell) = picture.cell_containing(p) else {
             return false;
         };
         self.cell_is_selected(cell)
@@ -211,8 +211,9 @@ impl CanvasGui {
             } else {
                 self.flatten_selection();
                 self.selection = None;
-                let mut selection =
-                    Selection::new(vec![false; self.document.solution_mut().cells().len()].into());
+                let mut selection = Selection::new(
+                    vec![false; self.document.try_solution().unwrap().cells().len()].into(),
+                );
                 selection.drawing = Some(vec![p]);
                 self.selection = Some(selection);
             }
@@ -223,7 +224,7 @@ impl CanvasGui {
                     .and_then(|s| s.dragging)
                     .map(|(grab, offset_at_grab)| {
                         let by = crate::layout::Vec2::new(p.x - grab.x, p.y - grab.y);
-                        let (du, dv) = self.document.solution_mut().snap_translation(by);
+                        let (du, dv) = self.document.try_solution().unwrap().snap_translation(by);
                         (offset_at_grab.0 + du, offset_at_grab.1 + dv)
                     });
             if let Some(selection) = &mut self.selection {
@@ -246,7 +247,7 @@ impl CanvasGui {
                 selection.drawing.take()
             });
             if let Some(path) = path {
-                let mask = cells_in_lasso(self.document.solution_mut(), &path);
+                let mask = cells_in_lasso(self.document.try_solution().unwrap(), &path);
                 if let Some(selection) = &mut self.selection {
                     selection.mask = mask;
                     selection.since = Instant::now();
@@ -279,7 +280,7 @@ impl CanvasGui {
 
     /// The traditional four-arrow cursor over the selection says "this can be dragged"; the
     /// crosshair elsewhere says "this draws a loop".
-    pub(super) fn lasso_cursor(&mut self, ui: &egui::Ui, hovered_cell: Option<CellIdx>) {
+    pub(super) fn lasso_cursor(&self, ui: &egui::Ui, hovered_cell: Option<CellIdx>) {
         // Not over the grid at all — leave the cursor to whatever else is under it.
         let Some(cell) = hovered_cell else {
             return;
@@ -298,7 +299,7 @@ impl CanvasGui {
 
     /// Whether a cell is part of the selection as displayed. Asks where the cell *came from*
     /// rather than materializing the whole displaced set.
-    fn cell_is_selected(&mut self, cell: CellIdx) -> bool {
+    fn cell_is_selected(&self, cell: CellIdx) -> bool {
         let Some(selection) = &self.selection else {
             return false;
         };
@@ -306,8 +307,11 @@ impl CanvasGui {
             return false;
         }
         let (u, v) = selection.offset;
-        let anchor = self.document.solution_mut().translate_cell(cell, (-u, -v));
-        let selection = self.selection.as_ref().unwrap();
+        let anchor = self
+            .document
+            .try_solution()
+            .unwrap()
+            .translate_cell(cell, (-u, -v));
         anchor.is_some_and(|anchor| selection.mask[anchor])
     }
 }
@@ -330,11 +334,7 @@ pub fn cells_in_lasso(
     let mut mask: TiVec<CellIdx, bool> = vec![false; picture.cells().len()].into();
     if path.len() < 2 {
         // A click rather than a drag: just the cell under it, if any.
-        if let Some(cell) = path
-            .first()
-            .and_then(|p| picture.cell_at(*p))
-            .and_then(|c| picture.cell_of(c))
-        {
+        if let Some(cell) = path.first().and_then(|p| picture.cell_containing(*p)) {
             mask[cell] = true;
         }
         return mask;
@@ -351,7 +351,7 @@ pub fn cells_in_lasso(
         for i in 0..=steps {
             let t = i as f32 / steps as f32;
             let p = Point::new(a.x + dx * t, a.y + dy * t);
-            if let Some(cell) = picture.cell_at(p).and_then(|c| picture.cell_of(c)) {
+            if let Some(cell) = picture.cell_containing(p) {
                 mask[cell] = true;
             }
         }

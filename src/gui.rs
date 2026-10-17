@@ -141,10 +141,10 @@ use crate::{
 };
 use egui::{Color32, Pos2, Rect, RichText, Shape, Style, TextStyle, Vec2, Visuals};
 
-/// The editor still only understands rows and columns. Rather than panicking deep inside a
-/// drawing routine, every entry point that needs a square picture says so here.
-const TRIDDLER_UNSUPPORTED: &str = "the editor can't edit triddlers yet";
 use egui_material_icons::icons;
+
+/// The license a puzzle needs for it to be contributed to the library.
+const CC_BY: &str = "CC BY 4.0";
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn edit_image(document: Document) {
@@ -617,6 +617,63 @@ pub enum ActionMood {
 }
 
 impl CanvasGui {
+    /// A canvas for editing `document`, or, if `solving`, for solving it. `document` has to have
+    /// a picture.
+    fn new(
+        document: Document,
+        solving: bool,
+        status: SharedStatus,
+        progress: SharedProgress,
+    ) -> Self {
+        let picture = document.try_solution().expect("a canvas needs a picture");
+        let solved_mask = vec![true; picture.cells().len()].into();
+        let current_color = default_color(picture.palette());
+        let tool = if solving {
+            Tool::LineAlongLane
+        } else {
+            Tool::Pencil
+        };
+
+        CanvasGui {
+            document,
+            version: 0,
+            current_color,
+            drag_start_color: current_color,
+            undo_stack: vec![],
+            redo_stack: vec![],
+            current_tool: tool,
+            previous_tool: tool,
+            line_tool_state: None,
+            selection: None,
+            annotations: vec![],
+            annotate_drag: None,
+            checked_clues: HashSet::new(),
+            solving,
+            middle_pans: false,
+            touch_area: None,
+            touch: Default::default(),
+            picture_rect: None,
+            needs_fit: true,
+            solved_mask: Staleable {
+                val: (String::new(), solved_mask),
+                version: 0,
+            },
+            disambiguator: Staleable {
+                val: Disambiguator::default(),
+                version: 0,
+            },
+            backtrack_solver: Staleable {
+                val: BacktrackSolver::default(),
+                version: 0,
+            },
+            // Never fresh, so that the first frame names the document after its title, as every
+            // change after that does.
+            id: Staleable::default(),
+            status,
+            progress,
+        }
+    }
+
     /// Sync `self.current_color` and `self.drag_start_color` to the document, for safety.
     fn clamp_colors_to_palette(&mut self) {
         let Some(picture) = self.document.try_solution() else {
@@ -722,8 +779,7 @@ impl CanvasGui {
                     }
                 }
             }
-            Action::ReplaceDocument { document } => {
-                let mut document = document;
+            Action::ReplaceDocument { mut document } => {
                 if let Ok(true) = document.has_complete_solution() {
                     if document.try_solution().map(|s| s.extent())
                         != self.document.try_solution().map(|s| s.extent())
@@ -894,63 +950,19 @@ impl NonogramGui {
             );
         }
 
-        let picture = document.try_solution().expect("just ensured there is one");
-        let solved_mask: TiVec<CellIdx, bool> = vec![true; picture.cells().len()].into();
-
-        let current_color = default_color(picture.palette());
-
         if document.author.is_empty()
             && let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME)
         {
             document.author = author;
         }
 
+        let status = StatusCell::new();
+        if let Some(message) = load_error {
+            status.set(StatusMessage::error(message));
+        }
+
         NonogramGui {
-            editor_gui: CanvasGui {
-                document,
-                version: 0,
-                current_color,
-                drag_start_color: current_color,
-                undo_stack: vec![],
-                redo_stack: vec![],
-                current_tool: Tool::Pencil,
-                previous_tool: Tool::Pencil,
-                line_tool_state: None,
-                selection: None,
-                annotations: vec![],
-                annotate_drag: None,
-                checked_clues: HashSet::new(),
-                solving: false,
-                middle_pans: false,
-                touch_area: None,
-                touch: Default::default(),
-                picture_rect: None,
-                needs_fit: true,
-                solved_mask: Staleable {
-                    val: ("".to_string(), solved_mask),
-                    version: 0,
-                },
-                disambiguator: Staleable {
-                    val: Disambiguator::new(),
-                    version: 0,
-                },
-                backtrack_solver: Staleable {
-                    val: BacktrackSolver::new(),
-                    version: 0,
-                },
-                id: Staleable {
-                    val: "".to_string(),
-                    version: 0,
-                },
-                status: {
-                    let status = StatusCell::new();
-                    if let Some(message) = load_error {
-                        status.set(StatusMessage::error(message));
-                    }
-                    status
-                },
-                progress: Rc::new(RefCell::new(None)),
-            },
+            editor_gui: CanvasGui::new(document, false, status, Rc::new(RefCell::new(None))),
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
             save_result_receiver: mpsc::channel().1,
@@ -1030,12 +1042,12 @@ impl NonogramGui {
         let version = canvas.version;
         let backtrack = canvas
             .backtrack_solver
-            .get_or_refresh(version, BacktrackSolver::new);
+            .get_or_refresh(version, BacktrackSolver::default);
         backtrack.poll(version, &mut canvas.solved_mask);
         let backtrack_progress = backtrack.running_progress();
         let disambiguator = canvas
             .disambiguator
-            .get_or_refresh(version, Disambiguator::new);
+            .get_or_refresh(version, Disambiguator::default);
         disambiguator.poll(&canvas.status);
         *canvas.progress.borrow_mut() = backtrack_progress.or(disambiguator.running_progress());
     }
@@ -1056,8 +1068,8 @@ impl NonogramGui {
             Ok(grid_solve::Report {
                 solve_counts,
                 cells_left,
-                solution: _solution,
                 solved_mask,
+                ..
             }) => {
                 self.solve_cells_left = Some(cells_left);
                 (
@@ -1070,7 +1082,7 @@ impl NonogramGui {
             // Can't happen, because the puzzle has a solution!
             Err(e) => {
                 self.solve_cells_left = None;
-                (format!("Error: {:?}", e), None)
+                (format!("Error: {e:#}"), None)
             }
         };
         self.solve_report = report.clone();
@@ -1158,19 +1170,18 @@ impl NonogramGui {
         ui.text_edit_multiline(&mut self.editor_gui.document.description)
             .labelled_by(description_label.id);
 
-        let cc_by_license_str = "CC BY 4.0";
-        let mut is_cc_by = self.editor_gui.document.license == cc_by_license_str;
+        let mut is_cc_by = self.editor_gui.document.license == CC_BY;
 
         ui.label("License:");
 
         ui.horizontal(|ui| {
             let radio = ui.radio_value(&mut is_cc_by, true, "");
             if radio.changed() {
-                self.editor_gui.document.license = cc_by_license_str.to_string();
+                self.editor_gui.document.license = CC_BY.to_string();
             };
             let link = ui.add(
                 egui::Hyperlink::from_label_and_url(
-                    cc_by_license_str,
+                    CC_BY,
                     "https://creativecommons.org/licenses/by/4.0/",
                 )
                 .open_in_new_tab(true),
@@ -1768,54 +1779,111 @@ impl NonogramGui {
     }
 }
 
-pub struct Disambiguator {
-    /// Indexed by dense cell index, like `Solution::cells`.
-    report: Option<TiVec<CellIdx, (Color, f32)>>,
-    pub terminate_s: mpsc::Sender<()>,
-    progress_r: mpsc::Receiver<f32>,
+/// A search running in the background (see `spawn_async`), so that the GUI neither freezes nor
+/// waits for it: it reports how far it's got as it goes and then its result, and it can be told to
+/// stop early. `Disambiguator` and `BacktrackSolver` each drive one.
+pub struct BackgroundSearch<R> {
+    running: bool,
     progress: f32,
-    report_r: mpsc::Receiver<DisambigResult>,
+    progress_r: mpsc::Receiver<f32>,
+    result_r: mpsc::Receiver<R>,
+    terminate_s: mpsc::Sender<()>,
 }
 
-impl Default for Disambiguator {
+/// The search's own ends of a `BackgroundSearch`'s channels.
+pub struct SearchEnds<R> {
+    pub progress: mpsc::Sender<f32>,
+    pub terminate: mpsc::Receiver<()>,
+    pub result: mpsc::Sender<R>,
+}
+
+impl<R> Default for BackgroundSearch<R> {
     fn default() -> Self {
-        Self::new()
+        BackgroundSearch {
+            running: false,
+            progress: 0.0,
+            progress_r: session::dead_receiver(),
+            result_r: session::dead_receiver(),
+            terminate_s: mpsc::channel().0,
+        }
     }
 }
 
-impl Disambiguator {
-    pub fn new() -> Self {
-        Disambiguator {
-            report: None,
-            progress: 0.0,
-            terminate_s: mpsc::channel().0,
-            progress_r: mpsc::channel().1,
-            report_r: mpsc::channel().1,
+/// A change to the picture replaces whatever owns the search (see `NonogramGui::editor_frame`),
+/// and then nobody is left to hear what it would have found.
+impl<R> Drop for BackgroundSearch<R> {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl<R> BackgroundSearch<R> {
+    /// Get ready for a new search, stopping any that's under way. The search itself is then
+    /// spawned with the ends this returns.
+    pub fn start(&mut self) -> SearchEnds<R> {
+        self.stop();
+        let (progress, progress_r) = mpsc::channel();
+        let (result, result_r) = mpsc::channel();
+        let (terminate_s, terminate) = mpsc::channel();
+        self.progress_r = progress_r;
+        self.result_r = result_r;
+        self.terminate_s = terminate_s;
+        self.running = true;
+        self.progress = 0.0;
+        SearchEnds {
+            progress,
+            terminate,
+            result,
         }
     }
 
-    // Must do this any time the resolution changes!
-    // (Currently that only happens through `ReplacePicture`)
-    pub fn reset(&mut self) {
-        self.report = None;
-        self.progress = 0.0;
-    }
-
-    fn running(&self) -> bool {
-        self.progress > 0.0 && self.progress < 1.0
+    pub fn running(&self) -> bool {
+        self.running
     }
 
     /// How far along it is, while it's running.
     pub fn running_progress(&self) -> Option<f32> {
-        self.running().then_some(self.progress)
+        self.running.then_some(self.progress)
+    }
+
+    /// Take in whatever the search has reported since last time, and its result, if that's
+    /// arrived. A search that has been stopped still reports what it found before it stopped.
+    pub fn poll(&mut self) -> Option<R> {
+        while let Ok(p) = self.progress_r.try_recv() {
+            self.progress = p;
+        }
+        let result = self.result_r.try_recv().ok()?;
+        self.running = false;
+        Some(result)
+    }
+
+    pub fn stop(&mut self) {
+        let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
+        self.running = false;
+    }
+}
+
+/// Drives `grid_solve::disambig_candidates` from a button.
+#[derive(Default)]
+pub struct Disambiguator {
+    /// Indexed by dense cell index, like `Solution::cells`.
+    report: Option<TiVec<CellIdx, (Color, f32)>>,
+    search: BackgroundSearch<DisambigResult>,
+}
+
+impl Disambiguator {
+    fn running(&self) -> bool {
+        self.search.running()
+    }
+
+    /// How far along it is, while it's running.
+    pub fn running_progress(&self) -> Option<f32> {
+        self.search.running_progress()
     }
 
     /// Collect whatever the search has sent back since last time.
     pub fn poll(&mut self, status: &SharedStatus) {
-        while let Ok(p) = self.progress_r.try_recv() {
-            self.progress = p;
-        }
-        if let Ok(result) = self.report_r.try_recv() {
+        if let Some(result) = self.search.poll() {
             // Clear any stale message (e.g. a load error from before) now that disambiguation
             // has something new to say (or, for `Report`, nothing to say).
             status.maybe_clear_on_dirty();
@@ -1831,23 +1899,19 @@ impl Disambiguator {
     }
 
     pub fn start(&mut self, picture: &DynSolution) {
-        let (p_s, p_r) = mpsc::channel();
-        let (r_s, r_r) = mpsc::channel();
-        let (t_s, t_r) = mpsc::channel();
-        self.progress_r = p_r;
-        self.terminate_s = t_s;
-        self.report_r = r_r;
-
+        let SearchEnds {
+            progress,
+            terminate,
+            result,
+        } = self.search.start();
         let solution = picture.clone();
         spawn_async(async move {
-            let result = disambig_candidates(&solution, p_s, t_r).await;
-            r_s.send(result).unwrap();
+            let _ = result.send(disambig_candidates(&solution, progress, terminate).await);
         });
     }
 
     pub fn stop(&mut self) {
-        let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
-        self.progress = 0.0;
+        self.search.stop();
     }
 
     /// The desktop's buttons. (`poll` has already taken in whatever there was, so "Clear"
@@ -1881,45 +1945,21 @@ impl Disambiguator {
     }
 }
 
-/// Drives `conprop::conprop_solve_in_background` from a button: same shape as `Disambiguator` (a
-/// spawned async task reporting back over channels, so the search can run in the background and
-/// be stopped without freezing the GUI).
+/// Drives `conprop::conprop_solve_in_background` from a button.
+#[derive(Default)]
 pub struct BacktrackSolver {
     /// The search's outcome, already formatted for display.
     report: Option<String>,
-    pub terminate_s: mpsc::Sender<()>,
-    progress_r: mpsc::Receiver<f32>,
-    progress: f32,
     /// The formatted report, alongside the mask `canvas.rs` shades unsolved cells with — the same
     /// shape `editor_gui.solved_mask` already holds for the line-logic `Solve` button, so the two
     /// buttons can share it.
-    report_r: mpsc::Receiver<(String, Option<TiVec<CellIdx, bool>>)>,
-}
-
-impl Default for BacktrackSolver {
-    fn default() -> Self {
-        Self::new()
-    }
+    search: BackgroundSearch<(String, Option<TiVec<CellIdx, bool>>)>,
 }
 
 impl BacktrackSolver {
-    pub fn new() -> Self {
-        BacktrackSolver {
-            report: None,
-            progress: 0.0,
-            terminate_s: mpsc::channel().0,
-            progress_r: mpsc::channel().1,
-            report_r: mpsc::channel().1,
-        }
-    }
-
-    fn running(&self) -> bool {
-        self.progress > 0.0 && self.progress < 1.0
-    }
-
     /// How far along it is, while it's running.
     pub fn running_progress(&self) -> Option<f32> {
-        self.running().then_some(self.progress)
+        self.search.running_progress()
     }
 
     /// Collect whatever the search has sent back since last time.
@@ -1928,11 +1968,7 @@ impl BacktrackSolver {
         version: Version,
         solved_mask: &mut Staleable<(String, TiVec<CellIdx, bool>)>,
     ) {
-        while let Ok(p) = self.progress_r.try_recv() {
-            self.progress = p;
-        }
-
-        if let Ok((report, mask)) = self.report_r.try_recv() {
+        if let Some((report, mask)) = self.search.poll() {
             // Shared with the line-logic `Solve` button: whichever one ran last is the one
             // shading the canvas, with no indication of which of the two it was.
             if let Some(mask) = mask {
@@ -1943,19 +1979,24 @@ impl BacktrackSolver {
     }
 
     pub fn start(&mut self, picture: &DynSolution) {
-        let (p_s, p_r) = mpsc::channel();
-        let (r_s, r_r) = mpsc::channel();
-        let (t_s, t_r) = mpsc::channel();
-        self.progress_r = p_r;
-        self.terminate_s = t_s;
-        self.report_r = r_r;
+        let SearchEnds {
+            progress,
+            terminate,
+            result,
+        } = self.search.start();
         self.report = None;
 
         let picture = picture.clone();
         spawn_async(async move {
             let puzzle = picture.to_puzzle();
             let outcome = crate::with_puzzle!(&puzzle, |p| {
-                conprop::conprop_solve_in_background(p, &SolveOptions::default(), p_s, t_r).await
+                conprop::conprop_solve_in_background(
+                    p,
+                    &SolveOptions::default(),
+                    progress,
+                    terminate,
+                )
+                .await
             });
             let (report, mask) = match outcome {
                 Ok(report) => (
@@ -1965,20 +2006,19 @@ impl BacktrackSolver {
                     ),
                     Some(report.solved_mask),
                 ),
-                Err(e) => (format!("{:?}", e), None),
+                Err(e) => (format!("{e:#}"), None),
             };
-            let _ = r_s.send((report, mask));
+            let _ = result.send((report, mask));
         });
     }
 
     pub fn stop(&mut self) {
-        let _ = self.terminate_s.send(()); // Don't panic if it's already gone!
-        self.progress = 0.0;
+        self.search.stop();
     }
 
     /// The button, and the report once there is one.
     pub fn widget(&mut self, picture: &DynSolution, ui: &mut egui::Ui) {
-        let running = self.running();
+        let running = self.search.running();
 
         let (mut start, mut stop) = (false, false);
         ui.horizontal(|ui| {
@@ -1999,6 +2039,69 @@ impl BacktrackSolver {
         if let Some(report) = &self.report {
             ui.label(report);
         }
+    }
+}
+
+#[cfg(test)]
+mod background_search_tests {
+    use super::*;
+
+    /// Running from the moment it starts, rather than from its first progress report, and until
+    /// its result is in.
+    #[test]
+    fn a_search_runs_from_its_start_to_its_result() {
+        let mut search = BackgroundSearch::<u32>::default();
+        assert_eq!(search.running_progress(), None);
+
+        let ends = search.start();
+        assert_eq!(search.running_progress(), Some(0.0));
+        ends.progress.send(0.5).unwrap();
+        assert_eq!(search.poll(), None);
+        assert_eq!(search.running_progress(), Some(0.5));
+
+        ends.result.send(7).unwrap();
+        assert_eq!(search.poll(), Some(7));
+        assert!(!search.running());
+    }
+
+    /// What replacing a stale `Disambiguator` or `BacktrackSolver` does to its search.
+    #[test]
+    fn dropping_a_search_stops_it() {
+        let mut search = BackgroundSearch::<u32>::default();
+        let ends = search.start();
+        drop(search);
+        assert!(ends.terminate.try_recv().is_ok());
+    }
+
+    /// Starting over stops the search already under way, and its result goes nowhere.
+    #[test]
+    fn starting_again_stops_the_first_search() {
+        let mut search = BackgroundSearch::<u32>::default();
+        let first = search.start();
+        let second = search.start();
+        assert!(first.terminate.try_recv().is_ok());
+        assert!(first.result.send(1).is_err());
+
+        second.result.send(2).unwrap();
+        assert_eq!(search.poll(), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+
+    /// As it is after every change: the id is the title.
+    #[test]
+    fn the_document_is_named_after_its_title_from_the_start() {
+        let mut doc = Document::from_solution(
+            DynSolution::Square(Solution::blank_bw(3, 3)),
+            "test".to_string(),
+        );
+        doc.title = "Teapot".to_string();
+        let mut gui = NonogramGui::new(doc);
+        gui.editor_frame();
+        assert_eq!(gui.editor_gui.document.id, "Teapot");
     }
 }
 

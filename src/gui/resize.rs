@@ -9,6 +9,15 @@ use super::*;
 /// For screen readers: the "how many lines" box has no label of its own.
 const LINES_TO_AFFECT_NAME: &str = "Number of lines to add or remove";
 
+/// Which side of a square picture to add lines to or take them from.
+#[derive(Clone, Copy)]
+enum Edge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
 impl NonogramGui {
     /// Parses `lines_to_affect_string` (the resizer's "how many lines" box). On a bad value,
     /// marks the field visibly wrong (appends "??") rather than showing a separate error — the
@@ -23,55 +32,61 @@ impl NonogramGui {
         }
     }
 
-    fn square_resize(&mut self, top: Option<bool>, left: Option<bool>, add: bool) {
+    fn square_resize(&mut self, edge: Edge, add: bool) {
         // This resizer is inherently square: it adds and removes whole rows and columns.
         // Triangular puzzles resize by nudging one of six bounds instead — see `tri_resize`.
-        let Some(picture) = self.editor_gui.document.square_solution_mut() else {
-            self.editor_gui
-                .status
-                .set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
+        // (`resize_controls` only offers each resizer for its own shape.)
+        let Some(picture) = self
+            .editor_gui
+            .document
+            .try_solution()
+            .and_then(|s| s.as_square())
+        else {
             return;
         };
         let mut g = picture.to_columns();
         let Some(lines) = self.resize_lines() else {
             return;
         };
-        if let Some(left) = left {
-            let lines = if add {
-                lines
-            } else {
-                lines.min(g.len().saturating_sub(1)) // don't remove the last column!
-            };
-            if add {
-                g.resize(g.len() + lines, vec![BACKGROUND; g.first().unwrap().len()]);
-                if left {
-                    g.rotate_right(lines);
+        // `g` is a list of columns, each of which runs from top to bottom.
+        let near = matches!(edge, Edge::Top | Edge::Left);
+        match edge {
+            Edge::Left | Edge::Right => {
+                let lines = if add {
+                    lines
+                } else {
+                    lines.min(g.len().saturating_sub(1)) // don't remove the last column!
+                };
+                if add {
+                    g.resize(g.len() + lines, vec![BACKGROUND; g.first().unwrap().len()]);
+                    if near {
+                        g.rotate_right(lines);
+                    }
+                } else {
+                    if near {
+                        g.rotate_left(lines);
+                    }
+                    g.truncate(g.len() - lines);
                 }
-            } else {
-                if left {
-                    g.rotate_left(lines);
-                }
-                g.truncate(g.len() - lines);
             }
-        } else if let Some(top) = top {
-            let lines = if add {
-                lines
-            } else {
-                lines.min(g.first().unwrap().len().saturating_sub(1)) // don't remove the last row!
-            };
-            if add {
-                for row in g.iter_mut() {
-                    row.resize(row.len() + lines, BACKGROUND);
-                    if top {
-                        row.rotate_right(lines);
+            Edge::Top | Edge::Bottom => {
+                let lines = if add {
+                    lines
+                } else {
+                    lines.min(g.first().unwrap().len().saturating_sub(1)) // don't remove the last row!
+                };
+                for column in g.iter_mut() {
+                    if add {
+                        column.resize(column.len() + lines, BACKGROUND);
+                        if near {
+                            column.rotate_right(lines);
+                        }
+                    } else {
+                        if near {
+                            column.rotate_left(lines);
+                        }
+                        column.truncate(column.len() - lines);
                     }
-                }
-            } else {
-                for row in g.iter_mut() {
-                    if top {
-                        row.rotate_left(lines);
-                    }
-                    row.truncate(row.len() - lines);
                 }
             }
         }
@@ -103,10 +118,7 @@ impl NonogramGui {
             .try_solution()
             .and_then(|s| s.as_tri())
         else {
-            self.editor_gui
-                .status
-                .set(StatusMessage::error(TRIDDLER_UNSUPPORTED));
-            return;
+            return; // See `square_resize`.
         };
         let delta = if add { lines as i32 } else { -(lines as i32) };
         let Some(resized) = tri.resized(side, delta) else {
@@ -135,77 +147,45 @@ impl NonogramGui {
             ));
         });
 
+        // Acted on once the grid is done, because it borrows `lines_to_affect_string`.
+        let mut clicked = None;
+        // A "+" and a "−" for one edge: side by side above and below the box, stacked beside it.
+        let pair = |ui: &mut egui::Ui, edge: Edge, clicked: &mut Option<(Edge, bool)>| {
+            let buttons = |ui: &mut egui::Ui| {
+                for (icon, add) in [(icons::ICON_ADD, true), (icons::ICON_REMOVE, false)] {
+                    if ui.add(compact::icon_button(icon, layout)).clicked() {
+                        *clicked = Some((edge, add));
+                    }
+                }
+            };
+            match edge {
+                Edge::Top | Edge::Bottom => ui.horizontal(buttons),
+                Edge::Left | Edge::Right => ui.vertical(buttons),
+            };
+        };
+
         centered_row(ui, "resizer_row", |ui| {
             egui::Grid::new("resizer").show(ui, |ui| {
                 ui.label("");
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(compact::icon_button(icons::ICON_ADD, layout))
-                        .clicked()
-                    {
-                        self.square_resize(Some(true), None, true);
-                    }
-                    if ui
-                        .add(compact::icon_button(icons::ICON_REMOVE, layout))
-                        .clicked()
-                    {
-                        self.square_resize(Some(true), None, false);
-                    }
-                });
+                pair(ui, Edge::Top, &mut clicked);
                 ui.label("");
                 ui.end_row();
 
-                ui.vertical(|ui| {
-                    if ui
-                        .add(compact::icon_button(icons::ICON_ADD, layout))
-                        .clicked()
-                    {
-                        self.square_resize(None, Some(true), true);
-                    }
-                    if ui
-                        .add(compact::icon_button(icons::ICON_REMOVE, layout))
-                        .clicked()
-                    {
-                        self.square_resize(None, Some(true), false);
-                    }
-                });
+                pair(ui, Edge::Left, &mut clicked);
                 ui.text_edit_singleline(&mut self.lines_to_affect_string)
                     .accessible_name(LINES_TO_AFFECT_NAME);
-
-                ui.vertical(|ui| {
-                    if ui
-                        .add(compact::icon_button(icons::ICON_ADD, layout))
-                        .clicked()
-                    {
-                        self.square_resize(None, Some(false), true);
-                    }
-                    if ui
-                        .add(compact::icon_button(icons::ICON_REMOVE, layout))
-                        .clicked()
-                    {
-                        self.square_resize(None, Some(false), false);
-                    }
-                });
+                pair(ui, Edge::Right, &mut clicked);
                 ui.end_row();
 
                 ui.label("");
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(compact::icon_button(icons::ICON_ADD, layout))
-                        .clicked()
-                    {
-                        self.square_resize(Some(false), None, true);
-                    }
-                    if ui
-                        .add(compact::icon_button(icons::ICON_REMOVE, layout))
-                        .clicked()
-                    {
-                        self.square_resize(Some(false), None, false);
-                    }
-                });
+                pair(ui, Edge::Bottom, &mut clicked);
                 ui.label("");
             });
         });
+
+        if let Some((edge, add)) = clicked {
+            self.square_resize(edge, add);
+        }
     }
 
     /// Triangular counterpart to `resizer`: a hexagon holding the same "how many lines" box,

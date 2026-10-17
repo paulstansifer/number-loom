@@ -1,5 +1,5 @@
-//! Whether the user is working with a mouse or a touchscreen, which will decide how the canvas
-//! takes its input (see `mobile-plan.md`, Phase 4). It follows whatever was used last, not the
+//! Whether the user is working with a mouse or a touchscreen, which decides how the canvas takes
+//! its input (see `touch.rs`). It follows whatever was used last, not the
 //! size of the screen: a laptop can have both.
 
 /// How the user is pointing at things right now.

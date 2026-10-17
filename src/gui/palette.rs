@@ -206,7 +206,6 @@ impl CanvasGui {
         for (index, color) in self.palette_order().into_iter().enumerate() {
             let color_info = self
                 .document
-                .solution_mut()
                 .palette_mut()
                 .get_mut(&color)
                 .expect("just read out of this palette");
@@ -275,11 +274,11 @@ impl CanvasGui {
                 };
 
                 if !read_only {
-                    let mut edited_color = [r as f32 / 256.0, g as f32 / 256.0, b as f32 / 256.0];
+                    let mut edited_color = [r, g, b];
 
-                    let edit = ui.color_edit_button_rgb(&mut edited_color);
+                    let edit = ui.color_edit_button_srgb(&mut edited_color);
                     // `egui` only allows rectangular-swatch-of-current-color as the palette marker,
-                    // which doesn't look good in this case. (In fact, the color is also somewhat wrong)
+                    // which doesn't look good in this case.
                     // HACK: draw a pencil icon over it.
                     let visuals = *ui.style().interact(&edit);
                     let painter = ui.painter();
@@ -300,11 +299,8 @@ impl CanvasGui {
                     if edit.on_hover_text("Edit this color").changed() {
                         // TODO: this should probably also be undoable
                         picked_color = color;
-                        color_info.rgb = (
-                            (edited_color[0] * 256.0) as u8,
-                            (edited_color[1] * 256.0) as u8,
-                            (edited_color[2] * 256.0) as u8,
-                        );
+                        let [r, g, b] = edited_color;
+                        color_info.rgb = (r, g, b);
                     }
 
                     if color == BACKGROUND {

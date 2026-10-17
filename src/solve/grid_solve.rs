@@ -1103,7 +1103,7 @@ pub async fn disambig_candidates(
     let cell_count = s.cells().len();
     let mut res: TiVec<CellIdx, (Color, f32)> = vec![(BACKGROUND, 0.0); cell_count].into();
     if orig_cells_left == 0 {
-        progress.send(0.0).unwrap();
+        let _ = progress.send(0.0); // The GUI may have stopped listening
         return DisambigResult::Unnecessary;
     }
 
@@ -1130,7 +1130,7 @@ pub async fn disambig_candidates(
         }
 
         if cell.0 % 5 == 0 {
-            progress.send(cell.0 as f32 / cell_count as f32).unwrap();
+            let _ = progress.send(cell.0 as f32 / cell_count as f32);
         }
 
         gui::yield_now().await;
@@ -1141,7 +1141,7 @@ pub async fn disambig_candidates(
             return DisambigResult::Report(res);
         }
     }
-    progress.send(1.0).unwrap();
+    let _ = progress.send(1.0);
 
     DisambigResult::Report(res)
 }
@@ -1660,5 +1660,22 @@ mod tests {
 
         assert!(grid[CellIdx(1)].is_known_to_be(BACKGROUND)); // (x=1, y=0)
         assert!(grid[CellIdx(2)].is_known_to_be(BACKGROUND)); // (x=0, y=1)
+    }
+
+    /// The GUI abandons a disambiguation whenever the picture changes, which drops the receiving
+    /// end of its progress channel. On the web, the search runs on the main thread, so a panic
+    /// when it next reports would take the whole app down with it.
+    #[test]
+    fn disambiguating_with_nobody_listening_does_not_panic() {
+        let solution = crate::formats::char_grid::char_grid_to_solution("#.\n.#\n").unwrap();
+        let (progress, progress_r) = mpsc::channel();
+        drop(progress_r);
+        let (_terminate, terminate_r) = mpsc::channel();
+
+        let result = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(disambig_candidates(&solution, progress, terminate_r));
+        assert!(matches!(result, DisambigResult::Report(_)));
     }
 }

@@ -27,6 +27,7 @@ doesn't cover code comments, documentation for developers (like this file), or p
       palette.rs - the palette editor and its number-key shortcuts
       resize.rs - growing and shrinking the picture (for triddlers, it's complex!)
       toolbar.rs - the controls across the top, and the dialogs they open
+      auto_button.rs - a button to do something once, with a "do it every change" toggle.
       solver.rs - the solving view: clue rendering, line analysis, and the solve replay
       triddler.rs - special triangular grid drawing: rhombus clue gutters and the rosette
       triano.rs - special trianogram drawing: half-square "cap" colors and clue silhouettes
@@ -50,6 +51,7 @@ doesn't cover code comments, documentation for developers (like this file), or p
     geometry.rs - puzzle shapes: what cells exist, what lines they form, where they sit
     layout.rs - abstract drawing geometry (cell shapes, positions, grid lines, clue gutters)
     puzzle.rs - data structures
+    user_settings.rs - preferences that outlive a session
     solver_fuzzer.rs - stress test for solver correctness
     ocr-clue-bot/ - `ocr-clues`, which reads clues out of a picture of a puzzle (has its own DEVELOPING.md)
     bin/bench-pbnsolve.rs - speed comparison against `pbnsolve` (see below)

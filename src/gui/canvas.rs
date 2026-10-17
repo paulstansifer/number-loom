@@ -58,10 +58,6 @@ impl ClueOverlay<'_> {
 
 impl CanvasGui {
     /// Draw the picture and handle pointer input. Returns the hovered cell, if any.
-    ///
-    /// Shape-specific work happens in exactly two places: the hit test, and the render loop.
-    /// Everything else — the tools, undo, the overlays — works in dense cell indices and is the
-    /// same for every shape.
     pub fn canvas(
         &mut self,
         ui: &mut egui::Ui,
@@ -81,7 +77,7 @@ impl CanvasGui {
         render_style: RenderStyle,
         clues: Option<ClueOverlay<'_>>,
     ) -> (Option<CellIdx>, Option<ClueId>) {
-        let extent = self.document.solution_mut().extent();
+        let extent = self.document.try_solution().unwrap().extent();
 
         // Grow the drawing area to cover wherever the clues reach — the same bounds the HTML
         // export sizes its drawing to.
@@ -120,7 +116,7 @@ impl CanvasGui {
         // size. Checking here rather than at every resize/load site means there's no call site
         // to forget.
         if let Some(selection) = &self.selection
-            && selection.mask.len() != self.document.solution_mut().cells().len()
+            && selection.mask.len() != self.document.try_solution().unwrap().cells().len()
         {
             self.selection = None;
         }
@@ -141,10 +137,10 @@ impl CanvasGui {
 
         let mut shapes = vec![];
         let disambiguator = self.disambiguator.get_if_fresh(self.version);
-        let disambig_report = disambiguator.as_ref().and_then(|d| d.report.as_ref());
+        let disambig_report = disambiguator.and_then(|d| d.report.as_ref());
         let solved_mask = self.solved_mask.get_if_fresh(self.version);
-        let overlays_suppress_unsolved = disambig_report.is_some()
-            || disambiguator.is_some_and(|d| d.progress > 0.0 && d.progress < 1.0);
+        let overlays_suppress_unsolved =
+            disambig_report.is_some() || disambiguator.is_some_and(|d| d.running());
 
         let picture = self.document.try_solution().unwrap();
         let palette = picture.palette();
@@ -158,11 +154,13 @@ impl CanvasGui {
                     let color_info = &palette[&sol.cells[index]];
                     let solved =
                         solved_mask.is_none_or(|sm| sm.1[index]) || overlays_suppress_unsolved;
-                    let mut dr = (&palette[&BACKGROUND], 1.0);
-                    if let Some(report) = disambig_report.as_ref() {
-                        let (c, score) = report[index];
-                        dr = (&palette[&c], score);
-                    }
+                    let dr = match disambig_report {
+                        Some(report) => {
+                            let (c, score) = report[index];
+                            (&palette[&c], score)
+                        }
+                        None => (&palette[&BACKGROUND], 1.0),
+                    };
                     shapes.extend(cell_shape(
                         color_info,
                         solved,
@@ -292,14 +290,12 @@ impl CanvasGui {
     ) -> Option<CellIdx> {
         let cell_under = |picture: &crate::puzzle::DynSolution, pos: Pos2| -> Option<CellIdx> {
             let p = *from_screen * pos;
-            picture
-                .cell_at(crate::layout::Point::new(p.x, p.y))
-                .and_then(|coord| picture.cell_of(coord))
+            picture.cell_containing(Point::new(p.x, p.y))
         };
 
         let hovered_cell = response
             .hover_pos()
-            .and_then(|pos| cell_under(self.document.solution_mut(), pos));
+            .and_then(|pos| cell_under(self.document.try_solution().unwrap(), pos));
 
         // While there's room to pan, a middle-drag belongs to the scroll area (see `main_ui`),
         // so it mustn't also reach whatever tool happens to be selected.
@@ -345,10 +341,10 @@ impl CanvasGui {
         if !panning
             && let Some(pointer_pos) = response.interact_pointer_pos()
             && !matches!(tool, Tool::Lasso | Tool::Annotate)
-            && let Some(cell) = cell_under(self.document.solution_mut(), pointer_pos)
+            && let Some(cell) = cell_under(self.document.try_solution().unwrap(), pointer_pos)
         {
             let pointer = PaintPointer::from_egui(&ui.input(|i| i.pointer.clone()));
-            self.pointer_tool_input(cell, pointer);
+            self.pointer_tool_input(cell, pointer, tool);
         }
 
         hovered_cell

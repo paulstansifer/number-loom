@@ -381,11 +381,10 @@ impl NonogramGui {
         let compact = &self.compact;
         // Only the compact layout announces a solve with a window.
         let solved = layout == ScreenLayout::Compact
-            && self.solve_gui.as_ref().is_some_and(|solve_gui| {
-                !solve_gui.solved_announced
-                    && solve_gui.replay.is_some()
-                    && solve_gui.is_correctly_solved()
-            });
+            && self
+                .solve_gui
+                .as_ref()
+                .is_some_and(|solve_gui| solve_gui.solve_unannounced());
         [
             (Overlay::Solved, solved),
             (Overlay::ColorDialog, compact.color_dialog.is_some()),
@@ -572,17 +571,13 @@ impl NonogramGui {
                     self.editor_gui.tool_selector(ui, ScreenLayout::Compact);
                     ui.separator();
                     let compact = &mut self.compact;
-                    let metadata =
-                        egui::Button::new(RichText::new(icons::ICON_EDIT_NOTE).size(ICON_SIZE))
-                            .toggled(ui, compact.metadata_open)
-                            .min_size(Vec2::splat(TARGET));
+                    let metadata = icon_button(icons::ICON_EDIT_NOTE, ScreenLayout::Compact)
+                        .toggled(ui, compact.metadata_open);
                     if ui.add(metadata).clicked() {
                         compact.metadata_open = true;
                     }
-                    let resize =
-                        egui::Button::new(RichText::new(icons::ICON_RESIZE).size(ICON_SIZE))
-                            .toggled(ui, compact.resize_open)
-                            .min_size(Vec2::splat(TARGET));
+                    let resize = icon_button(icons::ICON_RESIZE, ScreenLayout::Compact)
+                        .toggled(ui, compact.resize_open);
                     if ui.add(resize).clicked() {
                         compact.resize_open = !compact.resize_open;
                     }
@@ -861,7 +856,6 @@ impl NonogramGui {
             ui.set_width(width);
             let color_info = canvas
                 .document
-                .solution_mut()
                 .palette_mut()
                 .get_mut(&color)
                 .expect("just checked");
@@ -912,10 +906,7 @@ impl NonogramGui {
         let Some(solve_gui) = &mut self.solve_gui else {
             return;
         };
-        if solve_gui.solved_announced
-            || solve_gui.replay.is_none()
-            || !solve_gui.is_correctly_solved()
-        {
+        if !solve_gui.solve_unannounced() {
             return;
         }
 

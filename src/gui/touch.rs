@@ -247,10 +247,6 @@ enum Contact {
     Release,
 }
 
-fn cell_containing(picture: &DynSolution, p: Point) -> Option<CellIdx> {
-    picture.cell_at(p).and_then(|coord| picture.cell_of(coord))
-}
-
 fn cell_center(picture: &DynSolution, cell: CellIdx) -> Point {
     picture.cell_shape(cell).center(picture.cell_origin(cell))
 }
@@ -337,7 +333,9 @@ impl CanvasGui {
 
     /// The cell the touch cursor is on, if it's anywhere.
     pub(super) fn touch_cursor(&self) -> Option<CellIdx> {
-        cell_containing(self.document.try_solution()?, self.touch.cursor?)
+        self.document
+            .try_solution()?
+            .cell_containing(self.touch.cursor?)
     }
 
     /// As `touch_cursor`, but first putting the cursor in the middle of the picture if it isn't
@@ -348,7 +346,8 @@ impl CanvasGui {
         }
         let picture = self.document.try_solution()?;
         let extent = picture.extent();
-        let cell = cell_containing(picture, Point::new(extent.x / 2.0, extent.y / 2.0))
+        let cell = picture
+            .cell_containing(Point::new(extent.x / 2.0, extent.y / 2.0))
             .or((!picture.cells().is_empty()).then_some(CellIdx(0)))?;
         self.touch.cursor = Some(cell_center(picture, cell));
         Some(cell)
@@ -422,14 +421,14 @@ impl CanvasGui {
         // edge rather than stopping dead: try each direction of the move alone.
         let landing = [to, Point::new(to.x, from.y), Point::new(from.x, to.y)]
             .into_iter()
-            .find_map(|p| Some((p, cell_containing(picture, p)?)))
+            .find_map(|p| Some((p, picture.cell_containing(p)?)))
             // And no further than the cursor as it's drawn goes (see `outline_offset`), so that
             // coming back from the edge moves it straight away.
             .map(|(p, cell)| {
                 let center = cell_center(picture, cell);
                 let (dx, dy) = outline_offset(picture, cell, p);
                 let kept = Point::new(center.x + dx, center.y + dy);
-                if cell_containing(picture, kept) == Some(cell) {
+                if picture.cell_containing(kept) == Some(cell) {
                     kept
                 } else {
                     p
@@ -483,7 +482,7 @@ impl CanvasGui {
                         // background color from the palette is how a finger does that.
                         intent: PaintIntent::Current,
                     };
-                    self.pointer_tool_input(cell, pointer);
+                    self.pointer_tool_input(cell, pointer, tool);
                 }
             }
         }

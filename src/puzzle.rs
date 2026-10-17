@@ -792,6 +792,11 @@ impl DynSolution {
         }
     }
 
+    /// The dense index of the cell containing this point, in abstract units.
+    pub fn cell_containing(&self, p: crate::layout::Point) -> Option<CellIdx> {
+        self.cell_at(p).and_then(|coord| self.cell_of(coord))
+    }
+
     /// Cells sharing an edge with this one: 4 for a square, 3 for a triangle.
     pub fn neighbor_cells(&self, cell: CellIdx) -> Vec<CellIdx> {
         with_solution!(self, |s| s.geometry.neighbor_cells(cell).collect())
@@ -1148,7 +1153,8 @@ pub fn infer_format(path: &str, format_arg: Option<NonogramFormat>) -> NonogramF
 pub struct Document {
     p: Option<DynPuzzle>,
     s: Option<DynSolution>,
-    /// Someone's progress towards solving the puzzle. The GUI doesn't use this (yet).
+    /// Someone's progress towards solving the puzzle. The GUI starts a solve from it, and offers
+    /// to save it again; any edit to the cells throws it away (see `solution_mut`).
     in_progress: Option<PartialSolution>,
     /// Path if native, just a filename, if on the Web
     pub file: String,
@@ -1302,6 +1308,16 @@ impl Document {
         self.p = None; // Edits will invalidate the puzzle!
         self.in_progress = None;
         self.s.as_mut().unwrap()
+    }
+
+    /// For renaming and recoloring. Unlike `solution_mut`, this keeps `in_progress`, which a
+    /// change to a color's name or look can't invalidate.
+    pub fn palette_mut(&mut self) -> &mut Palette {
+        if self.s.is_none() {
+            self.s = Some(self.p.as_ref().unwrap().line_solve().unwrap().solution)
+        }
+        self.p = None; // It has its own copy of the palette.
+        self.s.as_mut().unwrap().palette_mut()
     }
 
     pub fn take_solution(self) -> anyhow::Result<DynSolution> {

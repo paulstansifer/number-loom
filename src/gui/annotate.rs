@@ -264,14 +264,11 @@ impl CanvasGui {
         };
 
         if pointer.pressed {
-            self.annotate_drag = picture
-                .cell_at(p)
-                .and_then(|coord| picture.cell_of(coord))
-                .map(|origin| AnnotateDrag {
-                    origin,
-                    press: p,
-                    live: None,
-                });
+            self.annotate_drag = picture.cell_containing(p).map(|origin| AnnotateDrag {
+                origin,
+                press: p,
+                live: None,
+            });
             // Press and release usually land in separate frames, but a fast enough click — or a
             // slow enough frame — delivers both at once. Fall through and let that settle as the
             // click it is, rather than dropping it.

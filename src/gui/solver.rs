@@ -1,11 +1,12 @@
 use super::compact::Toggled as _;
+use super::session::never;
 use super::{
-    Action, ActionMood, BacktrackSolver, CanvasGui, ClueId, Disambiguator, ScreenLayout, Staleable,
-    Tool, auto_button, default_color, outline_text,
+    Action, ActionMood, CanvasGui, ClueId, ScreenLayout, Staleable, Version, auto_button,
+    outline_text,
 };
 use crate::{
     geometry::{CellIdx, FamilyIdx, LaneIdx},
-    puzzle::{Color, DynPuzzle, PuzzleDynOps, UNSOLVED},
+    puzzle::{Color, Document, DynPuzzle, DynSolution, PuzzleDynOps, UNSOLVED},
     solve::grid_solve::LineStatus,
     user_settings::{UserSettings, consts},
 };
@@ -15,7 +16,6 @@ use std::collections::HashSet;
 use typed_index_collections::TiVec;
 use web_time::Instant;
 
-use crate::puzzle::{Document, DynSolution};
 /// Saved with the session (see `session.rs`). `clues` and `intended_solution` aren't: they come
 /// from the editor's document, which can't change while solving, so `NonogramGui::reconnect`
 /// rebuilds them from there.
@@ -37,11 +37,11 @@ pub struct SolveGui {
     #[serde(skip)]
     pub fixed_clues: Staleable<Option<TiVec<LaneIdx, Vec<usize>>>>,
     pub render_style: RenderStyle,
-    #[serde(skip, default = "super::session::never")]
-    last_inferred_version: u32,
+    #[serde(skip, default = "never")]
+    last_inferred_version: Version,
     /// The picture's version when "Detect errors" was last run by hand, if it was.
     #[serde(skip)]
-    errors_checked: Option<u32>,
+    errors_checked: Option<Version>,
     /// Whether the compact layout has announced that the puzzle is solved (and the user has
     /// dismissed the announcement), so that it doesn't again.
     #[serde(default)]
@@ -149,70 +149,20 @@ impl SolveGui {
                 corner: None,
             },
         );
-        let current_color = default_color(working_doc.solution_mut().palette());
-
-        let clues = document.puzzle().clone();
-        let solved_mask: TiVec<CellIdx, bool> =
-            vec![true; document.solution_mut().cells().len()].into();
-
         SolveGui {
-            canvas: CanvasGui {
-                document: working_doc,
-                version: 0,
-                current_color,
-                drag_start_color: current_color,
-                undo_stack: vec![],
-                redo_stack: vec![],
-                current_tool: Tool::LineAlongLane,
-                previous_tool: Tool::LineAlongLane,
-                line_tool_state: None,
-                selection: None,
-                annotations: vec![],
-                annotate_drag: None,
-                checked_clues: HashSet::new(),
-                solving: true,
-                middle_pans: false,
-                touch_area: None,
-                touch: Default::default(),
-                picture_rect: None,
-                needs_fit: true,
-                solved_mask: Staleable {
-                    val: ("".to_string(), solved_mask),
-                    version: 0,
-                },
-                disambiguator: Staleable {
-                    val: Disambiguator::new(),
-                    version: 0,
-                },
-                backtrack_solver: Staleable {
-                    val: BacktrackSolver::new(),
-                    version: 0,
-                },
-                id: Staleable {
-                    val: "".to_string(),
-                    version: 0,
-                },
-                status,
-                progress,
-            },
-            clues,
+            canvas: CanvasGui::new(working_doc, true, status, progress),
+            clues: document.puzzle().clone(),
             intended_solution: document.take_solution().unwrap(),
             analyze_lines: UserSettings::get_bool(consts::SOLVER_ANALYZE_LINES),
             detect_errors: UserSettings::get_bool(consts::SOLVER_DETECT_ERRORS),
             infer_background: UserSettings::get_bool(consts::SOLVER_INFER_BACKGROUND),
-            line_analysis: Staleable {
-                val: None,
-                version: u32::MAX,
-            },
+            line_analysis: Staleable::default(),
             mark_fixed_clues: UserSettings::get_bool(consts::SOLVER_MARK_FIXED_CLUES),
-            fixed_clues: Staleable {
-                val: None,
-                version: u32::MAX,
-            },
+            fixed_clues: Staleable::default(),
             render_style: UserSettings::get(consts::SOLVER_RENDER_STYLE)
                 .and_then(|name| RenderStyle::from_setting_name(&name))
                 .unwrap_or(RenderStyle::TraditionalXes),
-            last_inferred_version: u32::MAX,
+            last_inferred_version: never(),
             errors_checked: None,
             solved_announced: false,
             hovered_cell: None,
@@ -231,7 +181,7 @@ impl SolveGui {
     fn detect_any_errors(&self) -> bool {
         let picture = self.canvas.document.try_solution().unwrap();
         for (cell, intended) in picture.cells().iter().zip(self.intended_solution.cells()) {
-            if *cell != *intended && *cell != crate::puzzle::UNSOLVED {
+            if *cell != *intended && *cell != UNSOLVED {
                 return true;
             }
         }
@@ -242,8 +192,14 @@ impl SolveGui {
         self.canvas.document.try_solution().unwrap().cells() == self.intended_solution.cells()
     }
 
+    /// Whether the compact layout's "Correctly solved" window is up: the puzzle has come out
+    /// right, and the window hasn't been dismissed yet.
+    pub(super) fn solve_unannounced(&self) -> bool {
+        !self.solved_announced && self.replay.is_some() && self.is_correctly_solved()
+    }
+
     fn infer_background(&mut self) {
-        let mut grid = self.canvas.document.solution_mut().to_partial();
+        let mut grid = self.canvas.document.try_solution().unwrap().to_partial();
 
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
@@ -444,8 +400,8 @@ impl SolveGui {
             // Turning an aid off has to take its marks with it; otherwise the last analysis sits
             // in the gutters, going staler with every move.
             match aid {
-                Aid::AnalyzeLines => self.line_analysis.update(None, u32::MAX),
-                Aid::MarkResolvedClues => self.fixed_clues.update(None, u32::MAX),
+                Aid::AnalyzeLines => self.line_analysis = Staleable::default(),
+                Aid::MarkResolvedClues => self.fixed_clues = Staleable::default(),
                 Aid::DetectErrors | Aid::InferBackground => {}
             }
         }
