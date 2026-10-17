@@ -77,7 +77,7 @@ impl CanvasGui {
         render_style: RenderStyle,
         clues: Option<ClueOverlay<'_>>,
     ) -> (Option<CellIdx>, Option<ClueId>) {
-        let extent = self.document.try_solution().unwrap().extent();
+        let extent = self.document.solution().extent();
 
         // Grow the drawing area to cover wherever the clues reach — the same bounds the HTML
         // export sizes its drawing to.
@@ -116,7 +116,7 @@ impl CanvasGui {
         // size. Checking here rather than at every resize/load site means there's no call site
         // to forget.
         if let Some(selection) = &self.selection
-            && selection.mask.len() != self.document.try_solution().unwrap().cells().len()
+            && selection.mask.len() != self.document.solution().cells().len()
         {
             self.selection = None;
         }
@@ -142,7 +142,7 @@ impl CanvasGui {
         let overlays_suppress_unsolved =
             disambig_report.is_some() || disambiguator.is_some_and(|d| d.running());
 
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.solution();
         let palette = picture.palette();
 
         // The one place the shape matters when drawing. After this match the loop is fully
@@ -295,7 +295,7 @@ impl CanvasGui {
 
         let hovered_cell = response
             .hover_pos()
-            .and_then(|pos| cell_under(self.document.try_solution().unwrap(), pos));
+            .and_then(|pos| cell_under(self.document.solution(), pos));
 
         // While there's room to pan, a middle-drag belongs to the scroll area (see `main_ui`),
         // so it mustn't also reach whatever tool happens to be selected.
@@ -341,7 +341,7 @@ impl CanvasGui {
         if !panning
             && let Some(pointer_pos) = response.interact_pointer_pos()
             && !matches!(tool, Tool::Lasso | Tool::Annotate)
-            && let Some(cell) = cell_under(self.document.try_solution().unwrap(), pointer_pos)
+            && let Some(cell) = cell_under(self.document.solution(), pointer_pos)
         {
             let pointer = PaintPointer::from_egui(&ui.input(|i| i.pointer.clone()));
             self.pointer_tool_input(cell, pointer, tool);

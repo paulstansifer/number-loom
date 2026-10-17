@@ -152,7 +152,7 @@ impl SolveGui {
         SolveGui {
             canvas: CanvasGui::new(working_doc, true, status, progress),
             clues: document.puzzle().clone(),
-            intended_solution: document.take_solution().unwrap(),
+            intended_solution: document.into_solution(),
             analyze_lines: UserSettings::get_bool(consts::SOLVER_ANALYZE_LINES),
             detect_errors: UserSettings::get_bool(consts::SOLVER_DETECT_ERRORS),
             infer_background: UserSettings::get_bool(consts::SOLVER_INFER_BACKGROUND),
@@ -179,7 +179,7 @@ impl SolveGui {
     }
 
     fn detect_any_errors(&self) -> bool {
-        let picture = self.canvas.document.try_solution().unwrap();
+        let picture = self.canvas.document.solution();
         for (cell, intended) in picture.cells().iter().zip(self.intended_solution.cells()) {
             if *cell != *intended && *cell != UNSOLVED {
                 return true;
@@ -189,7 +189,7 @@ impl SolveGui {
     }
 
     pub(super) fn is_correctly_solved(&self) -> bool {
-        self.canvas.document.try_solution().unwrap().cells() == self.intended_solution.cells()
+        self.canvas.document.solution().cells() == self.intended_solution.cells()
     }
 
     /// Whether the compact layout's "Correctly solved" window is up: the puzzle has come out
@@ -199,11 +199,11 @@ impl SolveGui {
     }
 
     fn infer_background(&mut self) {
-        let mut grid = self.canvas.document.try_solution().unwrap().to_partial();
+        let mut grid = self.canvas.document.solution().to_partial();
 
         if self.clues.settle_solution(&mut grid).is_ok() {
             let mut changes = std::collections::HashMap::new();
-            let picture = self.canvas.document.try_solution().unwrap();
+            let picture = self.canvas.document.solution();
             for (index, cell) in grid.iter_enumerated() {
                 let current_color = picture.cells()[index];
                 if cell.is_known() && cell.known_or() != Some(current_color) {
@@ -295,7 +295,7 @@ impl SolveGui {
         };
 
         if let Some(cell) = self.hovered_cell {
-            let picture = self.canvas.document.try_solution().unwrap();
+            let picture = self.canvas.document.solution();
 
             let (resp, painter) =
                 ui.allocate_painter(Vec2::new(plus_size, plus_size), egui::Sense::empty());
@@ -414,14 +414,14 @@ impl SolveGui {
         match aid {
             Aid::AnalyzeLines if run => {
                 let clues = &self.clues;
-                let picture = self.canvas.document.try_solution().unwrap();
+                let picture = self.canvas.document.solution();
                 let grid = picture.to_partial();
                 self.line_analysis
                     .get_or_refresh(self.canvas.version, || Some(clues.analyze_lines(&grid)));
             }
             Aid::MarkResolvedClues if run => {
                 let clues = &self.clues;
-                let picture = self.canvas.document.try_solution().unwrap();
+                let picture = self.canvas.document.solution();
                 let grid = picture.to_partial();
                 self.fixed_clues
                     .get_or_refresh(self.canvas.version, || Some(clues.fixed_clues(&grid)));
@@ -453,7 +453,7 @@ impl SolveGui {
     /// move anyway.
     fn hover_blocks(&self) -> Option<super::HoverBlocks> {
         let cell = self.hovered_cell?;
-        let picture = self.canvas.document.try_solution()?;
+        let picture = self.canvas.document.solution();
         Some(super::HoverBlocks {
             by_family: picture.blocks_at_cell(cell),
             rgb: picture.palette()[&picture.cells()[cell]].rgb,
@@ -495,7 +495,7 @@ impl SolveGui {
             let (_, line) = self
                 .canvas
                 .document
-                .try_solution()?
+                .solution()
                 .lane_map()
                 .split_family(lane);
             Some(BlockHint {
@@ -635,14 +635,8 @@ impl Replay {
     fn frame(&self, canvas: &CanvasGui, step: usize) -> TiVec<CellIdx, Color> {
         let frames = self.frames(canvas);
         let position = frames[step.min(frames.len() - 1)];
-        let mut cells: TiVec<CellIdx, Color> = canvas
-            .document
-            .try_solution()
-            .unwrap()
-            .cells()
-            .raw
-            .to_vec()
-            .into();
+        let mut cells: TiVec<CellIdx, Color> =
+            canvas.document.solution().cells().raw.to_vec().into();
         for undone in canvas.undo_stack[position..].iter().rev() {
             // Painting is the only thing that reaches the solver's undo stack: its palette editor
             // is read-only, and every `ReplaceDocument` in the app goes to the editor's canvas.
@@ -660,7 +654,7 @@ impl Replay {
     /// The canvas supplies the geometry, the palette, and — through its undo stack — the solve
     /// itself.
     fn show(&mut self, ui: &mut egui::Ui, canvas: &CanvasGui) {
-        let picture = canvas.document.try_solution().unwrap();
+        let picture = canvas.document.solution();
         let extent = picture.extent();
         let available = ui.available_width();
         let scale = replay_scale(extent.x, available);
@@ -1225,14 +1219,7 @@ mod replay_tests {
     }
 
     fn cells(canvas: &CanvasGui) -> TiVec<CellIdx, Color> {
-        canvas
-            .document
-            .try_solution()
-            .unwrap()
-            .cells()
-            .raw
-            .to_vec()
-            .into()
+        canvas.document.solution().cells().raw.to_vec().into()
     }
 
     /// The replay's `n`th frame is the picture as it stood after `n` actions — including the

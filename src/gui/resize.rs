@@ -36,12 +36,7 @@ impl NonogramGui {
         // This resizer is inherently square: it adds and removes whole rows and columns.
         // Triangular puzzles resize by nudging one of six bounds instead — see `tri_resize`.
         // (`resize_controls` only offers each resizer for its own shape.)
-        let Some(picture) = self
-            .editor_gui
-            .document
-            .try_solution()
-            .and_then(|s| s.as_square())
-        else {
+        let Some(picture) = self.editor_gui.document.solution().as_square() else {
             return;
         };
         let mut g = picture.to_columns();
@@ -112,12 +107,7 @@ impl NonogramGui {
         let Some(lines) = self.resize_lines() else {
             return;
         };
-        let Some(tri) = self
-            .editor_gui
-            .document
-            .try_solution()
-            .and_then(|s| s.as_tri())
-        else {
+        let Some(tri) = self.editor_gui.document.solution().as_tri() else {
             return; // See `square_resize`.
         };
         let delta = if add { lines as i32 } else { -(lines as i32) };
@@ -205,8 +195,8 @@ impl NonogramGui {
         let outline = self
             .editor_gui
             .document
-            .try_solution()
-            .and_then(|s| s.as_tri())
+            .solution()
+            .as_tri()
             .map(|t| *t.geometry.dims());
 
         // Layout constants, all in screen pixels on the desktop. The compact layout scales

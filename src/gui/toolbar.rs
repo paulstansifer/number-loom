@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::formats::partial_cells::has_progress;
+use crate::puzzle::UncertainDocument;
 
 /// How far the puzzle library has got, once the Library button has asked for it.
 pub enum LibraryStatus {
@@ -97,12 +98,7 @@ impl NonogramGui {
     }
 
     pub(super) fn open_new_dialog(&mut self) {
-        let clue_style = self
-            .editor_gui
-            .document
-            .try_solution()
-            .unwrap()
-            .clue_style();
+        let clue_style = self.editor_gui.document.solution().clue_style();
         self.new_dialog = Some(NewPuzzleDialog {
             shape: NewPuzzleShape::Square,
             clue_style,
@@ -419,11 +415,12 @@ impl NonogramGui {
                         .labelled_by(filename_label.id);
                     });
                     if ui.button("Save").clicked() {
-                        let mut document_copy = document_to_save(
+                        let mut document_copy: UncertainDocument = document_to_save(
                             &self.editor_gui.document,
                             self.share_progress.as_ref(),
                             self.save_solve_progress,
-                        );
+                        )
+                        .into();
 
                         let (sender, receiver) = mpsc::channel();
                         self.save_result_receiver = receiver;
@@ -485,10 +482,10 @@ impl NonogramGui {
     /// on it is known.
     fn solve_progress(&mut self) -> Option<PartialSolution> {
         let progress = match &mut self.solve_gui {
-            Some(solve_gui) => solve_gui.canvas.document.solution().ok()?.to_partial(),
+            Some(solve_gui) => solve_gui.canvas.document.solution().to_partial(),
             None => self.editor_gui.document.in_progress()?.clone(),
         };
-        let palette = self.editor_gui.document.solution().ok()?.palette();
+        let palette = self.editor_gui.document.solution().palette();
         has_progress(&progress.raw, palette.keys().copied()).then_some(progress)
     }
 
@@ -503,12 +500,12 @@ impl NonogramGui {
                 .await;
 
             if let Some(handle) = handle {
-                let document = crate::import::load(&handle.file_name(), handle.read().await, None);
-                // We need a solution to edit it:
-                let document = match document {
-                    Ok(mut document) => document.find_solution().await.map(|()| document),
-                    Err(e) => Err(e),
-                };
+                // We need a picture to edit it:
+                let document =
+                    match crate::import::load(&handle.file_name(), handle.read().await, None) {
+                        Ok(document) => document.into_document_with_backtracking().await,
+                        Err(e) => Err(e),
+                    };
 
                 let _ = sender.send(document); // Don't panic if it's already gone!
             }
@@ -575,8 +572,7 @@ fn share_string(
     progress: Option<&PartialSolution>,
     save_progress: bool,
 ) -> String {
-    crate::formats::woven::to_woven(&mut document_to_save(document, progress, save_progress))
-        .unwrap()
+    crate::formats::woven::to_woven(&document_to_save(document, progress, save_progress)).unwrap()
 }
 
 #[cfg(test)]
@@ -597,10 +593,7 @@ mod tests {
         let (_, hash) = link.split_once('#').unwrap();
         let opened = crate::formats::woven::from_woven(hash, "linked.woven".to_string()).unwrap();
         assert_eq!(opened.title, doc.title);
-        assert_eq!(
-            opened.try_solution().unwrap().cells(),
-            doc.try_solution().unwrap().cells()
-        );
+        assert_eq!(opened.solution().cells(), doc.solution().cells());
     }
 
     /// Progress that came with a puzzle opened in the editor is still there to save after the
@@ -612,7 +605,7 @@ mod tests {
         let woven = include_str!("../../examples/woven/square_bw.1.woven");
         let mut doc =
             crate::formats::woven::from_woven(woven.trim(), "test.woven".to_string()).unwrap();
-        let answer = doc.solution().unwrap().cells().raw.to_vec();
+        let answer = doc.solution().cells().raw.to_vec();
         let mut progress: PartialSolution = vec![Cell::new_anything(); answer.len()].into();
         progress[CellIdx(0)] = Cell::from_color(answer[0]);
         doc.set_in_progress(Some(progress));

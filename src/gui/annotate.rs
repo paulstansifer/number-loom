@@ -259,9 +259,7 @@ impl CanvasGui {
     /// Deliberately calls neither `perform` nor anything that bumps `version`: annotations are
     /// scratch, invisible both to undo and to every cache `version` guards.
     pub(super) fn annotate_input(&mut self, pointer: AnnotatePointer, p: Point) {
-        let Some(picture) = self.document.try_solution() else {
-            return;
-        };
+        let picture = self.document.solution();
 
         if pointer.pressed {
             self.annotate_drag = picture.cell_containing(p).map(|origin| AnnotateDrag {
@@ -326,9 +324,7 @@ impl CanvasGui {
         scale: f32,
         to_screen: &egui::emath::RectTransform,
     ) {
-        let Some(picture) = self.document.try_solution() else {
-            return;
-        };
+        let picture = self.document.solution();
 
         let live = self.annotate_drag.as_ref().and_then(|drag| drag.live);
         let mut marks = Marks::default();
@@ -710,9 +706,7 @@ mod annotate_tests {
             );
             // Whichever way it ran, it covers the origin cell and the two beyond it.
             assert_eq!(gui.annotations[0].cells_covered(), 3);
-            assert!(
-                gui.annotations[0].covers(gui.document.try_solution().unwrap(), CellIdx(3 * 6 + 3))
-            );
+            assert!(gui.annotations[0].covers(gui.document.solution(), CellIdx(3 * 6 + 3)));
         }
     }
 
@@ -759,9 +753,7 @@ mod annotate_tests {
         click(&mut gui, cell(3.0, 3.0));
         assert_eq!(gui.annotations.len(), 1);
         assert_eq!(gui.annotations[0].cells_covered(), 1);
-        assert!(
-            gui.annotations[0].covers(gui.document.try_solution().unwrap(), CellIdx(3 * 6 + 3))
-        );
+        assert!(gui.annotations[0].covers(gui.document.solution(), CellIdx(3 * 6 + 3)));
 
         click(&mut gui, cell(3.0, 3.0));
         assert!(gui.annotations.is_empty());
@@ -793,7 +785,7 @@ mod annotate_tests {
     #[test]
     fn a_single_cell_mark_knows_its_cell() {
         let mut gui = canvas();
-        let picture = gui.document.try_solution().unwrap().clone();
+        let picture = gui.document.solution().clone();
 
         click(&mut gui, cell(2.0, 4.0));
         assert_eq!(
@@ -903,7 +895,7 @@ mod annotate_tests {
                 if lane.cells.len() < 2 {
                     continue;
                 }
-                let picture = gui.document.try_solution().unwrap();
+                let picture = gui.document.solution();
                 let center = |c: CellIdx| picture.cell_shape(c).center(picture.cell_origin(c));
                 let (first, last) = (
                     center(lane.cells[LanePos(0)]),

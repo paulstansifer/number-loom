@@ -57,9 +57,7 @@ pub(super) fn placeholder_puzzle() -> crate::puzzle::DynPuzzle {
 pub(super) mod document {
     use crate::formats::woven::{self, WovenDocument};
     use crate::puzzle::Document;
-    use serde::{
-        Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _,
-    };
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
     #[derive(Serialize, Deserialize)]
     struct Saved {
@@ -68,7 +66,7 @@ pub(super) mod document {
     }
 
     pub fn serialize<S: Serializer>(document: &Document, s: S) -> Result<S::Ok, S::Error> {
-        let woven = woven::to_woven_document(document).map_err(S::Error::custom)?;
+        let woven = woven::to_woven_document(document);
         Saved {
             file: document.file.clone(),
             woven,
@@ -130,26 +128,25 @@ impl NonogramGui {
     /// The counterpart to `encode`, plus putting back what the session doesn't hold.
     pub(super) fn from_session_string(saved: &str) -> anyhow::Result<NonogramGui> {
         let mut gui: NonogramGui = serde_json::from_slice(&decode_and_decompress(saved)?)?;
-        gui.reconnect()?;
+        gui.reconnect();
         Ok(gui)
     }
 
     /// Put back what deserializing can't. Some of it isn't saved, because it's derived from
     /// something that is, and some of it is *shared*, which a deserialized copy wouldn't be.
-    fn reconnect(&mut self) -> anyhow::Result<()> {
+    fn reconnect(&mut self) {
         if let Some(solve_gui) = &mut self.solve_gui {
             // Just as `enter_solve_mode` makes them: from the editor's document, which can't
             // change while solving. (The solver canvas's own document is no good: its cells are
             // the user's progress, not the answer.)
             let mut document = self.editor_gui.document.clone();
             solve_gui.clues = document.puzzle().clone();
-            solve_gui.intended_solution = document.take_solution()?;
+            solve_gui.intended_solution = document.into_solution();
 
             // One status bar and one progress bar, whichever canvas is talking.
             solve_gui.canvas.status = Rc::clone(&self.editor_gui.status);
             solve_gui.canvas.progress = Rc::clone(&self.editor_gui.progress);
         }
-        Ok(())
     }
 
     /// Run `f` on this GUI with both canvases' undo and redo stacks emptied, then put them back.
@@ -265,7 +262,7 @@ mod tests {
     }
 
     fn cells(canvas: &CanvasGui) -> Vec<Color> {
-        canvas.document.try_solution().unwrap().cells().raw.to_vec()
+        canvas.document.solution().cells().raw.to_vec()
     }
 
     fn paint(canvas: &mut CanvasGui, cells: &[u32], color: Color) {
@@ -420,15 +417,9 @@ mod tests {
 
         gui.exit_solve_mode();
         gui.editor_gui.un_or_re_do(true);
-        assert_eq!(
-            gui.editor_gui.document.try_solution().unwrap(),
-            top_row().try_solution().unwrap()
-        );
+        assert_eq!(gui.editor_gui.document.solution(), top_row().solution());
         gui.editor_gui.un_or_re_do(false);
-        assert_eq!(
-            gui.editor_gui.document.try_solution().unwrap(),
-            &left_column
-        );
+        assert_eq!(gui.editor_gui.document.solution(), &left_column);
     }
 
     #[test]

@@ -545,7 +545,7 @@ impl NonogramGui {
             if running {
                 canvas.disambiguator.val.stop();
             } else if count.is_some() {
-                let picture = canvas.document.try_solution().unwrap();
+                let picture = canvas.document.solution();
                 canvas.disambiguator.val.start(picture);
             } else {
                 self.update_line_solve(true);
@@ -841,11 +841,7 @@ impl NonogramGui {
     /// it. Opened by a long press on its swatch.
     fn color_dialog(&mut self, ctx: &egui::Context, color: Color) {
         let canvas = &mut self.editor_gui;
-        if !canvas
-            .document
-            .try_solution()
-            .is_some_and(|picture| picture.palette().contains_key(&color))
-        {
+        if !canvas.document.solution().palette().contains_key(&color) {
             self.compact.color_dialog = None;
             return;
         }

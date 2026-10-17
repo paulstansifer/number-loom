@@ -212,7 +212,7 @@ impl CanvasGui {
     }
 
     fn flood_fill(&mut self, start: CellIdx, color: Color) {
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.solution();
         let target_color = picture.cells()[start];
         if target_color == color {
             return; // Nothing to do
@@ -244,7 +244,7 @@ impl CanvasGui {
     /// The lasso never arrives here: it has to keep tracking the pointer once it leaves the
     /// grid, so `canvas_with_clues` deals with it before there is a cell to speak of.
     pub(super) fn pointer_tool_input(&mut self, cell: CellIdx, pointer: PaintPointer, tool: Tool) {
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.solution();
         // The meaning of "erase" differs depending on the mode:
         let erased = if picture.palette().contains_key(&UNSOLVED) {
             UNSOLVED
@@ -324,7 +324,7 @@ impl CanvasGui {
 
     /// The cells between two points along whichever lane best matches the drag.
     fn line_between(&self, start: CellIdx, end: CellIdx) -> HashMap<CellIdx, Color> {
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.solution();
 
         let mut changes = HashMap::new();
         if start == end {
@@ -615,7 +615,7 @@ mod paint_pointer_tests {
     }
 
     fn cell(gui: &CanvasGui, cell: CellIdx) -> Color {
-        gui.document.try_solution().unwrap().cells()[cell]
+        gui.document.solution().cells()[cell]
     }
 
     /// The pencil paints with whatever the press found to do, for the whole drag, and a press on
@@ -665,8 +665,7 @@ mod paint_pointer_tests {
         gui.pointer_tool_input(at(2, 2), release(), gui.current_tool);
         assert!(
             gui.document
-                .try_solution()
-                .unwrap()
+                .solution()
                 .cells()
                 .iter()
                 .all(|c| *c == Color(1))

@@ -138,22 +138,9 @@ impl SerializableSolution {
     }
 }
 
-impl TryFrom<&mut Document> for WovenVersion0 {
-    type Error = anyhow::Error;
-    fn try_from(doc: &mut Document) -> anyhow::Result<Self> {
-        doc.solution()?; // Solve for the picture, if there isn't one yet.
-        let doc = &*doc;
-        Ok(WovenVersion0::with_solution(
-            doc,
-            doc.try_solution().unwrap(),
-        ))
-    }
-}
-
-impl WovenVersion0 {
-    /// `doc`, whose picture is `solution`. Separate from `try_from` so that a document that
-    /// already has its picture can be converted without `&mut` (and so without a clone).
-    fn with_solution(doc: &Document, solution: &DynSolution) -> Self {
+impl From<&Document> for WovenVersion0 {
+    fn from(doc: &Document) -> Self {
+        let solution = doc.solution();
         let in_progress = doc.in_progress().cloned();
         let in_progress = in_progress
             .filter(|ip| partial_cells::has_progress(&ip.raw, solution.palette().keys().copied()));
@@ -238,8 +225,8 @@ fn decode_woven(s: &str) -> anyhow::Result<WovenDocument> {
     Ok(serde_json::from_slice(&decode_and_decompress(s)?)?)
 }
 
-pub fn to_woven(doc: &mut Document) -> anyhow::Result<String> {
-    encode_woven(&WovenDocument::V0(doc.try_into()?))
+pub fn to_woven(doc: &Document) -> anyhow::Result<String> {
+    encode_woven(&to_woven_document(doc))
 }
 
 pub fn from_woven(s: &str, filename: String) -> anyhow::Result<Document> {
@@ -251,12 +238,8 @@ pub fn from_woven(s: &str, filename: String) -> anyhow::Result<Document> {
 /// `doc` in WOVEN's serializable form, without the compression and base-64 that make it a share
 /// string. For saving a document inside something bigger that gets compressed as a whole (the
 /// GUI's saved session). Leaves out `doc.file`, as WOVEN always does.
-pub fn to_woven_document(doc: &Document) -> anyhow::Result<WovenDocument> {
-    Ok(WovenDocument::V0(match doc.try_solution() {
-        Some(solution) => WovenVersion0::with_solution(doc, solution),
-        // Solving for the picture needs `&mut`. (The GUI's documents always have theirs.)
-        None => (&mut doc.clone()).try_into()?,
-    }))
+pub fn to_woven_document(doc: &Document) -> WovenDocument {
+    WovenDocument::V0(doc.into())
 }
 
 /// The counterpart to `to_woven_document`. The result's `file` is empty.
@@ -457,7 +440,7 @@ mod cell_spelling_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::puzzle::{Color, Document, DynPuzzle, Nono, Puzzle};
+    use crate::puzzle::{Color, Document, DynPuzzle, Nono, Puzzle, UncertainDocument};
     use std::collections::HashMap;
 
     #[test]
@@ -496,7 +479,7 @@ mod tests {
             }]],
         ));
 
-        let mut doc = Document::new(
+        let mut doc = UncertainDocument::new(
             Some(puzzle),
             None,
             None,
@@ -506,9 +489,11 @@ mod tests {
             Some("Test Author".to_string()),
             Some("Test ID".to_string()),
             Some("Test License".to_string()),
-        );
+        )
+        .into_document()
+        .unwrap();
 
-        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        let s_doc: WovenVersion0 = WovenVersion0::from(&doc);
         let mut new_doc: Document = s_doc.try_into().unwrap();
 
         // .file is lost, which is fine
@@ -550,7 +535,7 @@ mod tests {
             vec![vec![Color(1)]],
         );
 
-        let mut doc = Document::new(
+        let mut doc = UncertainDocument::new(
             None,
             Some(DynSolution::Square(solution)),
             None,
@@ -560,9 +545,11 @@ mod tests {
             Some("Test Author".to_string()),
             Some("Test ID".to_string()),
             Some("Test License".to_string()),
-        );
+        )
+        .into_document()
+        .unwrap();
 
-        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        let s_doc: WovenVersion0 = WovenVersion0::from(&doc);
         let mut new_doc: Document = s_doc.try_into().unwrap();
 
         // .file is lost, which is fine.
@@ -610,7 +597,7 @@ mod tests {
             }]],
         ));
 
-        let mut doc = Document::new(
+        let mut doc = UncertainDocument::new(
             Some(puzzle),
             None,
             None,
@@ -620,9 +607,11 @@ mod tests {
             Some("Test Author".to_string()),
             Some("Test ID".to_string()),
             Some("Test License".to_string()),
-        );
+        )
+        .into_document()
+        .unwrap();
 
-        let share_string = to_woven(&mut doc).unwrap();
+        let share_string = to_woven(&doc).unwrap();
         // The filename is lost, but that's okay!
         let mut new_doc = from_woven(&share_string, "test.webpbn".to_string()).unwrap();
 
@@ -670,7 +659,7 @@ mod tests {
         ]
         .into();
 
-        let mut doc = Document::new(
+        let doc = UncertainDocument::new(
             None,
             Some(DynSolution::Square(solution.clone())),
             Some(in_progress.clone()),
@@ -680,16 +669,18 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .into_document()
+        .unwrap();
 
-        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        let s_doc: WovenVersion0 = WovenVersion0::from(&doc);
         // Black, `?`, either white or black, and red.
         assert_eq!(s_doc.in_progress, "!?[ !]r");
 
-        let mut new_doc = from_woven(&to_woven(&mut doc).unwrap(), "".to_string()).unwrap();
+        let new_doc = from_woven(&to_woven(&doc).unwrap(), "".to_string()).unwrap();
         assert_eq!(new_doc.in_progress(), Some(&in_progress));
 
-        let new_solution = new_doc.solution().unwrap();
+        let new_solution = new_doc.solution();
         assert_eq!(new_solution.cells(), &solution.cells);
         let black_ch = new_solution.palette()[&x].ch;
         assert!(!partial_cells::RESERVED_CHS.contains(&black_ch));
@@ -703,9 +694,9 @@ mod tests {
             crate::import::bw_palette(),
             vec![vec![Color(1), crate::puzzle::BACKGROUND]],
         );
-        let mut doc = Document::from_solution(DynSolution::Square(solution), "".to_string());
+        let doc = Document::from_solution(DynSolution::Square(solution), "".to_string());
 
-        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        let s_doc: WovenVersion0 = WovenVersion0::from(&doc);
         assert!(
             !serde_json::to_string(&s_doc)
                 .unwrap()
@@ -725,7 +716,7 @@ mod tests {
         palette.get_mut(&Color(1)).unwrap().ch = '?';
         let solution =
             Solution::from_columns(ClueStyle::Nono, palette, vec![vec![Color(1), Color(0)]]);
-        let mut doc = Document::new(
+        let doc = UncertainDocument::new(
             None,
             Some(DynSolution::Square(solution)),
             Some(vec![Cell::new_anything(); 2].into()),
@@ -735,9 +726,11 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .into_document()
+        .unwrap();
 
-        let s_doc: WovenVersion0 = (&mut doc).try_into().unwrap();
+        let s_doc: WovenVersion0 = WovenVersion0::from(&doc);
         assert_eq!(s_doc.in_progress, "");
         assert!(s_doc.solution.palette.iter().any(|ci| ci.ch == '?'));
     }
@@ -760,17 +753,14 @@ impl TryFrom<WovenVersion0> for Document {
             in_progress = Some(PartialSolution::from(cells));
         }
 
-        Ok(Document::new(
-            None,
-            Some(solution),
-            in_progress,
-            "".to_string(),
-            Some(s_doc.title),
-            Some(s_doc.description),
-            Some(s_doc.author),
-            s_doc.id,
-            s_doc.license,
-        ))
+        let mut doc = Document::from_solution(solution, String::new());
+        doc.set_in_progress(in_progress);
+        doc.title = s_doc.title;
+        doc.description = s_doc.description;
+        doc.author = s_doc.author;
+        doc.id = s_doc.id.unwrap_or_default();
+        doc.license = s_doc.license.unwrap_or_default();
+        Ok(doc)
     }
 }
 
@@ -874,7 +864,7 @@ impl From<&SerializableSolution> for DynSolution {
 mod golden_tests {
     use super::*;
     use crate::geometry::{Geometry, Outline, Rect};
-    use crate::puzzle::{BACKGROUND, Corner, UNSOLVED};
+    use crate::puzzle::{BACKGROUND, Corner, UNSOLVED, UncertainDocument};
     use crate::solve::line_solve::Cell;
     use std::collections::{BTreeMap, HashMap};
     use std::path::{Path, PathBuf};
@@ -963,7 +953,7 @@ mod golden_tests {
         let cells = picture(&colorful, &["▓▓ ~~", "▓ # ~", " ### ", "~ # ▓"]);
         fixtures.push((
             "square_color_metadata",
-            Document::new(
+            UncertainDocument::new(
                 None,
                 Some(DynSolution::Square(Solution::new(
                     ClueStyle::Nono,
@@ -981,7 +971,9 @@ mod golden_tests {
                 Some("Claude".to_string()),
                 Some("golden-2".to_string()),
                 Some("CC0".to_string()),
-            ),
+            )
+            .into_document()
+            .unwrap(),
         ));
 
         // Trianogram clues, which is the only thing that puts a `Corner` in a palette. All four
@@ -1100,7 +1092,7 @@ mod golden_tests {
         ];
         fixtures.push((
             "square_in_progress",
-            Document::new(
+            UncertainDocument::new(
                 None,
                 Some(DynSolution::Square(Solution::new(
                     ClueStyle::Nono,
@@ -1118,7 +1110,9 @@ mod golden_tests {
                 None,
                 None,
                 None,
-            ),
+            )
+            .into_document()
+            .unwrap(),
         ));
 
         fixtures
@@ -1218,13 +1212,12 @@ mod golden_tests {
     /// others mean? It also keeps the update path usable, since recording a new encoding must not
     /// put the fixture into a state where the old and new files can never agree again.
     fn canonical_form(s_doc: WovenDocument, source: &Path) -> String {
-        let mut doc: Document = match s_doc {
-            WovenDocument::V0(v0) => v0.try_into().unwrap(),
+        let doc: Document = match s_doc {
+            WovenDocument::V0(v0) => v0
+                .try_into()
+                .unwrap_or_else(|e| panic!("{}: has no usable solution: {e:?}", source.display())),
         };
-        let _ = doc
-            .solution()
-            .unwrap_or_else(|e| panic!("{}: has no usable solution: {e:?}", source.display()));
-        as_json(&WovenDocument::V0((&mut doc).try_into().unwrap()))
+        as_json(&WovenDocument::V0(WovenVersion0::from(&doc)))
     }
 
     fn canonical_form_of_share_string(path: &Path) -> String {
@@ -1241,9 +1234,9 @@ mod golden_tests {
     /// watching happens in the conversions on either side of `Solution`, so the trip has to be
     /// the real one.
     fn save_as_the_program_would(path: &Path) -> String {
-        let mut doc = from_woven(&read(path), path.to_string_lossy().to_string())
+        let doc = from_woven(&read(path), path.to_string_lossy().to_string())
             .unwrap_or_else(|e| panic!("{}: no longer loads: {e:?}", path.display()));
-        to_woven(&mut doc)
+        to_woven(&doc)
             .unwrap_or_else(|e| panic!("{}: cannot be saved again: {e:?}", path.display()))
     }
 
@@ -1394,14 +1387,11 @@ mod golden_tests {
     fn generate_missing_fixtures() {
         let existing = fixtures();
         let dir = PathBuf::from(GOLDEN_DIR);
-        for (name, mut doc) in corpus() {
+        for (name, doc) in corpus() {
             let Some(fixture) = existing.iter().find(|f| f.name == name) else {
-                let s_doc = WovenDocument::V0((&mut doc).try_into().unwrap());
-                std::fs::write(
-                    dir.join(format!("{name}.0.woven")),
-                    to_woven(&mut doc).unwrap(),
-                )
-                .unwrap();
+                let s_doc = WovenDocument::V0(WovenVersion0::from(&doc));
+                std::fs::write(dir.join(format!("{name}.0.woven")), to_woven(&doc).unwrap())
+                    .unwrap();
                 std::fs::write(dir.join(format!("{name}.json")), as_json(&s_doc)).unwrap();
                 println!("wrote {name}.0.woven and {name}.json");
                 continue;
@@ -1473,11 +1463,11 @@ mod triangular_tests {
             geometry.clone(),
             cells.clone().into(),
         );
-        let mut doc = Document::from_solution(DynSolution::Tri(solution), "wip.woven".to_string());
+        let doc = Document::from_solution(DynSolution::Tri(solution), "wip.woven".to_string());
 
-        let share_string = to_woven(&mut doc).unwrap();
-        let mut reloaded = from_woven(&share_string, "wip.woven".to_string()).unwrap();
-        let reloaded_solution = reloaded.solution().unwrap();
+        let share_string = to_woven(&doc).unwrap();
+        let reloaded = from_woven(&share_string, "wip.woven".to_string()).unwrap();
+        let reloaded_solution = reloaded.solution();
 
         assert_eq!(reloaded_solution.shape(), geometry.shape());
         assert_eq!(reloaded_solution.cells().raw, cells[..]);
@@ -1485,21 +1475,15 @@ mod triangular_tests {
             reloaded_solution.cells().contains(&UNSOLVED),
             "the undecided cells must still be undecided"
         );
-        assert!(!reloaded.has_complete_solution().unwrap());
+        assert!(!reloaded.is_complete());
     }
 
     #[test]
     fn a_square_solution_still_round_trips_with_its_shape() {
         let solution = Solution::blank_bw(4, 3);
-        let mut doc =
-            Document::from_solution(DynSolution::Square(solution), "sq.woven".to_string());
-        let mut reloaded =
-            from_woven(&to_woven(&mut doc).unwrap(), "sq.woven".to_string()).unwrap();
-        let reloaded = reloaded
-            .solution()
-            .unwrap()
-            .as_square()
-            .expect("still square");
+        let doc = Document::from_solution(DynSolution::Square(solution), "sq.woven".to_string());
+        let reloaded = from_woven(&to_woven(&doc).unwrap(), "sq.woven".to_string()).unwrap();
+        let reloaded = reloaded.solution().as_square().expect("still square");
         assert_eq!(reloaded.x_size(), 4);
         assert_eq!(reloaded.y_size(), 3);
     }

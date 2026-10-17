@@ -9,8 +9,8 @@ use crate::geometry::{
     Tri,
 };
 use crate::puzzle::{
-    BACKGROUND, ClueStyle, Color, ColorInfo, Document, DynPuzzle, DynSolution, Nono,
-    PartialSolution, Puzzle, Solution,
+    BACKGROUND, ClueStyle, Color, ColorInfo, DynPuzzle, DynSolution, Nono, PartialSolution, Puzzle,
+    Solution, UncertainDocument,
 };
 use crate::solve::line_solve::Cell;
 
@@ -134,7 +134,7 @@ fn solution_from_image<K: GridKind>(
     Ok(Solution::new(ClueStyle::Nono, palette, geometry, cells))
 }
 
-pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
+pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<UncertainDocument> {
     // Wolter's sample puzzles all declare `<!DOCTYPE pbn SYSTEM "http://webpbn.com/pbn-0.3.dtd">`,
     // which roxmltree rejects unless asked otherwise. It still won't fetch external entities, so
     // this only means "tolerate the declaration", not "go to the network".
@@ -345,7 +345,7 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<Document> {
         );
     }
 
-    Ok(Document::new(
+    Ok(UncertainDocument::new(
         Some(puzzle),
         solution,
         saved_progress.map(PartialSolution::from),
@@ -489,7 +489,7 @@ fn progress_image<K: GridKind + ImageDelimiter>(
 /// has a complete one (from a stored solution, or one line logic alone can recover) — most
 /// documents do, and a webpbn file that has both lets any reader skip re-deriving it. Any
 /// progress towards solving it is written too, as a `<solution type="saved">`.
-pub fn as_webpbn(document: &Document) -> String {
+pub fn as_webpbn(document: &UncertainDocument) -> String {
     let mut document_with_puzzle = document.clone();
     let has_solution = document_with_puzzle
         .has_complete_solution()
@@ -522,7 +522,7 @@ pub fn as_webpbn(document: &Document) -> String {
 }
 
 fn write_webpbn<K: GridKind + ImageDelimiter>(
-    document: &Document,
+    document: &UncertainDocument,
     puzzle: &Puzzle<Nono, K>,
     solution: Option<&Solution<K>>,
 ) -> String {
@@ -911,7 +911,7 @@ mod tests {
         assert!(serialized.contains(r#"<solution type="saved">"#));
 
         // `[X.]` comes back as `?`, which isn't the same `Cell`, but means the same thing.
-        let possibilities = |doc: &Document| -> Vec<[bool; 2]> {
+        let possibilities = |doc: &UncertainDocument| -> Vec<[bool; 2]> {
             doc.in_progress()
                 .unwrap()
                 .iter()
@@ -933,7 +933,7 @@ mod tests {
         }]];
         let puzzle = Puzzle::square(palette, one.clone(), one);
         let with_progress = |cell: Cell| {
-            Document::new(
+            UncertainDocument::new(
                 Some(puzzle.clone().into()),
                 None,
                 Some(vec![cell].into()),
@@ -1046,13 +1046,15 @@ mod tests {
     /// out clean in both the `<color>` tags and the `<solution>` image, and still parses back.
     #[test]
     fn writing_replaces_problem_characters_in_the_palette() {
-        let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
-        doc.solution().unwrap(); // populate a solution to corrupt below
-        for info in doc.solution_mut().palette_mut().values_mut() {
+        let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE)
+            .unwrap()
+            .into_document()
+            .unwrap();
+        for info in doc.palette_mut().values_mut() {
             info.ch = if info.color == BACKGROUND { ' ' } else { '★' };
         }
 
-        let serialized = as_webpbn(&doc);
+        let serialized = as_webpbn(&doc.into());
         assert!(
             !serialized.contains(r#"char=" ""#),
             "a space should never appear as a color char: {serialized}"
@@ -1124,7 +1126,8 @@ mod tests {
     #[test]
     fn an_oddly_named_background_survives_a_round_trip() {
         let solution = crate::formats::char_grid::char_grid_to_solution("##\n#.").unwrap();
-        let mut document = crate::puzzle::Document::from_solution(solution, "t.txt".to_string());
+        let mut document =
+            crate::puzzle::UncertainDocument::from_solution(solution, "t.txt".to_string());
         let original_bg_name = document.puzzle().palette()[&BACKGROUND].name.clone();
 
         let serialized = as_webpbn(&document);
@@ -1147,7 +1150,7 @@ mod tests {
     #[test]
     fn a_square_puzzle_still_says_grid() {
         let doc = crate::formats::char_grid::char_grid_to_solution("##\n#.").unwrap();
-        let document = crate::puzzle::Document::from_solution(doc, "t.txt".to_string());
+        let document = crate::puzzle::UncertainDocument::from_solution(doc, "t.txt".to_string());
         assert!(as_webpbn(&document).contains(r#"type="grid""#));
     }
 }

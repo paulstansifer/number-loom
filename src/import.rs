@@ -11,11 +11,14 @@ use crate::{
     geometry::{CellIdx, GridKind, LanePos, Square, Tri},
     puzzle::{
         self, BACKGROUND, Color, ColorInfo, Corner, Document, DynSolution, Nono, NonogramFormat,
-        Puzzle, Solution, Triano,
+        Puzzle, Solution, Triano, UncertainDocument,
     },
 };
 
-pub fn load_path(path: &PathBuf, format: Option<NonogramFormat>) -> anyhow::Result<Document> {
+pub fn load_path(
+    path: &PathBuf,
+    format: Option<NonogramFormat>,
+) -> anyhow::Result<UncertainDocument> {
     let mut bytes = vec![];
     if path == &PathBuf::from("-") {
         std::io::stdin().read_to_end(&mut bytes)?;
@@ -34,7 +37,7 @@ pub fn load(
     filename: &str,
     bytes: Vec<u8>,
     format: Option<NonogramFormat>,
-) -> anyhow::Result<Document> {
+) -> anyhow::Result<UncertainDocument> {
     let input_format = puzzle::infer_format(filename, format);
 
     Ok(match input_format {
@@ -44,7 +47,7 @@ pub fn load(
         NonogramFormat::Image => {
             let img = image::load_from_memory(&bytes).context("could not decode image")?;
             let solution = image_to_solution(&img);
-            Document::from_solution(DynSolution::Square(solution), filename.to_string())
+            UncertainDocument::from_solution(DynSolution::Square(solution), filename.to_string())
         }
         NonogramFormat::Webpbn => {
             let webpbn_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
@@ -55,16 +58,16 @@ pub fn load(
         NonogramFormat::CharGrid => {
             let grid_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
             let solution = char_grid_to_solution(&grid_string)?;
-            Document::from_solution(solution, filename.to_string())
+            UncertainDocument::from_solution(solution, filename.to_string())
         }
         NonogramFormat::Woven => {
             let woven_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
-            from_woven(&woven_string, filename.to_string())?
+            from_woven(&woven_string, filename.to_string())?.into()
         }
         NonogramFormat::Olsak => {
             let olsak_string = String::from_utf8(bytes).context("file is not valid UTF-8 text")?;
             let puzzle = olsak_to_puzzle(&olsak_string)?;
-            Document::from_puzzle(puzzle, filename.to_string())
+            UncertainDocument::from_puzzle(puzzle, filename.to_string())
         }
     })
 }
@@ -301,7 +304,9 @@ pub fn documents_from_zip(zip_bytes: &[u8]) -> anyhow::Result<Vec<Document>> {
             continue;
         }
 
-        match load(&filename, bytes, None) {
+        // Free for a puzzle that comes with its picture, as every one in the library should (see
+        // `load_zip_from_url`).
+        match load(&filename, bytes, None).and_then(UncertainDocument::into_document) {
             Ok(doc) => documents.push(doc),
             Err(e) => eprintln!("Skipping library puzzle {path}: {e:#}"),
         }

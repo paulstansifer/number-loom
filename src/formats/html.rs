@@ -349,7 +349,7 @@ svg {{ max-width: 100%; height: auto; }}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::puzzle::{Document, DynPuzzle};
+    use crate::puzzle::{DynPuzzle, UncertainDocument};
 
     /// Everything the SVG draws, as flat coordinate pairs: polygon corners and line endpoints.
     fn drawn_points(svg: &str) -> Vec<(f32, f32)> {
@@ -380,7 +380,7 @@ mod tests {
         (nums[0], nums[1], nums[2], nums[3])
     }
 
-    fn load(file: &str) -> Document {
+    fn load(file: &str) -> UncertainDocument {
         crate::import::load_path(&std::path::PathBuf::from(file), None).unwrap()
     }
 

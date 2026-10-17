@@ -104,7 +104,7 @@ impl CanvasGui {
             return; // Already lifted; a second drag just changes the offset.
         }
 
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.solution();
         let displayed = selection.displayed_cells(picture);
         let cells = picture.cells();
 
@@ -141,7 +141,7 @@ impl CanvasGui {
             return;
         };
 
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.solution();
         let mut mask: TiVec<CellIdx, bool> = vec![false; picture.cells().len()].into();
         let mut changes = HashMap::new();
         for (cell, color) in floating {
@@ -173,7 +173,7 @@ impl CanvasGui {
         let Some(selection) = &self.selection else {
             return;
         };
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.solution();
         let changes: HashMap<CellIdx, Color> = selection
             .displayed_cells(picture)
             .into_iter()
@@ -187,7 +187,7 @@ impl CanvasGui {
     /// Whether the point is inside the selection as it's currently displayed — i.e. whether
     /// pressing there starts a move rather than a new lasso.
     fn selection_contains(&self, p: Point) -> bool {
-        let picture = self.document.try_solution().unwrap();
+        let picture = self.document.solution();
         let Some(cell) = picture.cell_containing(p) else {
             return false;
         };
@@ -211,9 +211,8 @@ impl CanvasGui {
             } else {
                 self.flatten_selection();
                 self.selection = None;
-                let mut selection = Selection::new(
-                    vec![false; self.document.try_solution().unwrap().cells().len()].into(),
-                );
+                let mut selection =
+                    Selection::new(vec![false; self.document.solution().cells().len()].into());
                 selection.drawing = Some(vec![p]);
                 self.selection = Some(selection);
             }
@@ -224,7 +223,7 @@ impl CanvasGui {
                     .and_then(|s| s.dragging)
                     .map(|(grab, offset_at_grab)| {
                         let by = crate::layout::Vec2::new(p.x - grab.x, p.y - grab.y);
-                        let (du, dv) = self.document.try_solution().unwrap().snap_translation(by);
+                        let (du, dv) = self.document.solution().snap_translation(by);
                         (offset_at_grab.0 + du, offset_at_grab.1 + dv)
                     });
             if let Some(selection) = &mut self.selection {
@@ -247,7 +246,7 @@ impl CanvasGui {
                 selection.drawing.take()
             });
             if let Some(path) = path {
-                let mask = cells_in_lasso(self.document.try_solution().unwrap(), &path);
+                let mask = cells_in_lasso(self.document.solution(), &path);
                 if let Some(selection) = &mut self.selection {
                     selection.mask = mask;
                     selection.since = Instant::now();
@@ -307,11 +306,7 @@ impl CanvasGui {
             return false;
         }
         let (u, v) = selection.offset;
-        let anchor = self
-            .document
-            .try_solution()
-            .unwrap()
-            .translate_cell(cell, (-u, -v));
+        let anchor = self.document.solution().translate_cell(cell, (-u, -v));
         anchor.is_some_and(|anchor| selection.mask[anchor])
     }
 }
@@ -653,12 +648,12 @@ mod lasso_tests {
         release(&mut gui, Point::new(3.5, 2.5));
 
         // Still floating: the source is already background, the destination not yet stamped.
-        let cells = gui.document.try_solution().unwrap().cells();
+        let cells = gui.document.solution().cells();
         assert!(cells.iter().all(|c| *c == BACKGROUND), "source not cleared");
 
         gui.clear_selection();
 
-        let cells = gui.document.try_solution().unwrap().cells();
+        let cells = gui.document.solution().cells();
         let lit: Vec<CellIdx> = cells
             .iter_enumerated()
             .filter(|(_, c)| **c == Color(1))
@@ -695,7 +690,7 @@ mod lasso_tests {
 
         gui.clear_selection();
         restored.clear_selection();
-        let cells = |gui: &CanvasGui| gui.document.try_solution().unwrap().cells().raw.to_vec();
+        let cells = |gui: &CanvasGui| gui.document.solution().cells().raw.to_vec();
         assert_eq!(cells(&restored), cells(&gui));
         assert!(cells(&restored).contains(&Color(1)));
     }
@@ -728,7 +723,7 @@ mod lasso_tests {
         assert!(gui.selection.is_none());
 
         gui.un_or_re_do(true);
-        let cells = gui.document.try_solution().unwrap().cells();
+        let cells = gui.document.solution().cells();
         let lit: Vec<CellIdx> = cells
             .iter_enumerated()
             .filter(|(_, c)| **c == Color(1))
@@ -766,7 +761,7 @@ mod lasso_tests {
         release(&mut gui, Point::new(3.5, 1.5));
         gui.clear_selection();
 
-        let cells = gui.document.try_solution().unwrap().cells();
+        let cells = gui.document.solution().cells();
         assert_eq!(cells[target], Color(1), "a background cell overwrote art");
     }
 
@@ -774,7 +769,7 @@ mod lasso_tests {
     #[test]
     fn a_move_can_be_undone() {
         let mut gui = canvas_with_a_block();
-        let original = gui.document.try_solution().unwrap().cells().to_vec();
+        let original = gui.document.solution().cells().to_vec();
 
         press(&mut gui, Point::new(0.5, 0.5));
         for p in [
@@ -793,7 +788,7 @@ mod lasso_tests {
 
         gui.un_or_re_do(true); // The flatten.
         gui.un_or_re_do(true); // The lift.
-        assert_eq!(gui.document.try_solution().unwrap().cells(), original);
+        assert_eq!(gui.document.solution().cells(), original);
     }
 
     /// Dragging off the edge and back loses nothing: the mask keeps the whole selection, and only
@@ -801,7 +796,7 @@ mod lasso_tests {
     #[test]
     fn dragging_past_the_edge_and_back_restores_everything() {
         let mut gui = canvas_with_a_block();
-        let original = gui.document.try_solution().unwrap().cells().to_vec();
+        let original = gui.document.solution().cells().to_vec();
 
         press(&mut gui, Point::new(0.5, 0.5));
         for p in [
@@ -819,7 +814,7 @@ mod lasso_tests {
         release(&mut gui, Point::new(1.5, 1.5));
         gui.clear_selection();
 
-        assert_eq!(gui.document.try_solution().unwrap().cells(), original);
+        assert_eq!(gui.document.solution().cells(), original);
     }
 
     /// Triangles too: a ▲ and the ▼ beside it share an edge, so their outline is a rhombus with

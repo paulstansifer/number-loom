@@ -333,9 +333,7 @@ impl CanvasGui {
 
     /// The cell the touch cursor is on, if it's anywhere.
     pub(super) fn touch_cursor(&self) -> Option<CellIdx> {
-        self.document
-            .try_solution()?
-            .cell_containing(self.touch.cursor?)
+        self.document.solution().cell_containing(self.touch.cursor?)
     }
 
     /// As `touch_cursor`, but first putting the cursor in the middle of the picture if it isn't
@@ -344,7 +342,7 @@ impl CanvasGui {
         if let Some(cell) = self.touch_cursor() {
             return Some(cell);
         }
-        let picture = self.document.try_solution()?;
+        let picture = self.document.solution();
         let extent = picture.extent();
         let cell = picture
             .cell_containing(Point::new(extent.x / 2.0, extent.y / 2.0))
@@ -400,7 +398,7 @@ impl CanvasGui {
         if step.settle
             && let Some(cell) = self.touch_cursor()
         {
-            self.touch.cursor = Some(cell_center(self.document.try_solution().unwrap(), cell));
+            self.touch.cursor = Some(cell_center(self.document.solution(), cell));
         }
         step
     }
@@ -408,7 +406,8 @@ impl CanvasGui {
     /// Move the cursor by `delta` abstract units, as far as the grid allows. Returns whether it
     /// moved at all.
     fn move_touch_cursor(&mut self, delta: Vec2) -> bool {
-        let (Some(picture), Some(from)) = (self.document.try_solution(), self.touch.cursor) else {
+        let picture = self.document.solution();
+        let Some(from) = self.touch.cursor else {
             return false;
         };
         // Pushed past the edge of the picture, the cursor stops at it.
@@ -512,9 +511,7 @@ impl CanvasGui {
         &self,
         to_screen: &egui::emath::RectTransform,
     ) -> Vec<egui::Shape> {
-        let Some(picture) = self.document.try_solution() else {
-            return vec![];
-        };
+        let picture = self.document.solution();
         let ((r, g, b), _) = super::palette::suggested_color(picture.palette());
         let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
         let halo = if luma > 150.0 {
@@ -551,11 +548,8 @@ impl CanvasGui {
     /// again once it settles). Pushed back inside the picture where it would stick out of it.
     /// In abstract units; empty if there's no cursor.
     fn touch_cursor_outline(&self) -> Vec<Point> {
-        let (Some(picture), Some(cell), Some(at)) = (
-            self.document.try_solution(),
-            self.touch_cursor(),
-            self.touch.cursor,
-        ) else {
+        let picture = self.document.solution();
+        let (Some(cell), Some(at)) = (self.touch_cursor(), self.touch.cursor) else {
             return vec![];
         };
         let (corners, n) = picture.cell_shape(cell).vertices(picture.cell_origin(cell));
@@ -698,13 +692,12 @@ mod canvas_tests {
     }
 
     fn cell(gui: &CanvasGui, cell: CellIdx) -> Color {
-        gui.document.try_solution().unwrap().cells()[cell]
+        gui.document.solution().cells()[cell]
     }
 
     fn painted(gui: &CanvasGui) -> Vec<CellIdx> {
         gui.document
-            .try_solution()
-            .unwrap()
+            .solution()
             .cells()
             .iter_enumerated()
             .filter(|(_, c)| **c == Color(1))

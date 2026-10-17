@@ -1149,10 +1149,35 @@ pub fn infer_format(path: &str, format_arg: Option<NonogramFormat>) -> NonogramF
     }
 }
 
+/// Because puzzles can be saved as clues, we might load something that isn't solvable (or takes
+/// an arbitrary length of time to solve!). This format supports that; we can even use it to
+/// convert such files between formats!
+#[derive(Clone, Debug)]
+pub struct UncertainDocument {
+    /// At least one of `p` and `s` is present. When both are, `p` is the authority: an
+    /// ambiguous puzzle's `s` is only as much of the picture as its clues pin down.
+    p: Option<DynPuzzle>,
+    s: Option<DynSolution>,
+    /// Someone's progress towards solving the puzzle.
+    in_progress: Option<PartialSolution>,
+    /// Path if native, just a filename, if on the Web
+    pub file: String,
+    pub title: String,
+    pub description: String,
+    pub author: String,
+    pub id: String,
+    pub license: String,
+}
+
+/// A puzzle that has a solution (not necessarily a *unique* one -- perhaps a canonical solution
+/// the user designed).
+///
+/// The picture can still have `UNSOLVED` cells, though.
 #[derive(Clone, Debug)]
 pub struct Document {
     p: Option<DynPuzzle>,
-    s: Option<DynSolution>,
+    // TODO: we shouldn't put `UNSOLVED` cells in here:
+    s: DynSolution,
     /// Someone's progress towards solving the puzzle. The GUI starts a solve from it, and offers
     /// to save it again; any edit to the cells throws it away (see `solution_mut`).
     in_progress: Option<PartialSolution>,
@@ -1165,32 +1190,36 @@ pub struct Document {
     pub license: String,
 }
 
-impl Document {
-    pub fn quality_check(&mut self) -> Vec<String> {
-        let mut problems = vec![];
-        if self.author.is_empty() {
-            problems.push("missing author".to_string());
-        }
-
-        if let Ok(solution) = self.solution() {
-            problems.extend(solution.quality_check());
-        }
-
-        let puzzle = self.puzzle();
-        match puzzle.line_solve() {
-            Ok(report) => {
-                if report.cells_left > 0 {
-                    problems.push("puzzle is not solvable with line-logic".to_string());
-                }
-            }
-            Err(_) => {
-                problems.push("puzzle is self-contradictory".to_string());
-            }
-        }
-
-        problems
+/// What `quality_check` complains about, for either kind of document.
+fn quality_problems(
+    author: &str,
+    solution: Option<&DynSolution>,
+    puzzle: &DynPuzzle,
+) -> Vec<String> {
+    let mut problems = vec![];
+    if author.is_empty() {
+        problems.push("missing author".to_string());
     }
 
+    if let Some(solution) = solution {
+        problems.extend(solution.quality_check());
+    }
+
+    match puzzle.line_solve() {
+        Ok(report) => {
+            if report.cells_left > 0 {
+                problems.push("puzzle is not solvable with line-logic".to_string());
+            }
+        }
+        Err(_) => {
+            problems.push("puzzle is self-contradictory".to_string());
+        }
+    }
+
+    problems
+}
+
+impl UncertainDocument {
     pub fn new(
         puzzle: Option<DynPuzzle>,
         solution: Option<DynSolution>,
@@ -1201,9 +1230,9 @@ impl Document {
         author: Option<String>,
         id: Option<String>,
         license: Option<String>,
-    ) -> Document {
+    ) -> UncertainDocument {
         assert!(puzzle.is_some() || solution.is_some());
-        Document {
+        UncertainDocument {
             p: puzzle,
             s: solution,
             in_progress,
@@ -1216,61 +1245,36 @@ impl Document {
         }
     }
 
-    #[allow(dead_code)] // it's a little weird how this is easy to get but never used
-    pub fn file(&self) -> &str {
-        &self.file
+    pub fn from_puzzle(puzzle: DynPuzzle, file: String) -> Self {
+        Self::new(Some(puzzle), None, None, file, None, None, None, None, None)
     }
 
-    pub fn get_or_make_up_title(&self) -> anyhow::Result<String> {
-        if !self.title.is_empty() {
-            return Ok(self.title.clone());
-        }
-
-        let mut hasher = std::hash::DefaultHasher::new();
-
-        if let Some(solution) = self.try_solution() {
-            for color in solution.cells() {
-                color.hash(&mut hasher);
-            }
-        } else {
-            let puzzle = self.try_puzzle().unwrap();
-            puzzle.hash(&mut hasher);
-        }
-
-        let hash = hasher.finish().to_le_bytes();
-
-        Ok(mnemonic::to_string(&hash[0..4]))
+    pub fn from_solution(solution: DynSolution, file: String) -> Self {
+        Self::new(
+            None,
+            Some(solution),
+            None,
+            file,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
-    #[allow(dead_code)]
+    pub fn quality_check(&mut self) -> Vec<String> {
+        let _ = self.solution(); // Not there for contradictory clues, which the check reports.
+        self.puzzle();
+        quality_problems(&self.author, self.s.as_ref(), self.p.as_ref().unwrap())
+    }
+
     pub fn try_puzzle(&self) -> Option<&DynPuzzle> {
         self.p.as_ref()
     }
 
-    // Returns true if a solution is present or can uniquely be solved from the puzzle,
-    // and thus is editable.
-    // (So an ambiguous puzzle saved in a format that saved the solution will return true)
-    pub fn has_complete_solution(&mut self) -> anyhow::Result<bool> {
-        let solution = self.solution()?;
-
-        for &color in solution.cells() {
-            if color == UNSOLVED {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
-    }
-
-    /// A short, shape-appropriate size label for labels and thumbnails — "8x8" for a square
-    /// puzzle, griddlers.net's "(5+3)x(6+2)" for a triddler (see `GridKind::dims_label`),
-    /// rather than forcing every shape through the same fixed-arity pair.
-    pub fn dims_label(&self) -> String {
-        match (&self.s, &self.p) {
-            (Some(s), _) => s.dims_label(),
-            (_, Some(p)) => p.dims_label(),
-            _ => String::new(),
-        }
+    pub fn try_solution(&self) -> Option<&DynSolution> {
+        self.s.as_ref()
     }
 
     pub fn puzzle(&mut self) -> &DynPuzzle {
@@ -1280,18 +1284,8 @@ impl Document {
         self.p.as_ref().unwrap()
     }
 
-    pub fn try_solution(&self) -> Option<&DynSolution> {
-        self.s.as_ref()
-    }
-
-    /// This uses `plain_solve`, so it tries backtracking, but has a deadline.
-    pub async fn find_solution(&mut self) -> anyhow::Result<()> {
-        if self.s.is_none() {
-            self.s = Some(self.p.as_ref().unwrap().plain_solve().await?.solution);
-        }
-        Ok(())
-    }
-
+    /// The picture, worked out from the clues by line logic if there isn't one. That can leave
+    /// cells `UNSOLVED`, but it's an error if the clues contradict each other.
     pub fn solution(&mut self) -> anyhow::Result<&DynSolution> {
         if self.s.is_none() {
             self.s = Some(self.p.as_ref().unwrap().line_solve()?.solution)
@@ -1299,31 +1293,39 @@ impl Document {
         Ok(self.s.as_ref().unwrap())
     }
 
-    // TODO: the GUI currently uses `solution` from two documents, instead of using `in_progress`
-    // for user solve progress.
-    pub fn solution_mut(&mut self) -> &mut DynSolution {
-        if self.s.is_none() {
-            self.s = Some(self.p.as_ref().unwrap().line_solve().unwrap().solution)
-        }
-        self.p = None; // Edits will invalidate the puzzle!
-        self.in_progress = None;
-        self.s.as_mut().unwrap()
+    /// Whether the picture is there, or can be worked out by line logic, without any cells left
+    /// `UNSOLVED`. (So an ambiguous puzzle saved in a format that saved the solution is complete.)
+    pub fn has_complete_solution(&mut self) -> anyhow::Result<bool> {
+        Ok(!self.solution()?.cells().contains(&UNSOLVED))
     }
 
-    /// For renaming and recoloring. Unlike `solution_mut`, this keeps `in_progress`, which a
-    /// change to a color's name or look can't invalidate.
-    pub fn palette_mut(&mut self) -> &mut Palette {
-        if self.s.is_none() {
-            self.s = Some(self.p.as_ref().unwrap().line_solve().unwrap().solution)
-        }
-        self.p = None; // It has its own copy of the palette.
-        self.s.as_mut().unwrap().palette_mut()
+    /// With the picture worked out (if needed) by line logic. See `solution`.
+    pub fn into_document(mut self) -> anyhow::Result<Document> {
+        self.solution()?;
+        Ok(self.into_document_unchecked())
     }
 
-    pub fn take_solution(self) -> anyhow::Result<DynSolution> {
-        match self.s {
-            Some(s) => Ok(s),
-            None => self.p.unwrap().line_solve().map(|r| r.solution),
+    /// With the picture worked out (if needed) by `plain_solve`, which tries backtracking, but
+    /// has a deadline.
+    pub async fn into_document_with_backtracking(mut self) -> anyhow::Result<Document> {
+        if self.s.is_none() {
+            self.s = Some(self.p.as_ref().unwrap().plain_solve().await?.solution);
+        }
+        Ok(self.into_document_unchecked())
+    }
+
+    /// Only once `s` is known to be there.
+    fn into_document_unchecked(self) -> Document {
+        Document {
+            p: self.p,
+            s: self.s.expect("the picture was just worked out"),
+            in_progress: self.in_progress,
+            file: self.file,
+            title: self.title,
+            description: self.description,
+            author: self.author,
+            id: self.id,
+            license: self.license,
         }
     }
 
@@ -1334,39 +1336,101 @@ impl Document {
     pub fn set_in_progress(&mut self, in_progress: Option<PartialSolution>) {
         self.in_progress = in_progress;
     }
+}
 
-    /// The square picture, for code that only understands rows and columns. Callers should
-    /// report this to the user rather than unwrapping it — the editor cannot yet edit triddlers.
-    pub fn square_solution_mut(&mut self) -> Option<&mut Solution<Square>> {
-        self.solution_mut().as_square_mut()
-    }
-
-    pub fn from_puzzle(puzzle: DynPuzzle, file: String) -> Self {
-        Self {
-            p: Some(puzzle),
-            s: None,
-            in_progress: None,
-            file,
-            title: "".to_string(),
-            description: "".to_string(),
-            author: "".to_string(),
-            id: "".to_string(),
-            license: "".to_string(),
+impl From<Document> for UncertainDocument {
+    fn from(document: Document) -> Self {
+        UncertainDocument {
+            p: document.p,
+            s: Some(document.s),
+            in_progress: document.in_progress,
+            file: document.file,
+            title: document.title,
+            description: document.description,
+            author: document.author,
+            id: document.id,
+            license: document.license,
         }
     }
+}
 
+impl Document {
     pub fn from_solution(solution: DynSolution, file: String) -> Self {
-        Self {
+        Document {
             p: None,
-            s: Some(solution),
+            s: solution,
             in_progress: None,
             file,
-            title: "".to_string(),
-            description: "".to_string(),
-            author: "".to_string(),
-            id: "".to_string(),
-            license: "".to_string(),
+            title: String::new(),
+            description: String::new(),
+            author: String::new(),
+            id: String::new(),
+            license: String::new(),
         }
+    }
+
+    pub fn quality_check(&mut self) -> Vec<String> {
+        self.puzzle();
+        quality_problems(&self.author, Some(&self.s), self.p.as_ref().unwrap())
+    }
+
+    /// The title, or, if there isn't one, a made-up one, from a hash of the picture.
+    pub fn get_or_make_up_title(&self) -> String {
+        if !self.title.is_empty() {
+            return self.title.clone();
+        }
+        let mut hasher = std::hash::DefaultHasher::new();
+        self.s.cells().hash(&mut hasher);
+        let hash = hasher.finish().to_le_bytes();
+        mnemonic::to_string(&hash[0..4])
+    }
+
+    /// Whether the picture has no `UNSOLVED` cells.
+    pub fn is_complete(&self) -> bool {
+        !self.s.cells().contains(&UNSOLVED)
+    }
+
+    /// A short, shape-appropriate size label for labels and thumbnails — "8x8" for a square
+    /// puzzle, griddlers.net's "(5+3)x(6+2)" for a triddler (see `GridKind::dims_label`),
+    /// rather than forcing every shape through the same fixed-arity pair.
+    pub fn dims_label(&self) -> String {
+        self.s.dims_label()
+    }
+
+    /// The clues: the ones that were loaded, or else the picture's.
+    pub fn puzzle(&mut self) -> &DynPuzzle {
+        self.p.get_or_insert_with(|| self.s.to_puzzle())
+    }
+
+    pub fn solution(&self) -> &DynSolution {
+        &self.s
+    }
+
+    // TODO: the GUI currently uses `solution` from two documents, instead of using `in_progress`
+    // for user solve progress.
+    pub fn solution_mut(&mut self) -> &mut DynSolution {
+        self.p = None; // Edits will invalidate the puzzle!
+        self.in_progress = None;
+        &mut self.s
+    }
+
+    /// For renaming and recoloring. Unlike `solution_mut`, this keeps `in_progress`, which a
+    /// change to a color's name or look can't invalidate.
+    pub fn palette_mut(&mut self) -> &mut Palette {
+        self.p = None; // It has its own copy of the palette.
+        self.s.palette_mut()
+    }
+
+    pub fn into_solution(self) -> DynSolution {
+        self.s
+    }
+
+    pub fn in_progress(&self) -> Option<&PartialSolution> {
+        self.in_progress.as_ref()
+    }
+
+    pub fn set_in_progress(&mut self, in_progress: Option<PartialSolution>) {
+        self.in_progress = in_progress;
     }
 }
 
@@ -1380,8 +1444,11 @@ mod block_tests {
     #[test]
     fn blocks_are_the_rosette_arms_plus_one() {
         for path in ["examples/png/apron.png", "examples/triddler/blob.g"] {
-            let mut doc = crate::import::load_path(&path.into(), None).unwrap();
-            let picture = doc.solution_mut();
+            let doc = crate::import::load_path(&path.into(), None)
+                .unwrap()
+                .into_document()
+                .unwrap();
+            let picture = doc.solution();
 
             for cell in picture.lane_map().cells() {
                 let runs = picture.runs_at_cell(cell);
@@ -1507,7 +1574,7 @@ mod resize_tests {
 }
 
 #[cfg(test)]
-mod find_solution_tests {
+mod into_document_tests {
     use super::*;
 
     /// Line logic stalls on this one (see `a_puzzle_that_needs_a_guess` in `conprop.rs`), but the
@@ -1520,13 +1587,13 @@ mod find_solution_tests {
         let puzzle = picture.to_puzzle();
         assert!(puzzle.line_solve().unwrap().cells_left > 0);
 
-        let mut doc = Document::from_puzzle(puzzle, "clues.g".to_string());
-        tokio::runtime::Builder::new_current_thread()
+        let doc = UncertainDocument::from_puzzle(puzzle, "clues.g".to_string());
+        let doc = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(doc.find_solution())
+            .block_on(doc.into_document_with_backtracking())
             .unwrap();
-        assert_eq!(*doc.solution().unwrap(), picture);
+        assert_eq!(*doc.solution(), picture);
     }
 }

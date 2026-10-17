@@ -146,8 +146,10 @@ use egui_material_icons::icons;
 /// The license a puzzle needs for it to be contributed to the library.
 const CC_BY: &str = "CC BY 4.0";
 
+/// Open the GUI on `document`. If its picture couldn't be worked out, it opens on a blank canvas,
+/// and says why.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn edit_image(document: Document) {
+pub fn edit_image(document: anyhow::Result<Document>) {
     use eframe::icon_data::from_png_bytes;
     use egui::ViewportBuilder;
 
@@ -167,7 +169,7 @@ pub fn edit_image(document: Document) {
         native_options,
         Box::new(|cc| {
             add_icon_font(&cc.egui_ctx);
-            Ok(Box::new(NonogramGui::new(document)))
+            Ok(Box::new(NonogramGui::new_or_blank(document)))
         }),
     )
     .unwrap()
@@ -192,7 +194,7 @@ pub fn add_icon_font(ctx: &egui::Context) {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn edit_image(document: Document) {
+pub fn edit_image(document: anyhow::Result<Document>) {
     use eframe::wasm_bindgen::JsCast as _;
 
     let web_options = eframe::WebOptions::default();
@@ -245,10 +247,10 @@ pub fn edit_image(document: Document) {
                             errors.push(format!("Unable to resume: {e}"));
                             match link_document {
                                 Some(link_document) => NonogramGui::new_solving(link_document),
-                                None => NonogramGui::new(document),
+                                None => NonogramGui::new_or_blank(document),
                             }
                         }
-                        (None, None) => NonogramGui::new(document),
+                        (None, None) => NonogramGui::new_or_blank(document),
                     };
                     if let Some(e) = link_error {
                         errors.push(format!("Error loading the puzzle in the link: {e}"));
@@ -617,15 +619,14 @@ pub enum ActionMood {
 }
 
 impl CanvasGui {
-    /// A canvas for editing `document`, or, if `solving`, for solving it. `document` has to have
-    /// a picture.
+    /// A canvas for editing `document`, or, if `solving`, for solving it.
     fn new(
         document: Document,
         solving: bool,
         status: SharedStatus,
         progress: SharedProgress,
     ) -> Self {
-        let picture = document.try_solution().expect("a canvas needs a picture");
+        let picture = document.solution();
         let solved_mask = vec![true; picture.cells().len()].into();
         let current_color = default_color(picture.palette());
         let tool = if solving {
@@ -676,10 +677,7 @@ impl CanvasGui {
 
     /// Sync `self.current_color` and `self.drag_start_color` to the document, for safety.
     fn clamp_colors_to_palette(&mut self) {
-        let Some(picture) = self.document.try_solution() else {
-            return;
-        };
-        let palette = picture.palette();
+        let palette = self.document.solution().palette();
         let fallback = default_color(palette);
 
         if !palette.contains_key(&self.current_color) {
@@ -693,7 +691,7 @@ impl CanvasGui {
     fn reversed(&self, action: &Action) -> Action {
         match action {
             Action::ChangeColor { changes } => {
-                let cells = self.document.try_solution().unwrap().cells();
+                let cells = self.document.solution().cells();
                 Action::ChangeColor {
                     changes: changes.keys().map(|cell| (*cell, cells[*cell])).collect(),
                 }
@@ -779,11 +777,9 @@ impl CanvasGui {
                     }
                 }
             }
-            Action::ReplaceDocument { mut document } => {
-                if let Ok(true) = document.has_complete_solution() {
-                    if document.try_solution().map(|s| s.extent())
-                        != self.document.try_solution().map(|s| s.extent())
-                    {
+            Action::ReplaceDocument { document } => {
+                if document.is_complete() {
+                    if document.solution().extent() != self.document.solution().extent() {
                         self.needs_fit = true;
                     }
                     self.document = *document;
@@ -935,34 +931,38 @@ impl CanvasGui {
 }
 
 impl NonogramGui {
+    /// `document`, or, if its picture couldn't be worked out, a blank canvas that says why.
+    pub fn new_or_blank(document: anyhow::Result<Document>) -> Self {
+        match document {
+            Ok(document) => Self::new(document),
+            Err(e) => {
+                let gui = Self::new(Document::from_solution(
+                    DynSolution::Square(Solution::blank_bw(20, 20)),
+                    "blank.xml".to_string(),
+                ));
+                gui.editor_gui.status.set(StatusMessage::error(format!(
+                    "could not solve this puzzle: {e:#}"
+                )));
+                gui
+            }
+        }
+    }
+
     pub fn new(mut document: Document) -> Self {
         // (Public for testing)
-        //
-        // A document loaded from a clue-only format (olsak, webpbn) has no picture yet, so solve
-        // for one. A self-contradictory puzzle can't produce one at all; rather than panicking,
-        // fall back to a blank canvas and say so once the status cell exists.
-        let mut load_error = None;
-        if let Err(e) = document.solution() {
-            load_error = Some(format!("could not solve this puzzle: {e}"));
-            document = Document::from_solution(
-                DynSolution::Square(Solution::blank_bw(20, 20)),
-                document.file.clone(),
-            );
-        }
-
         if document.author.is_empty()
             && let Some(author) = UserSettings::get(consts::EDITOR_AUTHOR_NAME)
         {
             document.author = author;
         }
 
-        let status = StatusCell::new();
-        if let Some(message) = load_error {
-            status.set(StatusMessage::error(message));
-        }
-
         NonogramGui {
-            editor_gui: CanvasGui::new(document, false, status, Rc::new(RefCell::new(None))),
+            editor_gui: CanvasGui::new(
+                document,
+                false,
+                StatusCell::new(),
+                Rc::new(RefCell::new(None)),
+            ),
             scale: 16.0,
             opened_file_receiver: mpsc::channel().1,
             save_result_receiver: mpsc::channel().1,
@@ -1027,7 +1027,7 @@ impl NonogramGui {
     fn editor_frame(&mut self) {
         // The id tracks the title, and `Save/share` needs it whether or not the title is on
         // screen (in a collapsed "Metadata" section, or a closed dialog).
-        let backup_title = self.editor_gui.document.get_or_make_up_title().unwrap();
+        let backup_title = self.editor_gui.document.get_or_make_up_title();
         let id = self
             .editor_gui
             .id
@@ -1062,7 +1062,7 @@ impl NonogramGui {
         {
             return;
         }
-        let puzzle = self.editor_gui.document.try_solution().unwrap().to_puzzle();
+        let puzzle = self.editor_gui.document.solution().to_puzzle();
 
         let (report, mask) = match puzzle.line_solve() {
             Ok(grid_solve::Report {
@@ -1126,19 +1126,19 @@ impl NonogramGui {
     }
 
     fn backtrack_controls(&mut self, ui: &mut egui::Ui) {
-        let picture = self.editor_gui.document.try_solution().unwrap();
+        let picture = self.editor_gui.document.solution();
         self.editor_gui.backtrack_solver.val.widget(picture, ui);
     }
 
     fn disambig_controls(&mut self, ui: &mut egui::Ui) {
-        let picture = self.editor_gui.document.try_solution().unwrap();
+        let picture = self.editor_gui.document.solution();
         self.editor_gui.disambiguator.val.widget(picture, ui);
     }
 
     /// The +/- buttons for each side of the picture.
     fn resize_controls(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
-        match self.editor_gui.document.try_solution().map(|s| s.shape()) {
-            Some(crate::geometry::Shape::Triangular(_)) => self.tri_resizer(ui, layout),
+        match self.editor_gui.document.solution().shape() {
+            crate::geometry::Shape::Triangular(_) => self.tri_resizer(ui, layout),
             _ => self.resizer(ui, layout),
         }
     }
@@ -1208,11 +1208,11 @@ impl NonogramGui {
     /// `TRIDDLER_ZOOM_STEPS` clicks further in than square puzzles.
     fn render_scale(&self) -> f32 {
         let shape = match &self.solve_gui {
-            Some(solve_gui) => Some(solve_gui.clues.shape()),
-            None => self.editor_gui.document.try_solution().map(|s| s.shape()),
+            Some(solve_gui) => solve_gui.clues.shape(),
+            None => self.editor_gui.document.solution().shape(),
         };
 
-        if matches!(shape, Some(crate::geometry::Shape::Triangular(_))) {
+        if matches!(shape, crate::geometry::Shape::Triangular(_)) {
             self.scale + TRIDDLER_ZOOM_STEPS * ZOOM_STEP
         } else {
             self.scale
@@ -1232,14 +1232,10 @@ impl NonogramGui {
         }
     }
 
-    /// Like `new`, but starting out in solve mode — unless `document` turns out to be unsolvable,
-    /// in which case `new` puts a blank canvas in the editor and says why.
-    pub fn new_solving(mut document: Document) -> Self {
-        let solvable = document.solution().is_ok(); // (cached, so `new` won't solve it again)
+    /// Like `new`, but starting out in solve mode.
+    pub fn new_solving(document: Document) -> Self {
         let mut gui = Self::new(document);
-        if solvable {
-            gui.enter_solve_mode();
-        }
+        gui.enter_solve_mode();
         gui
     }
 
@@ -1249,9 +1245,9 @@ impl NonogramGui {
     /// is lost, just as it is when the Library replaces it.
     ///
     /// Returns whether it opened; if not, it has said why.
-    pub fn open_linked(&mut self, mut document: Document) -> bool {
+    pub fn open_linked(&mut self, document: Document) -> bool {
         // `perform` checks this too, but it records an undo step even when it refuses.
-        if !matches!(document.has_complete_solution(), Ok(true)) {
+        if !document.is_complete() {
             self.editor_gui
                 .status
                 .set(StatusMessage::error("That puzzle has no solution"));
@@ -2124,13 +2120,13 @@ mod new_solving_tests {
         let woven = include_str!("../examples/woven/square_bw.1.woven");
         let mut doc =
             crate::formats::woven::from_woven(woven.trim(), "linked.woven".to_string()).unwrap();
-        let answer = doc.solution().unwrap().cells().raw.to_vec();
+        let answer = doc.solution().cells().raw.to_vec();
         // The first cell, as it is in the answer, and nothing else.
         let mut progress: PartialSolution = vec![Cell::new_anything(); answer.len()].into();
         progress[CellIdx(0)] = Cell::from_color(answer[0]);
         doc.set_in_progress(Some(progress));
 
-        let woven = crate::formats::woven::to_woven(&mut doc).unwrap();
+        let woven = crate::formats::woven::to_woven(&doc).unwrap();
         let doc = crate::formats::woven::from_woven(&woven, "linked.woven".to_string()).unwrap();
         let mut gui = NonogramGui::new_solving(doc);
         let grid = gui
@@ -2140,7 +2136,6 @@ mod new_solving_tests {
             .canvas
             .document
             .solution()
-            .unwrap()
             .cells()
             .raw
             .to_vec();

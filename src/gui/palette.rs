@@ -161,10 +161,8 @@ impl CanvasGui {
     fn palette_order(&self) -> Vec<Color> {
         use itertools::Itertools;
 
-        let Some(picture) = self.document.try_solution() else {
-            return vec![];
-        };
-        picture
+        self.document
+            .solution()
             .palette()
             .keys()
             .copied()
@@ -415,10 +413,8 @@ impl CanvasGui {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (index, color) in order.into_iter().enumerate() {
-                        let Some(picture) = self.document.try_solution() else {
-                            return;
-                        };
-                        let Some(color_info) = picture.palette().get(&color) else {
+                        let Some(color_info) = self.document.solution().palette().get(&color)
+                        else {
                             continue;
                         };
                         let selected = color == self.current_color;
@@ -548,7 +544,7 @@ mod palette_tests {
             ActionMood::Normal,
         );
 
-        let palette = gui.document.try_solution().unwrap().palette();
+        let palette = gui.document.solution().palette();
         assert!(palette.contains_key(&gui.current_color));
         assert!(palette.contains_key(&gui.drag_start_color));
     }

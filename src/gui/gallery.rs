@@ -1,13 +1,13 @@
 //! The UI for a gallery of puzzles.
 
-use crate::puzzle::{BACKGROUND, Clue, Document, DynSolution};
+use crate::puzzle::{Document, DynSolution};
 use eframe::egui;
 use egui::{CornerRadius, Vec2};
 use itertools::Itertools;
 use std::collections::HashMap;
 
 fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &Document) {
-    let color_counts = count_colors(doc);
+    let color_counts = count_colors(doc.solution());
     let total_pixels = color_counts.values().sum::<usize>();
 
     if total_pixels > 0 {
@@ -36,21 +36,15 @@ fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &Document) {
 
 /// Draws a gallery item for a document.
 pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Response {
-    let title = doc
-        .get_or_make_up_title()
-        .unwrap_or_else(|_| "Untitled".to_string());
+    let title = doc.get_or_make_up_title();
 
     let dims_label = doc.dims_label();
 
-    let puzzle_type = match (doc.try_solution(), doc.try_puzzle()) {
-        (Some(s), _) => match (s.shape(), s.clue_style()) {
-            (crate::geometry::Shape::Triangular(_), _) => "triddler",
-            (_, crate::puzzle::ClueStyle::Nono) => "nonogram",
-            (_, crate::puzzle::ClueStyle::Triano) => "trianogram",
-        },
-        (_, Some(crate::puzzle::DynPuzzle::SquareTriano(_))) => "trianogram",
-        (_, Some(crate::puzzle::DynPuzzle::TriNono(_))) => "triddler",
-        _ => "nonogram",
+    let solution = doc.solution();
+    let puzzle_type = match (solution.shape(), solution.clue_style()) {
+        (crate::geometry::Shape::Triangular(_), _) => "triddler",
+        (_, crate::puzzle::ClueStyle::Nono) => "nonogram",
+        (_, crate::puzzle::ClueStyle::Triano) => "trianogram",
     };
 
     let inner_response = egui::Frame::new()
@@ -85,40 +79,7 @@ pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Respon
     response
 }
 
-fn count_colors(doc: &Document) -> HashMap<(u8, u8, u8), usize> {
-    if let Some(solution) = doc.try_solution() {
-        count_colors_from_solution(solution)
-    } else {
-        // Every family covers the whole picture, so counting one is enough. `Clue::express`
-        // flattens both clue styles into (color, count) pairs, which is what makes this one loop
-        // rather than one per clue type.
-        let mut counts = HashMap::new();
-        let puzzle = doc.try_puzzle().unwrap();
-        let mut filled = 0usize;
-        crate::with_puzzle!(puzzle, |p| {
-            use crate::geometry::FamilyIdx;
-            for lane in p.lane_map().family(FamilyIdx(0)) {
-                for clue in &p.lines[lane] {
-                    for (color_info, count) in clue.express(&p.palette) {
-                        let n = count.unwrap_or(1) as usize;
-                        filled += n;
-                        if color_info.corner.is_none() {
-                            *counts.entry(color_info.rgb).or_insert(0) += n;
-                        }
-                    }
-                }
-            }
-            counts.insert(
-                p.palette[&BACKGROUND].rgb,
-                p.geometry.cell_count().saturating_sub(filled),
-            );
-        });
-
-        counts
-    }
-}
-
-fn count_colors_from_solution(solution: &DynSolution) -> HashMap<(u8, u8, u8), usize> {
+fn count_colors(solution: &DynSolution) -> HashMap<(u8, u8, u8), usize> {
     let mut counts = HashMap::new();
     for color in solution.cells() {
         if let Some(color_info) = solution.palette().get(color)

@@ -4,7 +4,15 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT, Queryable};
     use number_loom::geometry::{CellIdx, FamilyIdx, LaneIdx};
-    use number_loom::{gui::NonogramGui, import};
+    use number_loom::{gui::NonogramGui, import, puzzle::Document};
+
+    /// One of the example files, with its picture.
+    fn load(path: &str) -> Document {
+        import::load_path(&path.into(), None)
+            .unwrap()
+            .into_document()
+            .unwrap()
+    }
 
     /// The whole app, with the fonts it would have in real life.
     fn app_harness(gui: NonogramGui) -> Harness<'static, NonogramGui> {
@@ -42,7 +50,7 @@ mod tests {
         // The pixels per cell edge the picture came out at, in the editor and then in the
         // solving view — the two read the puzzle's shape from different places.
         let scales = |path: &str| -> (f32, f32) {
-            let doc = import::load_path(&path.into(), None).unwrap();
+            let doc = load(path);
             let mut harness = app_harness(NonogramGui::new(doc));
             harness.run();
 
@@ -76,7 +84,7 @@ mod tests {
 
     #[test]
     fn test_solve_button() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
 
         let nonogram_gui = NonogramGui::new(doc.clone());
         let mut harness = app_harness(nonogram_gui);
@@ -94,11 +102,13 @@ mod tests {
     /// `editor_gui.solved_mask` with the plain `Solve` button.
     #[test]
     fn test_backtrack_solve_button() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
 
         harness.get_by_label("Solve (backtracking)").click();
-        harness.run();
+        // `step`, not `run`: the progress bar animates for as long as the search is running, and
+        // `run` gives up on a UI that keeps repainting.
+        harness.step();
 
         // `apron.png` solves by line logic alone, so the search reports back almost immediately.
         let mut found = false;
@@ -111,7 +121,7 @@ mod tests {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
-            harness.run();
+            harness.step();
         }
         assert!(found, "backtracking solve never reported back");
 
@@ -135,7 +145,7 @@ mod tests {
     /// same check every frame) would then silently show backtracking's report instead of its own.
     #[test]
     fn test_backtrack_solve_does_not_clobber_the_plain_solve_report() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
 
         harness.get_by_label("Solve").click();
@@ -148,7 +158,9 @@ mod tests {
         );
 
         harness.get_by_label("Solve (backtracking)").click();
-        harness.run();
+        // `step`, not `run`: the progress bar animates for as long as the search is running, and
+        // `run` gives up on a UI that keeps repainting.
+        harness.step();
         for _ in 0..200 {
             if harness
                 .query_by_label_contains("unsolved cells (upper bound): 0")
@@ -157,7 +169,7 @@ mod tests {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
-            harness.run();
+            harness.step();
         }
         assert!(
             harness
@@ -186,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_palette_editor() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
 
         let nonogram_gui = NonogramGui::new(doc.clone());
         let mut harness = app_harness(nonogram_gui);
@@ -217,18 +229,13 @@ mod tests {
     fn test_renaming_a_palette_color() {
         use egui::accesskit::Role;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
         let name_of = |harness: &Harness<NonogramGui>| {
-            harness
-                .state()
-                .editor_gui
-                .document
-                .try_solution()
-                .unwrap()
-                .palette()[&number_loom::puzzle::BACKGROUND]
+            harness.state().editor_gui.document.solution().palette()
+                [&number_loom::puzzle::BACKGROUND]
                 .name
                 .clone()
         };
@@ -271,7 +278,7 @@ mod tests {
         use egui::accesskit::Role;
         use number_loom::gui::Tool;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
@@ -305,7 +312,7 @@ mod tests {
     fn test_palette_row_fits_the_sidebar() {
         use egui::accesskit::Role;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
@@ -355,7 +362,7 @@ mod tests {
     /// the background and `2` is the first drawing color — not `Color(1)` and `Color(2)`.
     #[test]
     fn test_palette_number_keys() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
 
         let nonogram_gui = NonogramGui::new(doc.clone());
         let mut harness = app_harness(nonogram_gui);
@@ -387,7 +394,7 @@ mod tests {
     fn test_tool_shortcuts() {
         use number_loom::gui::Tool;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
 
         let nonogram_gui = NonogramGui::new(doc.clone());
         let mut harness = app_harness(nonogram_gui);
@@ -439,7 +446,7 @@ mod tests {
     fn test_tool_key_toggles_back() {
         use number_loom::gui::Tool;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
@@ -464,7 +471,7 @@ mod tests {
     /// the middle button's job — and it comes back around at the end of the list.
     #[test]
     fn test_wheel_cycles_the_palette() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
@@ -509,7 +516,7 @@ mod tests {
     /// button belongs to the pan, so it must not also paint.
     #[test]
     fn test_middle_drag_pans_instead_of_painting() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
@@ -531,8 +538,7 @@ mod tests {
                 .state()
                 .editor_gui
                 .document
-                .try_solution()
-                .unwrap()
+                .solution()
                 .cells()
                 .to_vec()
         };
@@ -580,7 +586,7 @@ mod tests {
     fn test_annotate_key_is_dead_in_the_editor() {
         use number_loom::gui::Tool;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
@@ -590,8 +596,8 @@ mod tests {
 
     #[test]
     fn test_pencil_tool() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
-        let original_grid = doc.try_solution().unwrap().cells().to_vec();
+        let doc = load("examples/png/apron.png");
+        let original_grid = doc.solution().cells().to_vec();
 
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = app_harness(nonogram_gui);
@@ -615,20 +621,15 @@ mod tests {
 
         let nonogram_gui = harness.state();
         assert_ne!(
-            nonogram_gui
-                .editor_gui
-                .document
-                .try_solution()
-                .unwrap()
-                .cells(),
+            nonogram_gui.editor_gui.document.solution().cells(),
             original_grid
         );
     }
 
     #[test]
     fn test_undo_redo() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
-        let original_grid = doc.try_solution().unwrap().cells().to_vec();
+        let doc = load("examples/png/apron.png");
+        let original_grid = doc.solution().cells().to_vec();
 
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = app_harness(nonogram_gui);
@@ -654,8 +655,7 @@ mod tests {
             .state()
             .editor_gui
             .document
-            .try_solution()
-            .unwrap()
+            .solution()
             .cells()
             .to_vec();
         assert_ne!(modified_grid, original_grid);
@@ -667,8 +667,7 @@ mod tests {
             .state()
             .editor_gui
             .document
-            .try_solution()
-            .unwrap()
+            .solution()
             .cells()
             .to_vec();
         assert_eq!(undone_grid, original_grid);
@@ -680,8 +679,7 @@ mod tests {
             .state()
             .editor_gui
             .document
-            .try_solution()
-            .unwrap()
+            .solution()
             .cells()
             .to_vec();
         assert_eq!(redone_grid, modified_grid);
@@ -693,8 +691,11 @@ mod tests {
     #[test]
     fn test_editing_a_triddler() {
         let doc = import::load_path(&"examples/triddler/blob.g".into(), None).unwrap();
-        let original = doc.try_solution().is_some();
-        assert!(!original, "an olsak file gives a puzzle, not a picture");
+        assert!(
+            doc.try_solution().is_none(),
+            "an olsak file gives a puzzle, not a picture"
+        );
+        let doc = doc.into_document().unwrap();
 
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = app_harness(nonogram_gui);
@@ -704,8 +705,7 @@ mod tests {
             .state()
             .editor_gui
             .document
-            .try_solution()
-            .unwrap()
+            .solution()
             .cells()
             .to_vec();
         assert_eq!(before.len(), 96, "a hexagon of side 4 has 6 * 4^2 cells");
@@ -730,8 +730,7 @@ mod tests {
             .state()
             .editor_gui
             .document
-            .try_solution()
-            .unwrap()
+            .solution()
             .cells()
             .to_vec();
         assert_ne!(before, after, "clicking the canvas should paint a triangle");
@@ -747,7 +746,7 @@ mod tests {
     /// living in panels beside it.
     #[test]
     fn test_solving_a_triddler() {
-        let doc = import::load_path(&"examples/triddler/blob.g".into(), None).unwrap();
+        let doc = load("examples/triddler/blob.g");
 
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = app_harness(nonogram_gui);
@@ -759,7 +758,7 @@ mod tests {
         let solve_gui = gui.solve_gui.as_ref().expect("solve mode is on");
         // Solve mode blanks the picture (bar whatever background it can infer immediately), so
         // most of it should still be undecided.
-        let cells = solve_gui.canvas.document.try_solution().unwrap().cells();
+        let cells = solve_gui.canvas.document.solution().cells();
         let unsolved = cells
             .iter()
             .filter(|c| **c == number_loom::puzzle::UNSOLVED)
@@ -780,7 +779,7 @@ mod tests {
     /// `DynSolution::Tri` from scratch, rather than loading one from a file.
     #[test]
     fn test_new_triddler_dialog() {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = app_harness(nonogram_gui);
         harness.run();
@@ -792,13 +791,7 @@ mod tests {
         harness.get_by_label("Ok").click();
         harness.run();
 
-        let solution = harness
-            .state()
-            .editor_gui
-            .document
-            .try_solution()
-            .unwrap()
-            .clone();
+        let solution = harness.state().editor_gui.document.solution().clone();
         assert!(
             matches!(
                 solution.shape(),
@@ -835,8 +828,7 @@ mod tests {
             .state()
             .editor_gui
             .document
-            .try_solution()
-            .unwrap()
+            .solution()
             .cells()
             .to_vec();
         assert_ne!(
@@ -852,7 +844,7 @@ mod tests {
         // The material icon the lasso button is labelled with.
         const LASSO: &str = "\u{eb03}";
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = app_harness(nonogram_gui);
         harness.run();
@@ -880,7 +872,7 @@ mod tests {
     fn test_solve_click_goes_back_to_unknown() {
         use number_loom::puzzle::{Color, UNSOLVED};
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.get_by_label("Puzzle").click();
         harness.run();
@@ -893,8 +885,7 @@ mod tests {
                 .unwrap()
                 .canvas
                 .document
-                .try_solution()
-                .unwrap()
+                .solution()
                 .cells()
                 .to_vec()
         };
@@ -949,7 +940,7 @@ mod tests {
         use number_loom::gui::{Action, ActionMood};
         use number_loom::with_puzzle;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
 
         harness.get_by_label("Puzzle").click();
@@ -1115,7 +1106,7 @@ mod tests {
         use number_loom::gui::{Action, ActionMood};
         use number_loom::with_puzzle;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
 
         harness.get_by_label("Puzzle").click();
@@ -1203,7 +1194,7 @@ mod tests {
             texts
         };
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.get_by_label("Puzzle").click();
         harness.run();
@@ -1243,7 +1234,7 @@ mod tests {
     fn test_solve_replay() {
         use number_loom::gui::{Action, ActionMood};
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
 
         let nonogram_gui = NonogramGui::new(doc);
         let mut harness = app_harness(nonogram_gui);
@@ -1314,10 +1305,7 @@ mod tests {
         harness.step();
         let solve_gui = harness.state().solve_gui.as_ref().unwrap();
         assert_eq!(solve_gui.replay.as_ref().unwrap().step(), 0);
-        assert_eq!(
-            solve_gui.canvas.document.try_solution().unwrap().cells(),
-            solution
-        );
+        assert_eq!(solve_gui.canvas.document.solution().cells(), solution);
     }
 
     /// Drives the annotate tool through the real solve-mode canvas: the pointer positions, the
@@ -1326,8 +1314,8 @@ mod tests {
     /// Returns the harness sitting in solve mode, plus the picture's on-screen rect and the size
     /// of one cell in it, so a test can aim at a particular border.
     fn solving_harness() -> (Harness<'static, NonogramGui>, egui::Rect, egui::Vec2) {
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
-        let (width, height) = match doc.try_solution().unwrap().shape() {
+        let doc = load("examples/png/apron.png");
+        let (width, height) = match doc.solution().shape() {
             number_loom::geometry::Shape::Square { width, height } => (width, height),
             _ => panic!("apron.png should be a square puzzle"),
         };
@@ -1424,8 +1412,7 @@ mod tests {
             .unwrap()
             .canvas
             .document
-            .try_solution()
-            .unwrap()
+            .solution()
             .cells()
             .to_vec();
 
@@ -1441,7 +1428,7 @@ mod tests {
         let canvas = &harness.state().solve_gui.as_ref().unwrap().canvas;
         assert_eq!(canvas.version, before);
         assert!(canvas.undo_stack.is_empty());
-        assert_eq!(canvas.document.try_solution().unwrap().cells(), grid);
+        assert_eq!(canvas.document.solution().cells(), grid);
     }
 
     /// Holding shift borrows the annotate tool for the length of one drag without giving up the
@@ -1502,7 +1489,7 @@ mod tests {
     /// Ctrl+scroll (which egui reports as a zoom) zooms around the pointer, not the corner.
     #[test]
     fn zooming_keeps_the_point_under_the_pointer() {
-        let doc = import::load_path(&"examples/png/tedious_dust_40x40.png".into(), None).unwrap();
+        let doc = load("examples/png/tedious_dust_40x40.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
 
@@ -1540,7 +1527,7 @@ mod tests {
         use egui::{TouchDeviceId, TouchId, TouchPhase};
         use number_loom::gui::InputMode;
 
-        let doc = import::load_path(&"examples/png/apron.png".into(), None).unwrap();
+        let doc = load("examples/png/apron.png");
         let mut harness = app_harness(NonogramGui::new(doc));
         harness.run();
         assert_eq!(harness.state().input_mode(), InputMode::Mouse);
@@ -1626,16 +1613,15 @@ mod tests {
             harness
         }
 
-        fn apron() -> number_loom::puzzle::Document {
-            import::load_path(&"examples/png/apron.png".into(), None).unwrap()
+        fn apron() -> Document {
+            load("examples/png/apron.png")
         }
 
         /// The names of the colors the palette offers, background first.
         fn color_names(canvas: &number_loom::gui::CanvasGui) -> Vec<(Color, String)> {
             let mut colors: Vec<_> = canvas
                 .document
-                .try_solution()
-                .unwrap()
+                .solution()
                 .palette()
                 .iter()
                 .map(|(color, info)| (*color, info.name.clone()))
@@ -2083,7 +2069,7 @@ mod tests {
                 ("examples/png/fire_submarine.png", 40.0),
                 ("examples/png/ladle.png", 5.0),
             ] {
-                let doc = import::load_path(&path.into(), None).unwrap();
+                let doc = load(path);
                 for solving in [false, true] {
                     let gui = if solving {
                         NonogramGui::new_solving(doc.clone())
@@ -2131,7 +2117,7 @@ mod tests {
         /// The editor has no clues to make room for, so going back to it zooms in again.
         #[test]
         fn leaving_the_solver_refits() {
-            let doc = import::load_path(&"examples/png/fire_submarine.png".into(), None).unwrap();
+            let doc = load("examples/png/fire_submarine.png");
             let mut harness = phone(NonogramGui::new_solving(doc));
             let solving = picture(&harness).width();
             harness.get_by_label(icons::ICON_MENU).click();
@@ -2146,8 +2132,7 @@ mod tests {
         fn a_pinch_zooms_around_the_fingers() {
             use egui::{TouchDeviceId, TouchId, TouchPhase};
 
-            let doc =
-                import::load_path(&"examples/png/tedious_dust_40x40.png".into(), None).unwrap();
+            let doc = load("examples/png/tedious_dust_40x40.png");
             let mut harness = phone(NonogramGui::new(doc));
 
             // Two fingers, `spreads` apart in turn, either side of `between`.

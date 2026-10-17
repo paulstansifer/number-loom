@@ -55,34 +55,41 @@ fn main() -> anyhow::Result<()> {
     let input_path = match args.input_path {
         Some(ip) => ip,
         None => {
-            gui::edit_image(Document::from_solution(
+            gui::edit_image(Ok(Document::from_solution(
                 DynSolution::Square(Solution::blank_bw(20, 20)),
                 "blank.xml".to_string(),
-            ));
+            )));
             return Ok(());
+        }
+    };
+
+    let warn = |problems: Vec<String>| {
+        for problem in problems {
+            eprintln!("Warning: {}", problem);
         }
     };
 
     let mut document = import::load_path(&input_path, args.input_format)
         .with_context(|| format!("could not load {}", input_path.display()))?;
+
     if args.gui || args.disambiguate {
-        // Need a picture, so solve it (potentially slow). Perhaps we should time out?
-        let _ = tokio::runtime::Builder::new_current_thread()
+        // Need a picture, so solve for it (potentially slow, though it does have a deadline).
+        let mut document = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(document.find_solution());
-    }
-    for problem in document.quality_check() {
-        eprintln!("Warning: {}", problem);
-    }
+            .block_on(document.into_document_with_backtracking());
+        // (If there's no picture, that's the error to report.)
+        if let Ok(document) = &mut document {
+            warn(document.quality_check());
+        }
 
-    if args.gui {
-        // TODO: inside the GUI, check the solution is complete!
-        gui::edit_image(document);
-        return Ok(());
-    } else if args.disambiguate {
-        let solution = document.take_solution().context("impossible puzzle")?;
+        if args.gui {
+            // TODO: inside the GUI, check the solution is complete!
+            gui::edit_image(document);
+            return Ok(());
+        }
+        let solution = document.context("impossible puzzle")?.into_solution();
 
         let disambig = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -146,6 +153,8 @@ fn main() -> anyhow::Result<()> {
 
         return Ok(());
     }
+
+    warn(document.quality_check());
 
     match args.output_path {
         Some(path) => {

@@ -11,11 +11,11 @@ use crate::{
         woven::to_woven,
     },
     geometry::{Shape, Square},
-    puzzle::{self, Document, DynPuzzle, NonogramFormat, Solution},
+    puzzle::{self, DynPuzzle, NonogramFormat, Solution, UncertainDocument},
 };
 
 /// The square-only writers need a square picture; asking for one is how we find out.
-fn square_solution(document: &mut Document) -> anyhow::Result<&Solution<Square>> {
+fn square_solution(document: &mut UncertainDocument) -> anyhow::Result<&Solution<Square>> {
     document
         .solution()?
         .as_square()
@@ -23,7 +23,7 @@ fn square_solution(document: &mut Document) -> anyhow::Result<&Solution<Square>>
 }
 
 pub fn to_bytes(
-    document: &mut Document,
+    document: &mut UncertainDocument,
     file_name: Option<String>,
     format: Option<NonogramFormat>,
 ) -> anyhow::Result<Vec<u8>> {
@@ -69,7 +69,7 @@ pub fn to_bytes(
                 crate::with_puzzle!(document.puzzle(), |p| as_html(p, &title, &author))
             }
             NonogramFormat::Image => panic!(),
-            NonogramFormat::Woven => to_woven(document)?,
+            NonogramFormat::Woven => to_woven(&document.clone().into_document()?)?,
             NonogramFormat::CharGrid => as_char_grid(square_solution(document)?),
         }
         .into_bytes()
@@ -79,7 +79,7 @@ pub fn to_bytes(
 }
 
 pub fn save(
-    document: &mut Document,
+    document: &mut UncertainDocument,
     path: &PathBuf,
     format: Option<NonogramFormat>,
 ) -> anyhow::Result<()> {

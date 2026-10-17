@@ -744,7 +744,7 @@ fn for_backtracking(puzzles: &[PathBuf], include_difficult: bool) -> Vec<PathBuf
 /// feed it, and the temp file keeping that path alive, if we made one.
 fn webpbn_path_for(
     path: &Path,
-    document: &number_loom::puzzle::Document,
+    document: &number_loom::puzzle::UncertainDocument,
     temp_dir: &Path,
 ) -> anyhow::Result<PathBuf> {
     if path.extension().and_then(|e| e.to_str()) == Some("xml") {
