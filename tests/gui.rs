@@ -270,6 +270,42 @@ mod tests {
         );
     }
 
+    /// However many keystrokes a name takes, one undo takes it back.
+    #[test]
+    fn test_undoing_a_rename() {
+        use egui::accesskit::Role;
+
+        let doc = load("examples/png/apron.png");
+        let mut harness = app_harness(NonogramGui::new(doc));
+        harness.run();
+
+        let field = harness
+            .get_all_by_value("white")
+            .find(|node| node.accesskit_node().role() == Role::TextInput)
+            .expect("the background should have a name field");
+        field.focus();
+        harness.run();
+        // A keystroke at a time, to the field that has the keyboard.
+        for typed in ["i", "s", "h"] {
+            harness
+                .input_mut()
+                .events
+                .push(Event::Text(typed.to_string()));
+            harness.run();
+        }
+
+        let canvas = &mut harness.state_mut().canvas;
+        let name = |canvas: &number_loom::gui::CanvasGui| {
+            canvas.document.solution().palette()[&number_loom::puzzle::BACKGROUND]
+                .name
+                .clone()
+        };
+        assert!(name(canvas).contains("ish"), "got {:?}", name(canvas));
+        assert_eq!(canvas.undo_stack.len(), 1);
+        canvas.un_or_re_do(true);
+        assert_eq!(name(canvas), "white");
+    }
+
     /// The sidebar's shortcuts are bare keys, so a name field with the keyboard has to shut them
     /// all up — otherwise naming a color "sea green" would reach for the lasso halfway through.
     #[test]

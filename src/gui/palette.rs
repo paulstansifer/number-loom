@@ -201,11 +201,12 @@ impl CanvasGui {
         let delete_width_id = ui.scope_id().with("palette_delete_width");
 
         for (index, color) in self.palette_order().into_iter().enumerate() {
-            let color_info = self
-                .document
-                .palette_mut()
-                .get_mut(&color)
-                .expect("just read out of this palette");
+            // A copy, which goes back by way of `edit_color`, so the change can be undone.
+            let mut color_info = self.document.solution().palette()[&color].clone();
+            // Which widget changed it, if one did (see `edit_color`), and whether one has just
+            // started a fresh round of changes.
+            let mut edited_by = None;
+            let mut fresh_edit = false;
 
             let shortcut = palette_shortcut(index);
             let (r, g, b) = color_info.rgb;
@@ -274,6 +275,8 @@ impl CanvasGui {
                     let mut edited_color = [r, g, b];
 
                     let edit = ui.color_edit_button_srgb(&mut edited_color);
+                    // Opening the picker starts a new undo step.
+                    fresh_edit |= edit.clicked();
                     // `egui` only allows rectangular-swatch-of-current-color as the palette marker,
                     // which doesn't look good in this case.
                     // HACK: draw a pencil icon over it.
@@ -293,11 +296,12 @@ impl CanvasGui {
                         egui::FontId::proportional(edit.rect.height() * 0.7),
                         visuals.fg_stroke.color,
                     );
-                    if edit.on_hover_text("Edit this color").changed() {
-                        // TODO: this should probably also be undoable
+                    let edit = edit.on_hover_text("Edit this color");
+                    if edit.changed() {
                         picked_color = color;
                         let [r, g, b] = edited_color;
                         color_info.rgb = (r, g, b);
+                        edited_by = Some(edit.id);
                     }
 
                     if color == BACKGROUND {
@@ -318,15 +322,28 @@ impl CanvasGui {
 
                     // A color's name shows up in its tooltip, in the clue gutters of a puzzle
                     // whose clues are lettered, and in every format that stores names — so it's
-                    // worth being able to fix. (Not undoable either; see the TODO above.)
-                    // Last in the row, so it can have whatever width is left.
-                    ui.add(
-                        egui::TextEdit::singleline(&mut color_info.name)
-                            .desired_width(ui.available_width()),
-                    )
-                    .on_hover_text("Rename this color");
+                    // worth being able to fix. Last in the row, so it can have whatever width is
+                    // left.
+                    let name = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut color_info.name)
+                                .desired_width(ui.available_width()),
+                        )
+                        .on_hover_text("Rename this color");
+                    // Typing a name is an undo step, from taking the keyboard to letting go.
+                    fresh_edit |= name.gained_focus();
+                    if name.changed() {
+                        edited_by = Some(name.id);
+                    }
                 }
             });
+
+            if fresh_edit {
+                self.start_color_edit();
+            }
+            if let Some(widget) = edited_by {
+                self.edit_color(color_info, widget);
+            }
         }
         if !read_only && ui.button("New color").clicked() {
             add_color = true;
@@ -342,9 +359,16 @@ impl CanvasGui {
     }
 
     /// Take `color` out of the palette, painting its cells with whatever's left current.
+    ///
+    /// Undoing that means putting back which cells were that color as well as the color itself,
+    /// so it's a `ReplaceDocument` rather than an `EditColor` — unless no cell is that color.
     pub(super) fn remove_color(&mut self, color: Color) {
         if self.current_color == color {
             self.current_color = BACKGROUND;
+        }
+        if !self.document.solution().cells().contains(&color) {
+            self.perform(Action::EditColor { color, info: None }, ActionMood::Normal);
+            return;
         }
 
         let mut new_document = self.document.clone();
@@ -365,23 +389,20 @@ impl CanvasGui {
 
     /// Add a color to the palette (see `suggested_color`).
     pub(super) fn add_color(&mut self) {
-        let mut new_document = self.document.clone();
-        let new_picture = new_document.solution_mut();
-        let next_color = Color(new_picture.palette().keys().map(|k| k.0).max().unwrap() + 1);
-        let (rgb, name) = suggested_color(new_picture.palette());
-        new_picture.palette_mut().insert(
-            next_color,
-            ColorInfo {
-                ch: (next_color.0 + 65) as char, // TODO: will break chargrid export
-                name: name.to_string(),
-                rgb,
-                color: next_color,
-                corner: None,
-            },
-        );
+        let palette = self.document.solution().palette();
+        let next_color = Color(palette.keys().map(|k| k.0).max().unwrap() + 1);
+        let (rgb, name) = suggested_color(palette);
+        let info = ColorInfo {
+            ch: (next_color.0 + 65) as char, // TODO: will break chargrid export
+            name: name.to_string(),
+            rgb,
+            color: next_color,
+            corner: None,
+        };
         self.perform(
-            Action::ReplaceDocument {
-                document: Box::new(new_document),
+            Action::EditColor {
+                color: next_color,
+                info: Some(info),
             },
             ActionMood::Normal,
         );
@@ -736,5 +757,124 @@ mod palette_tests {
 
         assert_eq!(gui.current_color, BACKGROUND);
         assert_eq!(gui.drag_start_color, BACKGROUND);
+    }
+
+    fn name(gui: &CanvasGui, color: Color) -> &str {
+        &gui.document.solution().palette()[&color].name
+    }
+
+    fn renamed(gui: &CanvasGui, color: Color, name: &str) -> ColorInfo {
+        ColorInfo {
+            name: name.to_string(),
+            ..gui.document.solution().palette()[&color].clone()
+        }
+    }
+
+    /// Typing a name is one undo step, however many keystrokes it takes; taking the keyboard
+    /// again starts another.
+    #[test]
+    fn renaming_is_one_undo_step_per_go() {
+        let mut gui = NonogramGui::new(doc(Solution::blank_bw(3, 3))).canvas;
+        let was = name(&gui, Color(1)).to_string();
+        let field = egui::Id::unique("name field");
+
+        gui.start_color_edit();
+        for typed in ["i", "in", "ink"] {
+            gui.edit_color(renamed(&gui, Color(1), typed), field);
+        }
+        gui.start_color_edit();
+        gui.edit_color(renamed(&gui, Color(1), "inky"), field);
+        assert_eq!(name(&gui, Color(1)), "inky");
+        assert_eq!(gui.undo_stack.len(), 2);
+
+        gui.un_or_re_do(true);
+        assert_eq!(name(&gui, Color(1)), "ink");
+        gui.un_or_re_do(true);
+        assert_eq!(name(&gui, Color(1)), was);
+        gui.un_or_re_do(false);
+        assert_eq!(name(&gui, Color(1)), "ink");
+    }
+
+    /// Changes from a different widget, or with something else done in between, aren't run
+    /// together.
+    #[test]
+    fn only_one_widgets_changes_run_together() {
+        let mut gui = NonogramGui::new(doc(Solution::blank_bw(3, 3))).canvas;
+        let (field, picker) = (egui::Id::unique("field"), egui::Id::unique("picker"));
+
+        gui.edit_color(renamed(&gui, Color(1), "ink"), field);
+        let mut red = gui.document.solution().palette()[&Color(1)].clone();
+        red.rgb = (255, 0, 0);
+        gui.edit_color(red, picker);
+        gui.perform(
+            Action::ChangeColor {
+                changes: [(CellIdx(0), Color(1))].into(),
+            },
+            ActionMood::Normal,
+        );
+        gui.edit_color(renamed(&gui, Color(1), "inky"), picker);
+        assert_eq!(gui.undo_stack.len(), 4);
+    }
+
+    /// A new color is an edit like any other, and so is deleting it, as long as nothing has been
+    /// painted with it.
+    #[test]
+    fn adding_and_deleting_an_unused_color_are_undoable_edits() {
+        let mut gui = NonogramGui::new(doc(Solution::blank_bw(3, 3))).canvas;
+        gui.add_color();
+        assert_eq!(gui.document.solution().palette().len(), 3);
+        assert!(matches!(
+            gui.undo_stack.last(),
+            Some(Action::EditColor { info: None, .. })
+        ));
+
+        gui.un_or_re_do(true);
+        assert_eq!(gui.document.solution().palette().len(), 2);
+        gui.un_or_re_do(false);
+        assert_eq!(gui.document.solution().palette().len(), 3);
+
+        gui.remove_color(Color(2));
+        assert_eq!(gui.document.solution().palette().len(), 2);
+        assert!(matches!(
+            gui.undo_stack.last(),
+            Some(Action::EditColor { info: Some(_), .. })
+        ));
+    }
+
+    /// Deleting a color that's in use takes its cells too, and undoing it brings them back.
+    #[test]
+    fn deleting_a_color_in_use_brings_its_cells_back_on_undo() {
+        let mut picture = Solution::blank_bw(3, 3);
+        picture.cells[CellIdx(4)] = Color(1);
+        let mut gui = NonogramGui::new(doc(picture)).canvas;
+
+        gui.remove_color(Color(1));
+        assert_eq!(gui.cell(CellIdx(4)), BACKGROUND);
+        gui.un_or_re_do(true);
+        assert_eq!(gui.cell(CellIdx(4)), Color(1));
+        assert!(gui.document.solution().palette().contains_key(&Color(1)));
+    }
+
+    /// A color's name or look is no part of the puzzle, so changing it doesn't make a solve in
+    /// progress start over.
+    #[test]
+    fn editing_a_color_keeps_the_solve() {
+        let mut nonogram = NonogramGui::new(doc(Solution::blank_bw(3, 3)));
+        nonogram.enter_solve_mode();
+        nonogram.canvas.perform(
+            Action::ChangeColor {
+                changes: [(CellIdx(0), BACKGROUND)].into(),
+            },
+            ActionMood::Normal,
+        );
+        nonogram.exit_solve_mode();
+
+        let gui = &mut nonogram.canvas;
+        gui.edit_color(renamed(gui, Color(1), "ink"), egui::Id::unique("field"));
+        gui.add_color();
+
+        nonogram.enter_solve_mode();
+        assert_eq!(nonogram.canvas.cell(CellIdx(0)), BACKGROUND);
+        assert_eq!(nonogram.canvas.undo_stack.len(), 1);
     }
 }

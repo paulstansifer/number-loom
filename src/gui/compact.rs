@@ -583,6 +583,7 @@ impl NonogramGui {
         };
         if held.is_some() {
             self.compact.color_dialog = held;
+            self.canvas.start_color_edit();
         }
     }
 
@@ -841,13 +842,15 @@ impl NonogramGui {
 
         let width = (ctx.content_rect().width() - 4.0 * DIALOG_MARGIN).min(RESIZE_WIDTH);
         let (mut close, mut delete) = (false, false);
+        // A copy, which goes back by way of `edit_color`, so the change can be undone. The name
+        // and the picker are an undo step each, for as long as the dialog is open (see
+        // `bottom_bar`) — or for the name, from taking the keyboard to letting go.
+        let mut color_info = canvas.document.solution().palette()[&color].clone();
+        let mut edited_by = None;
+        let mut fresh_edit = false;
+        let picker_id = egui::Id::unique(("color_dialog_picker", color));
         let shown = egui::Modal::new(egui::Id::unique("color_dialog")).show(ctx, |ui| {
             ui.set_width(width);
-            let color_info = canvas
-                .document
-                .palette_mut()
-                .get_mut(&color)
-                .expect("just checked");
 
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -859,12 +862,16 @@ impl NonogramGui {
                             .add(icon_button(icons::ICON_DELETE, ScreenLayout::Compact))
                             .clicked();
                     }
-                    // Not undoable, any more than the desktop's palette editor is.
-                    ui.add(
-                        egui::TextEdit::singleline(&mut color_info.name)
-                            .desired_width(ui.available_width()),
-                    )
-                    .accessible_name("Rename this color");
+                    let name = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut color_info.name)
+                                .desired_width(ui.available_width()),
+                        )
+                        .accessible_name("Rename this color");
+                    fresh_edit |= name.gained_focus();
+                    if name.changed() {
+                        edited_by = Some(name.id);
+                    }
                 });
             });
 
@@ -878,9 +885,16 @@ impl NonogramGui {
                 egui::widgets::color_picker::Alpha::Opaque,
             ) {
                 color_info.rgb = (picked.r(), picked.g(), picked.b());
+                edited_by = Some(picker_id);
             }
         });
 
+        if fresh_edit {
+            canvas.start_color_edit();
+        }
+        if let Some(widget) = edited_by {
+            canvas.edit_color(color_info, widget);
+        }
         if delete {
             canvas.remove_color(color);
         }

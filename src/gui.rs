@@ -454,6 +454,10 @@ pub struct CanvasGui {
     pub solving: bool,
     /// The editor's own state while solving, or the solver's while editing.
     other_mode: ModeState,
+    /// The palette editor's widget whose changes are going into the undo step on top of the
+    /// stack (see `edit_color`).
+    #[serde(skip)]
+    color_edit: Option<egui::Id>,
     /// Whether the view has somewhere to pan to, in which case a middle-drag pans it and so must
     /// not also reach a tool. `main_ui` sets this from the scroll area's own measurements.
     #[serde(skip)]
@@ -596,6 +600,13 @@ pub enum Action {
     /// Check a clue off in the solver's gutters, or un-check it. Its own inverse, so undo and
     /// redo are both just the same toggle again.
     ToggleClue { clue: ClueId },
+    /// Set what a palette entry is called and how it looks, or with `None`, take it out of the
+    /// palette altogether. (Only while no cell is that color: deleting a color that's in use
+    /// repaints its cells too, which is a `ReplaceDocument`.)
+    EditColor {
+        color: Color,
+        info: Option<ColorInfo>,
+    },
 }
 
 /// What the editor and the solver each keep for themselves, though they share the canvas, and
@@ -678,6 +689,7 @@ impl CanvasGui {
             checked_clues: HashSet::new(),
             solving: false,
             other_mode: solver,
+            color_edit: None,
             middle_pans: false,
             touch_area: None,
             touch: Default::default(),
@@ -812,6 +824,10 @@ impl CanvasGui {
                 document: Box::new(self.document.clone()),
             },
             Action::ToggleClue { clue } => Action::ToggleClue { clue: *clue },
+            Action::EditColor { color, info: _ } => Action::EditColor {
+                color: *color,
+                info: self.document.solution().palette().get(color).cloned(),
+            },
         }
     }
 
@@ -832,7 +848,15 @@ impl CanvasGui {
                 (self.undo_stack.last(), &action),
                 (Some(ChangeColor { .. }), ChangeColor { .. })
             );
-        if merging {
+        let editing_further = mood == Merge
+            && matches!(
+                (self.undo_stack.last(), &action),
+                (Some(EditColor { color: was, .. }), EditColor { color, .. }) if was == color
+            );
+        if editing_further {
+            // The undo entry already there puts back how the color was before any of this.
+            self.apply(action);
+        } else if merging {
             // Consecutive `ChangeColor`s can be merged with each other.
             let (
                 Some(ChangeColor { changes }),
@@ -940,7 +964,45 @@ impl CanvasGui {
                     self.checked_clues.insert(clue);
                 }
             }
+            // No `version` bump either: what a color is called or how it looks is no part of
+            // the picture, so (among other things) it doesn't make solving start over.
+            Action::EditColor { color, info } => match info {
+                Some(info) => {
+                    self.document.palette_mut().insert(color, info);
+                }
+                None => {
+                    debug_assert!(!self.document.solution().cells().contains(&color));
+                    self.document.palette_mut().remove(&color);
+                    self.clamp_colors_to_palette();
+                }
+            },
         }
+    }
+
+    /// Change what `info.color` is called or how it looks, undoably, from the palette editor's
+    /// `widget`. Typing a name or dragging around a color picker changes it on every frame, so
+    /// all that one widget does goes into one undo step, until `start_color_edit` says a new
+    /// one has begun.
+    pub(super) fn edit_color(&mut self, info: ColorInfo, widget: egui::Id) {
+        let mood = if self.color_edit == Some(widget) {
+            ActionMood::Merge
+        } else {
+            ActionMood::Normal
+        };
+        self.color_edit = Some(widget);
+        self.perform(
+            Action::EditColor {
+                color: info.color,
+                info: Some(info),
+            },
+            mood,
+        );
+    }
+
+    /// The next `edit_color` is a separate undo step, even from the same widget: the name field
+    /// has just taken the keyboard, say, or the color picker has just opened.
+    pub(super) fn start_color_edit(&mut self) {
+        self.color_edit = None;
     }
 
     pub fn un_or_re_do(&mut self, un: bool) {
