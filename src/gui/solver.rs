@@ -9,7 +9,7 @@ use crate::{
     solve::grid_solve::LineStatus,
     user_settings::{UserSettings, consts},
 };
-use egui::{Color32, Pos2, Rect, RichText, Vec2, text::Fonts};
+use egui::{Color32, Pos2, Rect, RichText, Vec2, epaint::FontsView};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use typed_index_collections::TiVec;
@@ -868,14 +868,14 @@ pub(crate) fn clue_font(
     font_scale: f32,
 ) -> egui::FontId {
     let base_font = egui::FontId::monospace(scale * font_scale);
-    let text_width = |fonts: &Fonts, t: &str| {
+    let text_width = |fonts: &mut FontsView, t: &str| {
         fonts
             .layout_no_wrap(t.to_string(), base_font.clone(), Color32::BLACK)
             .rect
             .width()
     };
 
-    let (width_2, width_3) = ui.fonts(|f| {
+    let (width_2, width_3) = ui.fonts_mut(|f| {
         (
             f32::max(text_width(f, "00") / (scale * font_scale), 1.0),
             f32::max(text_width(f, "000") / (scale * font_scale), 1.0),

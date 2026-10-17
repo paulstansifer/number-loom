@@ -8,7 +8,7 @@
 //! ask for.
 
 use egui::{
-    Align2, Color32, Rect, Response, Sense, Shape, StrokeKind, TextStyle, WidgetInfo, WidgetType,
+    Align2, Color32, Rect, Response, Role, Sense, Shape, StrokeKind, TextStyle, WidgetInfo,
     epaint::RectShape, pos2,
 };
 use egui_material_icons::icons;
@@ -31,7 +31,7 @@ pub struct AutoButton {
 /// A `label` button with a gear-shaped "do this automatically" toggle for `auto` under it.
 pub fn auto_button(ui: &mut egui::Ui, label: &str, auto: &mut bool) -> AutoButton {
     let font = TextStyle::Button.resolve(ui.style());
-    let gear_width = ui.fonts(|fonts| {
+    let gear_width = ui.fonts_mut(|fonts| {
         fonts
             .layout_no_wrap(
                 icons::ICON_SETTINGS.to_owned(),
@@ -53,7 +53,7 @@ pub fn auto_button(ui: &mut egui::Ui, label: &str, auto: &mut bool) -> AutoButto
 
     let (button, gear) = ui
         .horizontal(|ui| {
-            // Sibling rows share a `ui.id()`, so that can't be salted into an id of our own —
+            // Sibling rows share a `ui.scope_id()`, so that can't be salted into an id of our own —
             // two of these in one sidebar would collide. The auto-id counter is what actually
             // distinguishes them, and it has to be read before anything else in the row is laid
             // out, so that toggling (which changes what the row allocates) can't move it.
@@ -79,7 +79,7 @@ pub fn auto_button(ui: &mut egui::Ui, label: &str, auto: &mut bool) -> AutoButto
             // `get_by_label` in tests/gui.rs) has to be able to tell the two apart.
             let auto_label = format!("{label} automatically");
             gear.widget_info(|| {
-                WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), is_auto, &auto_label)
+                WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), is_auto, &auto_label)
             });
             if gear.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -102,16 +102,22 @@ pub fn auto_button(ui: &mut egui::Ui, label: &str, auto: &mut bool) -> AutoButto
             );
             // Exactly what `egui::Button` paints for itself, so the fake one is indistinguishable
             // from the real one.
-            painter.set(
-                under_slot,
-                RectShape::new(
-                    under,
-                    visuals.corner_radius,
-                    visuals.weak_bg_fill,
-                    visuals.bg_stroke,
-                    StrokeKind::Inside,
-                ),
+            let under = RectShape::new(
+                under,
+                visuals.corner_radius,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                StrokeKind::Inside,
             );
+            // A disabled button is painted see-through, which would show the tuck through it.
+            // Backed with the background, it looks just as it did when egui faded disabled
+            // widgets towards that color instead.
+            let backing = RectShape::filled(
+                button.rect,
+                ui.style().interact(&button).corner_radius,
+                ui.visuals().widgets.noninteractive.weak_bg_fill,
+            );
+            painter.set(under_slot, Shape::Vec(vec![under.into(), backing.into()]));
             painter.text(
                 sliver.center(),
                 Align2::CENTER_CENTER,

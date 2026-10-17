@@ -22,7 +22,7 @@ const COMPACT_WIDTH: f32 = 600.0;
 
 impl ScreenLayout {
     pub fn of(ctx: &egui::Context) -> ScreenLayout {
-        if ctx.screen_rect().width() < COMPACT_WIDTH {
+        if ctx.content_rect().width() < COMPACT_WIDTH {
             ScreenLayout::Compact
         } else {
             ScreenLayout::Desktop
@@ -155,8 +155,8 @@ pub(super) fn dialog<R>(
             false,
         ),
         ScreenLayout::Compact => {
-            let screen = ctx.screen_rect();
-            let id = egui::Id::new(("full_screen_dialog", title));
+            let screen = ctx.content_rect();
+            let id = egui::Id::unique(("full_screen_dialog", title));
             let mut back = false;
             // A modal, so that nothing underneath takes the touches meant for it.
             let shown = egui::Modal::new(id)
@@ -165,7 +165,7 @@ pub(super) fn dialog<R>(
                         .anchor(egui::Align2::LEFT_TOP, Vec2::ZERO)
                         .constrain(false),
                 )
-                .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(0.0))
+                .frame(egui::Frame::central_panel(&ctx.global_style()).inner_margin(0.0))
                 .backdrop_color(Color32::TRANSPARENT)
                 .show(ctx, |ui| {
                     ui.set_min_size(screen.size());
@@ -206,7 +206,7 @@ fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, name: &str) -> egui::Response
     }
     let is_on = *on;
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), is_on, name)
+        egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), is_on, name)
     });
 
     if ui.is_rect_visible(rect) {
@@ -265,7 +265,7 @@ impl egui::Widget for SectionHeading<'_> {
             egui::Sense::hover(),
         );
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+            egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), galley.text())
         });
         if ui.is_rect_visible(rect) {
             let color = ui.visuals().strong_text_color();
@@ -419,7 +419,8 @@ impl NonogramGui {
     }
 
     /// The whole window, in the compact layout.
-    pub(super) fn compact_ui(&mut self, ctx: &egui::Context) {
+    pub(super) fn compact_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         let editing = self.solve_gui.is_none();
         if !editing {
             // The editor's dialogs belong to the editor's document.
@@ -444,14 +445,12 @@ impl NonogramGui {
             None => self.update_line_solve(false),
         }
 
-        let top_bar = egui::TopBottomPanel::top("compact_top_bar")
-            .frame(bar_frame(ctx, Edge::Bottom))
-            .show(ctx, |ui| self.top_bar(ui))
+        let top_bar = egui::Panel::top("compact_top_bar")
+            .show(ui, |ui| self.top_bar(ui))
             .response
             .rect;
-        let bottom_bar = egui::TopBottomPanel::bottom("compact_bottom_bar")
-            .frame(bar_frame(ctx, Edge::Top))
-            .show(ctx, |ui| self.bottom_bar(ui))
+        let bottom_bar = egui::Panel::bottom("compact_bottom_bar")
+            .show(ui, |ui| self.bottom_bar(ui))
             .response
             .rect;
 
@@ -459,7 +458,7 @@ impl NonogramGui {
             self.resize_window(ctx, bottom_bar.top());
         }
 
-        self.canvas_panel(ctx, ScreenLayout::Compact);
+        self.canvas_panel(ui, ScreenLayout::Compact);
 
         self.progress_strip(ctx, top_bar.bottom());
         self.dialogs(ctx, ScreenLayout::Compact);
@@ -601,9 +600,9 @@ impl NonogramGui {
 
     /// The menu: a drawer from the left, over the dimmed screen.
     fn drawer(&mut self, ctx: &egui::Context, aid_requests: &mut [bool; Aid::ALL.len()]) {
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let width = DRAWER_WIDTH.min(screen.width() - TARGET);
-        let id = egui::Id::new("drawer");
+        let id = egui::Id::unique("drawer");
         let margin = 12.0;
 
         let shown = egui::Modal::new(id)
@@ -612,7 +611,7 @@ impl NonogramGui {
                     .anchor(egui::Align2::LEFT_TOP, Vec2::ZERO)
                     .constrain(false),
             )
-            .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(margin))
+            .frame(egui::Frame::side_top_panel(&ctx.global_style()).inner_margin(margin))
             .show(ctx, |ui| {
                 ui.set_width(width - 2.0 * margin);
                 ui.set_height(screen.height() - 2.0 * margin);
@@ -738,7 +737,7 @@ impl NonogramGui {
         let Some(progress) = *self.editor_gui.progress.borrow() else {
             return;
         };
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let track = Rect::from_min_max(
             Pos2::new(screen.left(), top),
             Pos2::new(screen.right(), top + PROGRESS_HEIGHT),
@@ -749,9 +748,9 @@ impl NonogramGui {
         );
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
-            egui::Id::new("progress_strip"),
+            egui::Id::unique("progress_strip"),
         ));
-        let color = ctx.style().visuals.selection.bg_fill;
+        let color = ctx.global_style().visuals.selection.bg_fill;
         painter.rect_filled(track, 0.0, color.gamma_multiply(0.3));
         painter.rect_filled(done, 0.0, color);
         // The search reports its progress over a channel, which egui doesn't know to watch.
@@ -771,14 +770,14 @@ impl NonogramGui {
             ctx.request_repaint_after(TOAST_DURATION - age);
         }
 
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let fill = if message.is_error {
             Color32::from_rgb(0x8a, 0x1c, 0x22)
         } else {
             Color32::from_gray(0x32)
         };
         let mut dismissed = false;
-        egui::Area::new(egui::Id::new("toast"))
+        egui::Area::new(egui::Id::unique("toast"))
             .order(egui::Order::Foreground)
             // Fingers on the canvas go straight through one that can't be dismissed anyway.
             .interactable(message.is_error)
@@ -817,8 +816,8 @@ impl NonogramGui {
     /// The Resize controls, in a window just above the bottom bar (`bottom`), which leaves the
     /// grid in sight. It doesn't block anything, and the Resize button closes it.
     fn resize_window(&mut self, ctx: &egui::Context, bottom: f32) {
-        let screen = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("resize_window"))
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::unique("resize_window"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::CENTER_BOTTOM)
             .fixed_pos(Pos2::new(screen.center().x, bottom - DIALOG_MARGIN))
@@ -856,9 +855,9 @@ impl NonogramGui {
             return;
         }
 
-        let width = (ctx.screen_rect().width() - 4.0 * DIALOG_MARGIN).min(RESIZE_WIDTH);
+        let width = (ctx.content_rect().width() - 4.0 * DIALOG_MARGIN).min(RESIZE_WIDTH);
         let (mut close, mut delete) = (false, false);
-        let shown = egui::Modal::new(egui::Id::new("color_dialog")).show(ctx, |ui| {
+        let shown = egui::Modal::new(egui::Id::unique("color_dialog")).show(ctx, |ui| {
             ui.set_width(width);
             let color_info = canvas
                 .document
@@ -881,7 +880,8 @@ impl NonogramGui {
                     ui.add(
                         egui::TextEdit::singleline(&mut color_info.name)
                             .desired_width(ui.available_width()),
-                    );
+                    )
+                    .accessible_name("Rename this color");
                 });
             });
 
@@ -919,8 +919,8 @@ impl NonogramGui {
             return;
         }
 
-        let width = (ctx.screen_rect().width() - 4.0 * DIALOG_MARGIN).min(360.0);
-        let shown = egui::Modal::new(egui::Id::new("solved")).show(ctx, |ui| {
+        let width = (ctx.content_rect().width() - 4.0 * DIALOG_MARGIN).min(360.0);
+        let shown = egui::Modal::new(egui::Id::unique("solved")).show(ctx, |ui| {
             ui.set_width(width);
             let mut close = false;
             ui.horizontal(|ui| {

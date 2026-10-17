@@ -12,8 +12,8 @@
 
 use std::sync::LazyLock;
 
-use ab_glyph::{Font as _, ScaleFont as _};
-use egui::{Align2, Color32, Pos2, Shape, Stroke, Vec2};
+use ab_glyph::Font as _;
+use egui::{Align2, Color32, Pos2, Shape, Stroke, Vec2, emath::GuiRounding as _};
 
 /// How many line segments each Bézier in an outline becomes. Honestly, 1 only has slight artifacts.
 const SEGMENTS_PER_CURVE: usize = 3;
@@ -30,10 +30,8 @@ static HACK: LazyLock<ab_glyph::FontRef<'static>> = LazyLock::new(|| {
         .expect("epaint's own bundled monospace font should parse")
 });
 
-/// A digit's outline: the raw curves (kept for their pixel bounds, which depend on the size) and
-/// every contour already flattened.
+/// A digit's outline, every contour already flattened.
 struct DigitOutline {
-    outline: ab_glyph::Outline,
     /// Closed polylines in unscaled font units — the digit's silhouette, and the counters
     /// inside `0`, `4`, `6`, `8` and `9` too, which is what keeps a black number legible
     /// when it lands on a black cell.
@@ -47,8 +45,9 @@ static DIGITS: LazyLock<[Option<DigitOutline>; 10]> =
 
 fn digit_outline(chr: char) -> Option<DigitOutline> {
     let outline = HACK.outline(HACK.glyph_id(chr))?;
-    let contours = contours(&outline);
-    Some(DigitOutline { outline, contours })
+    Some(DigitOutline {
+        contours: contours(&outline),
+    })
 }
 
 fn same_point(a: ab_glyph::Point, b: ab_glyph::Point) -> bool {
@@ -165,6 +164,13 @@ fn bevel_sharp_corners(points: &[Pos2], cut: f32) -> Vec<Pos2> {
     out
 }
 
+/// The sub-pixel offset epaint renders a glyph at, given where its layout put it in physical
+/// pixels: `SubpixelBin::new`, which rounds to the nearest quarter pixel.
+fn subpixel_bin(h_pos: f32) -> f32 {
+    let quarters = (h_pos.rem_euclid(1.0) * 4.0).round();
+    (quarters % 4.0) / 4.0
+}
+
 /// The halo for a number, as shapes to add to the painter just before the text itself.
 ///
 /// `center`, `txt` and `font` must be the ones the following `painter.text` is given, with
@@ -179,26 +185,33 @@ pub(crate) fn halo_shapes(
     color: Color32,
     width: f32,
 ) -> Vec<Shape> {
-    let galley = ui.fonts(|f| f.layout_no_wrap(txt.to_owned(), font.clone(), color));
-    // `Painter::text` places a galley exactly this way.
-    let origin = Align2::CENTER_CENTER.anchor_size(center, galley.size()).min;
-
+    let galley = ui.fonts_mut(|f| f.layout_no_wrap(txt.to_owned(), font.clone(), color));
     let ppp = ui.ctx().pixels_per_point();
-    // The size epaint rasterizes at, from `FontsImpl::font_impl`. Hack's `FontTweak` is the
-    // default one, so there's no tweak factor to fold in here.
+    // `Painter::text` places a galley exactly this way, and then the tessellator snaps it to the
+    // pixel grid (`round_text_to_pixels`).
+    let origin = Align2::CENTER_CENTER
+        .anchor_size(center, galley.size())
+        .min
+        .round_to_pixels(ppp);
+    // The size epaint rasterizes at, from `FontFace::styled_metrics`: pixels per em, unrounded.
+    // Hack's `FontTweak` is the default one, so there's no tweak factor to fold in here.
     let Some(units_per_em) = HACK.units_per_em() else {
         return Vec::new();
     };
-    let scale_in_pixels = (font.size * ppp * HACK.height_unscaled() / units_per_em).round();
-    if scale_in_pixels <= 0.0 {
+    let px_per_unit = font.size * ppp / units_per_em;
+    if px_per_unit <= 0.0 {
         return Vec::new();
     }
-    let scale_factor = HACK.as_scaled(scale_in_pixels).scale_factor();
     let stroke = Stroke::new(width, color);
 
     let mut shapes = Vec::new();
     for row in &galley.rows {
+        // Where epaint's layout cursor was, in physical pixels, which is what picks the
+        // sub-pixel bin the glyph gets rendered at (`GlyphAtlas::allocate_outline`).
+        let mut cursor_px = 0.0;
         for glyph in &row.glyphs {
+            let h_pos = cursor_px;
+            cursor_px += glyph.advance_width * ppp;
             let Some(digit) = glyph
                 .chr
                 .to_digit(10)
@@ -206,22 +219,22 @@ pub(crate) fn halo_shapes(
             else {
                 continue; // Not a digit, or a glyph the font has no outline for: no halo.
             };
+            let bin = subpixel_bin(h_pos);
 
-            // Where epaint puts this glyph's ink: `FontImpl::allocate_glyph` sets
-            // `uv_rect.offset` to the rasterized bitmap's top-left corner, relative to the
-            // baseline position in `glyph.pos`.
-            let ink_top_left = origin + glyph.pos.to_vec2() + glyph.uv_rect.offset;
-            let px_min = digit
-                .outline
-                .px_bounds(scale_factor, ab_glyph::point(0.0, 0.0))
-                .min;
-            // Font units are y-up and scaled to pixels; the canvas is y-down and in points.
+            // The glyph's pen position — the point on the baseline that the outline is drawn
+            // from — on screen. `uv_rect.offset` is the rasterized bitmap's top-left corner
+            // relative to that, and it's a whole number of pixels, so it can come off again
+            // after `tessellate_glyphs` has snapped the corner to a pixel. Going by the bitmap's
+            // corner itself would be at the mercy of the hinter, which moves a digit's top by up
+            // to a pixel; the baseline stays put.
+            let pen = origin
+                + row.pos.to_vec2()
+                + (glyph.pos.to_vec2() + glyph.uv_rect.offset).round_to_pixels(ppp)
+                - glyph.uv_rect.offset;
+            // `FontCell::rasterize_glyph` draws the outline shifted right by the bin. Font units
+            // are y-up and scaled to pixels; the canvas is y-down and in points.
             let to_screen = |p: &ab_glyph::Point| {
-                ink_top_left
-                    + Vec2::new(
-                        p.x * scale_factor.horizontal - px_min.x,
-                        -p.y * scale_factor.vertical - px_min.y,
-                    ) / ppp
+                pen + Vec2::new(p.x * px_per_unit + bin, -p.y * px_per_unit) / ppp
             };
 
             for contour in &digit.contours {
@@ -240,69 +253,121 @@ pub(crate) fn halo_shapes(
 mod tests {
     use super::*;
 
-    fn with_test_ui(add_contents: impl Fn(&mut egui::Ui)) {
+    fn with_test_ui(
+        pixels_per_point: f32,
+        font_hinting: bool,
+        add_contents: impl Fn(&mut egui::Ui),
+    ) {
         // Not `egui::__run_test_ui`: that one installs *no* fonts, and fonts are the point here.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| add_contents(ui));
-        });
+        ctx.set_pixels_per_point(pixels_per_point);
+        ctx.global_style_mut(|style| style.visuals.text_options.font_hinting = font_hinting);
+        ctx.run_ui(Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| add_contents(ui));
+        })
+        .drop_without_applying_deltas();
     }
 
-    /// Every digit's halo should sit exactly on the ink egui is about to draw.
-    ///
-    /// This is the guard against `epaint_default_fonts` drifting out of step with `egui`, or
-    /// against epaint changing how it picks a rasterization size: either would leave the halos
-    /// subtly misplaced, with nothing else to complain about it.
-    #[test]
-    fn halo_lands_on_the_glyph() {
-        with_test_ui(|ui| {
-            for size in [10.0, 24.0, 60.0] {
-                let font = egui::FontId::monospace(size);
-                for digit in 0..10 {
-                    let txt = digit.to_string();
-                    let center = Pos2::new(100.0, 100.0);
-
-                    let mut halo = egui::Rect::NOTHING;
-                    for shape in halo_shapes(ui, center, &txt, &font, Color32::WHITE, 1.0) {
-                        let egui::Shape::Path(path) = shape else {
-                            panic!("a halo should be nothing but paths");
-                        };
-                        for point in &path.points {
-                            halo.extend_with(*point);
-                        }
-                    }
-                    assert!(halo.is_finite(), "no halo at all for {txt:?} at {size}");
-
-                    // Where egui will put this glyph's ink, straight from the galley.
-                    let galley =
-                        ui.fonts(|f| f.layout_no_wrap(txt.clone(), font.clone(), Color32::WHITE));
-                    let origin = Align2::CENTER_CENTER.anchor_size(center, galley.size()).min;
-                    let glyph = &galley.rows[0].glyphs[0];
-                    let ink = egui::Rect::from_min_size(
-                        origin + glyph.pos.to_vec2() + glyph.uv_rect.offset,
-                        glyph.uv_rect.size,
-                    );
-
-                    // The bitmap egui rasterizes into is the ink box rounded outwards to whole
-                    // pixels, and flattening a curve (or cutting a sharp corner off) pulls in a
-                    // little more — so the halo should sit just *inside* the ink box, by well
-                    // under a pixel and a half.
-                    let ppp = ui.ctx().pixels_per_point();
-                    let slack = 1.5 / ppp;
-                    for (what, off) in [
-                        ("left", halo.min.x - ink.min.x),
-                        ("top", halo.min.y - ink.min.y),
-                        ("right", ink.max.x - halo.max.x),
-                        ("bottom", ink.max.y - halo.max.y),
-                    ] {
-                        assert!(
-                            (0.0..=slack).contains(&off),
-                            "{txt:?} at {size}: halo's {what} edge is {off} off the glyph's \
-                             (want 0..={slack})",
-                        );
-                    }
+    /// Where `txt`'s ink really ends up when `painter.text` draws it centered on `center`: the
+    /// bounds of the mesh epaint tessellates it into, after all of epaint's snapping to pixels.
+    fn drawn_ink(ui: &egui::Ui, center: Pos2, txt: &str, font: &egui::FontId) -> egui::Rect {
+        let galley =
+            ui.fonts_mut(|f| f.layout_no_wrap(txt.to_owned(), font.clone(), Color32::WHITE));
+        let origin = Align2::CENTER_CENTER.anchor_size(center, galley.size()).min;
+        let shape = egui::epaint::ClippedShape {
+            clip_rect: egui::Rect::EVERYTHING,
+            shape: Shape::galley(origin, galley, Color32::WHITE),
+            transform_after_tessellation: egui::emath::TSTransform::IDENTITY,
+        };
+        let mut ink = egui::Rect::NOTHING;
+        for primitive in ui
+            .ctx()
+            .tessellate(vec![shape], ui.ctx().pixels_per_point())
+        {
+            if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
+                for vertex in &mesh.vertices {
+                    ink.extend_with(vertex.pos);
                 }
             }
-        });
+        }
+        ink
+    }
+
+    /// Check every number's halo against the ink egui draws, at all sorts of sizes, scales and
+    /// positions. Each edge of the halo should be inside the ink's by up to a pixel and a half
+    /// (the bitmap egui rasterizes into is the ink box rounded outwards to whole pixels, and
+    /// flattening a curve or cutting a sharp corner off pulls in a little more), and the top and
+    /// bottom can also poke out by `vertical_leeway` pixels.
+    ///
+    /// This is the guard against `epaint_default_fonts` drifting out of step with `egui`, or
+    /// against epaint changing how it picks a rasterization size or snaps text to pixels: any
+    /// of them would leave the halos subtly misplaced, with nothing else to complain about it.
+    fn check_halos(font_hinting: bool, vertical_leeway: f32) {
+        let numbers: Vec<String> = (0..10)
+            .chain([10, 25, 47, 99, 108])
+            .map(|n| n.to_string())
+            .collect();
+        // Clues are centered wherever their cells fall, which is rarely on a pixel boundary.
+        let centers = [
+            (100.0, 100.0),
+            (100.3, 100.6),
+            (100.5, 100.5),
+            (100.7, 100.2),
+        ];
+        for pixels_per_point in [1.0, 1.25, 2.0] {
+            with_test_ui(pixels_per_point, font_hinting, |ui| {
+                for size in [10.0, 24.0, 60.0] {
+                    let font = egui::FontId::monospace(size);
+                    for txt in &numbers {
+                        for (x, y) in centers {
+                            let center = Pos2::new(x, y);
+                            let mut halo = egui::Rect::NOTHING;
+                            for shape in halo_shapes(ui, center, txt, &font, Color32::WHITE, 1.0) {
+                                let egui::Shape::Path(path) = shape else {
+                                    panic!("a halo should be nothing but paths");
+                                };
+                                for point in &path.points {
+                                    halo.extend_with(*point);
+                                }
+                            }
+                            assert!(halo.is_finite(), "no halo at all for {txt:?} at {size}");
+                            let ink = drawn_ink(ui, center, txt, &font);
+
+                            for (what, off, leeway) in [
+                                ("left", halo.min.x - ink.min.x, 0.0),
+                                ("top", halo.min.y - ink.min.y, vertical_leeway),
+                                ("right", ink.max.x - halo.max.x, 0.0),
+                                ("bottom", ink.max.y - halo.max.y, vertical_leeway),
+                            ] {
+                                let off = off * pixels_per_point;
+                                // Plus a little for floating-point noise.
+                                assert!(
+                                    (-leeway - 0.01..=1.5).contains(&off),
+                                    "{txt:?} at {size}pt, centered on {center:?}, \
+                                     {pixels_per_point} px/pt, hinting {font_hinting}: halo's \
+                                     {what} edge is {off} px off the glyph's \
+                                     (want -{leeway}..=1.5)",
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    /// Unhinted, the halo is the very outline egui rasterizes, so it can't be off at all.
+    #[test]
+    fn halo_lands_on_the_unhinted_glyph() {
+        check_halos(false, 0.0);
+    }
+
+    /// egui hints its glyphs, and the halo is the unhinted outline: the hinter snaps a digit's
+    /// top (and a round one's overshoot below the baseline) to the pixel grid, which can leave the
+    /// halo poking out above or below the ink by up to about a pixel. It never moves anything
+    /// sideways.
+    #[test]
+    fn halo_lands_on_the_hinted_glyph() {
+        check_halos(true, 1.1);
     }
 }

@@ -113,7 +113,7 @@ impl CanvasGui {
         let editing = !self.solving;
 
         // Same story as in `common_sidebar_items`: no modifiers here either.
-        let typing = ui.ctx().wants_keyboard_input();
+        let typing = ui.ctx().egui_wants_keyboard_input();
 
         // Which tool a key asked for this frame, acted on once the row is done: asking for the
         // tool you're already in means going back to the one before it, and only `self` knows

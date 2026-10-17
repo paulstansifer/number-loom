@@ -55,7 +55,7 @@ impl NonogramGui {
     pub(super) fn toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         // See the matching note in `CanvasGui::undo_redo`: bare-key shortcuts have to opt out of
         // firing while a text field has the focus.
-        let typing = ctx.wants_keyboard_input();
+        let typing = ctx.egui_wants_keyboard_input();
 
         ui.horizontal(|ui| {
             if ui.button(icons::ICON_ZOOM_IN).clicked()
@@ -126,7 +126,7 @@ impl NonogramGui {
         // How wide the Save/share window's text boxes are.
         let text_width = match layout {
             ScreenLayout::Desktop => 730.0,
-            ScreenLayout::Compact => ctx.screen_rect().width() - 2.0 * compact::DIALOG_MARGIN,
+            ScreenLayout::Compact => ctx.content_rect().width() - 2.0 * compact::DIALOG_MARGIN,
         };
 
         let mut new_document = None;
@@ -223,7 +223,7 @@ impl NonogramGui {
             let (_, back) = compact::dialog(
                 ctx,
                 layout,
-                egui::Window::new("Puzzle Library").max_size(ctx.screen_rect().size() * 0.9),
+                egui::Window::new("Puzzle Library").max_size(ctx.content_rect().size() * 0.9),
                 "Puzzle Library",
                 |ui| {
                     match status {
@@ -316,11 +316,17 @@ impl NonogramGui {
                         self.share_string.clear();
                     }
 
+                    let chosen = if self.share_as_link {
+                        &sh_ui_3
+                    } else {
+                        &sh_ui_2
+                    };
                     ui.add(
                         egui::TextEdit::multiline(&mut self.share_string.clone())
                             .font(TextStyle::Monospace)
                             .desired_width(text_width),
-                    );
+                    )
+                    .labelled_by(chosen.id);
                     if compact::can_share() {
                         if ui.button(icons::ICON_SHARE).clicked() {
                             compact::share(
@@ -360,12 +366,13 @@ impl NonogramGui {
 
                     ui.separator();
 
-                    ui.label("Paste a 'WOVEN' string to load:");
+                    let paste_label = ui.label("Paste a 'WOVEN' string to load:");
                     ui.add(
                         egui::TextEdit::multiline(&mut self.pasted_string)
                             .font(TextStyle::Monospace)
                             .desired_width(text_width),
-                    );
+                    )
+                    .labelled_by(paste_label.id);
 
                     if ui.button("Load").clicked() {
                         match crate::formats::woven::from_woven(
@@ -396,11 +403,12 @@ impl NonogramGui {
                     ui.label("  .html: printable puzzle");
 
                     ui.horizontal(|ui| {
-                        ui.label("Filename:");
+                        let filename_label = ui.label("Filename:");
                         ui.add(
                             egui::TextEdit::singleline(&mut self.editor_gui.document.file)
                                 .desired_width(text_width.min(450.0)),
-                        );
+                        )
+                        .labelled_by(filename_label.id);
                     });
                     if ui.button("Save").clicked() {
                         let mut document_copy = document_to_save(

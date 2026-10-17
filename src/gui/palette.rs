@@ -2,6 +2,7 @@
 //! from it.
 
 use super::*;
+use egui::emath::GuiRounding as _;
 
 /// Find a color that's definitely safe, at least.
 pub fn default_color(palette: &Palette) -> Color {
@@ -195,12 +196,12 @@ impl CanvasGui {
 
         // Same story as in `common_sidebar_items`: these shortcuts have no modifier, so they
         // have to stand down by hand while a `TextEdit` has the keyboard.
-        let typing = ui.ctx().wants_keyboard_input();
+        let typing = ui.ctx().egui_wants_keyboard_input();
 
         // How wide the delete button turned out, so that the background's row — which has no
         // such button — can leave a hole the same size and keep the name fields lined up. Same
         // measure-last-frame trick as `centered_row`, and off by a frame in the same harmless way.
-        let delete_width_id = ui.id().with("palette_delete_width");
+        let delete_width_id = ui.scope_id().with("palette_delete_width");
 
         for (index, color) in self.palette_order().into_iter().enumerate() {
             let color_info = self
@@ -231,18 +232,42 @@ impl CanvasGui {
                     Color32::from_black_alpha(if color == picked_color { 255 } else { 0 }),
                 );
 
-                let color_text = RichText::new(button_text)
-                    .monospace()
-                    .size(24.0)
-                    .color(egui::Color32::from_rgb(r, g, b));
+                let rgb = egui::Color32::from_rgb(r, g, b);
+                let font = egui::FontId::monospace(24.0);
                 let hover_text = match shortcut {
                     Some((_, ch)) => format!("Paint with {} (press {})", color_info.name, ch),
                     None => format!("Paint with {}", color_info.name),
                 };
-                if ui
-                    .add(egui::Button::new(color_text))
-                    .on_hover_text(hover_text)
-                    .clicked()
+                // The button lays its text out by the font's line box, which leaves the glyph's
+                // ink off-center — the "■" sits low and to the left. So the button gets an
+                // invisible copy, for its size, and the glyph is painted over it by its ink.
+                let swatch = ui.add(egui::Button::new(
+                    RichText::new(&button_text)
+                        .font(font.clone())
+                        .color(Color32::TRANSPARENT),
+                ));
+                let galley = ui.painter().layout_no_wrap(button_text, font, rgb);
+                let ppp = ui.pixels_per_point();
+                if color_info.corner.is_none() {
+                    // The "■" isn't a whole number of pixels wide, so it can't help leaving one
+                    // side a fraction thinner than the other. A real square can: as big as the
+                    // glyph, but a pixel smaller if that's what it takes to leave the same whole
+                    // number of pixels on either side.
+                    let button_px = (swatch.rect.width() * ppp).round();
+                    let mut side_px = (galley.mesh_bounds.width() * ppp).round();
+                    if (button_px - side_px).rem_euclid(2.0) != 0.0 {
+                        side_px -= 1.0;
+                    }
+                    let square =
+                        Rect::from_center_size(swatch.rect.center(), Vec2::splat(side_px / ppp));
+                    ui.painter()
+                        .rect_filled(square.round_to_pixels(ppp), 0.0, rgb);
+                } else {
+                    let pos = (swatch.rect.center() - galley.mesh_bounds.center().to_vec2())
+                        .round_to_pixels(ppp);
+                    ui.painter().galley(pos, galley, rgb);
+                }
+                if swatch.on_hover_text(hover_text).clicked()
                     || (!typing
                         && shortcut.is_some_and(|(key, _)| ui.input(|i| i.key_pressed(key))))
                 {
@@ -378,7 +403,7 @@ impl CanvasGui {
         ui: &mut egui::Ui,
         render_style: RenderStyle,
     ) -> Option<Color> {
-        let typing = ui.ctx().wants_keyboard_input();
+        let typing = ui.ctx().egui_wants_keyboard_input();
         let mut order = self.palette_order();
         let shortcuts = order.len();
         if self.solving {
@@ -449,7 +474,7 @@ fn swatch(
         ui.allocate_exact_size(Vec2::splat(compact::TARGET), egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             ui.is_enabled(),
             selected,
             &color_info.name,
@@ -537,12 +562,13 @@ mod palette_tests {
     #[test]
     fn the_chevron_fits_its_column() {
         let ctx = egui::Context::default();
-        egui_material_icons::initialize(&ctx);
+        crate::gui::add_icon_font(&ctx);
         // The fonts don't exist until a pass has run.
-        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
 
         let ink = ctx
-            .fonts(|f| {
+            .fonts_mut(|f| {
                 f.layout_no_wrap(
                     icons::ICON_CHEVRON_FORWARD.to_string(),
                     egui::FontId::proportional(CHEVRON_SIZE),

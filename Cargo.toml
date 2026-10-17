@@ -45,10 +45,10 @@ colored = "3"
 regex = "1.11.1"
 roxmltree = "0.20.0"
 indicatif = "0.17.11"
-egui = { version = "0.31.1", features = ["accesskit", "persistence"] }
-eframe = "0.31.1"
+egui = { version = "0.37", features = ["persistence", "monochrome_emoji_fonts"] }
+eframe = "0.37"
 ab_glyph = "0.2"                                                             # for font outlining
-epaint_default_fonts = "0.31.1"                                              # for font outlining
+epaint_default_fonts = "0.37"                                                # for font outlining
 rfd = "0.15.3"
 itertools = "0.14.0"
 egui_material_icons = "0.3.0"
@@ -74,7 +74,7 @@ rten-tensor = { version = "0.26", optional = true }
 rten-imageproc = { version = "0.26", optional = true }
 
 [dev-dependencies]
-egui_kittest = "0.31.1"
+egui_kittest = "0.37"
 
 [[test]]
 name = "solver-fuzzer"
@@ -96,7 +96,9 @@ getrandom_0_2 = { package = "getrandom", version = "0.2", features = ["js"] }
 wasm-bindgen-futures = "0.4.50"
 
 # These three are needed to just make yield work!
-web-sys = { version = "0.3.77", features = ["History"] } # `History`: for `clear_url_hash`
+web-sys = { version = "0.3.77", features = [
+    "History",
+] } # `History`: for `clear_url_hash`
 js-sys = "0.3.77"
 wasm-bindgen = "0.2.100"
 

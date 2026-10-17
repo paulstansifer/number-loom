@@ -6,6 +6,9 @@
 
 use super::*;
 
+/// For screen readers: the "how many lines" box has no label of its own.
+const LINES_TO_AFFECT_NAME: &str = "Number of lines to add or remove";
+
 impl NonogramGui {
     /// Parses `lines_to_affect_string` (the resizer's "how many lines" box). On a bad value,
     /// marks the field visibly wrong (appends "??") rather than showing a separate error — the
@@ -166,7 +169,8 @@ impl NonogramGui {
                         self.square_resize(None, Some(true), false);
                     }
                 });
-                ui.text_edit_singleline(&mut self.lines_to_affect_string);
+                ui.text_edit_singleline(&mut self.lines_to_affect_string)
+                    .accessible_name(LINES_TO_AFFECT_NAME);
 
                 ui.vertical(|ui| {
                     if ui
@@ -320,7 +324,8 @@ impl NonogramGui {
         ui.put(
             Rect::from_center_size(center, edit_size),
             egui::TextEdit::singleline(&mut self.lines_to_affect_string),
-        );
+        )
+        .accessible_name(LINES_TO_AFFECT_NAME);
 
         let mut clicked: Option<(crate::geometry::Side, bool)> = None;
         for (side, add, button_center, outward, edge_dir, corners) in buttons {
@@ -329,7 +334,7 @@ impl NonogramGui {
             // growth at all is possible, not when the requested amount would be capped.
             let enabled = !add || outline.is_none_or(|o| o.can_grow(side));
 
-            let id = ui.id().with((side as u8, add));
+            let id = ui.scope_id().with((side as u8, add));
             let button_rect = Rect::from_points(&corners);
             let button_response = ui.interact(button_rect, id, egui::Sense::click());
             let visuals = if enabled {

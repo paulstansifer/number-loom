@@ -166,11 +166,29 @@ pub fn edit_image(document: Document) {
         "Number Loom",
         native_options,
         Box::new(|cc| {
-            egui_material_icons::initialize(&cc.egui_ctx);
+            add_icon_font(&cc.egui_ctx);
             Ok(Box::new(NonogramGui::new(document)))
         }),
     )
     .unwrap()
+}
+
+/// What `egui_material_icons::initialize` does, but against our own `egui`: that crate hasn't
+/// caught up with it yet, so the only thing to take from it is the font (and the icon names).
+pub fn add_icon_font(ctx: &egui::Context) {
+    use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+    let mut data = egui::FontData::from_static(egui_material_icons::FONT_DATA);
+    // That crate nudges its icons down by 0.05 em, which was right for egui 0.31; egui 0.37 sets
+    // text a pixel lower by itself, so the nudge would leave the icons low.
+    data.tweak.y_offset_factor = 0.0;
+    ctx.add_font(FontInsert::new(
+        "material-icons",
+        data,
+        vec![InsertFontFamily {
+            family: egui::FontFamily::Proportional,
+            priority: FontPriority::Lowest,
+        }],
+    ));
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -203,7 +221,7 @@ pub fn edit_image(document: Document) {
                 canvas,
                 web_options,
                 Box::new(|cc| {
-                    egui_material_icons::initialize(&cc.egui_ctx);
+                    add_icon_font(&cc.egui_ctx);
                     let (link_document, link_error) = match linked {
                         Some(Ok(document)) => (Some(document), None),
                         Some(Err(e)) => (None, Some(e)),
@@ -795,7 +813,7 @@ impl CanvasGui {
         // A focused `TextEdit` reads its key events without consuming them, so a bare-key
         // shortcut still fires while the user is typing into one. Nothing here uses a modifier,
         // so every one of them has to be suppressed by hand.
-        let typing = ui.ctx().wants_keyboard_input();
+        let typing = ui.ctx().egui_wants_keyboard_input();
 
         let (can_undo, can_redo) = (!self.undo_stack.is_empty(), !self.redo_stack.is_empty());
         let (undos, redos) = (self.undo_stack.len(), self.redo_stack.len());
@@ -838,7 +856,7 @@ impl CanvasGui {
             return;
         }
         // See `undo_redo`.
-        let typing = ui.ctx().wants_keyboard_input();
+        let typing = ui.ctx().egui_wants_keyboard_input();
 
         let button = |ui: &mut egui::Ui| {
             match layout {
@@ -1136,8 +1154,9 @@ impl NonogramGui {
             }
         });
 
-        ui.label("Description:");
-        ui.text_edit_multiline(&mut self.editor_gui.document.description);
+        let description_label = ui.label("Description:");
+        ui.text_edit_multiline(&mut self.editor_gui.document.description)
+            .labelled_by(description_label.id);
 
         let cc_by_license_str = "CC BY 4.0";
         let mut is_cc_by = self.editor_gui.document.license == cc_by_license_str;
@@ -1145,26 +1164,32 @@ impl NonogramGui {
         ui.label("License:");
 
         ui.horizontal(|ui| {
-            if ui.radio_value(&mut is_cc_by, true, "").changed() {
+            let radio = ui.radio_value(&mut is_cc_by, true, "");
+            if radio.changed() {
                 self.editor_gui.document.license = cc_by_license_str.to_string();
             };
-            ui.add(
+            let link = ui.add(
                 egui::Hyperlink::from_label_and_url(
                     cc_by_license_str,
                     "https://creativecommons.org/licenses/by/4.0/",
                 )
                 .open_in_new_tab(true),
             );
+            radio.labelled_by(link.id);
         });
 
         ui.horizontal(|ui| {
-            if ui.radio_value(&mut is_cc_by, false, "").changed() {
+            let radio = ui.radio_value(&mut is_cc_by, false, "");
+            if radio.changed() {
                 self.editor_gui.document.license.clear();
             };
-            ui.add_enabled(
-                !is_cc_by,
-                egui::TextEdit::singleline(&mut self.editor_gui.document.license),
-            );
+            let field = ui
+                .add_enabled(
+                    !is_cc_by,
+                    egui::TextEdit::singleline(&mut self.editor_gui.document.license),
+                )
+                .accessible_name("Custom license");
+            radio.labelled_by(field.id);
         });
     }
 
@@ -1266,7 +1291,7 @@ fn centered_row<R>(
     id_salt: &str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    let id = ui.id().with(id_salt);
+    let id = ui.scope_id().with(id_salt);
     let previous: Option<f32> = ui.data(|d| d.get_temp(id));
     let pad = previous.map_or(0.0, |w| ((ui.available_width() - w) / 2.0).max(0.0));
 
@@ -1279,43 +1304,13 @@ fn centered_row<R>(
     row.inner
 }
 
-/// Which edge of a `TopBottomPanel` faces the rest of the window, and so carries its separator.
-enum Edge {
-    Top,
-    Bottom,
-}
-
-/// The frame for the toolbar and the status bar.
-///
-/// `TopBottomPanel` paints its separator line *inside* its own rect, overlapping the frame's
-/// margin on whichever edge faces the window. With egui's symmetric default margin that leaves
-/// only one pixel of clear space between the line and the buttons on that side, against two on
-/// the other — which reads as the bar being a pixel or two too short for its contents. Widening
-/// that one margin by the line's own width restores the balance.
-fn bar_frame(ctx: &egui::Context, separator_on: Edge) -> egui::Frame {
-    let style = ctx.style();
-    let base = egui::Frame::side_top_panel(&style);
-    let line = style
-        .visuals
-        .widgets
-        .noninteractive
-        .bg_stroke
-        .width
-        .ceil()
-        .max(0.0) as i8;
-
-    let mut margin = base.inner_margin;
-    match separator_on {
-        Edge::Top => margin.top += line,
-        Edge::Bottom => margin.bottom += line,
-    }
-    base.inner_margin(margin)
-}
-
 /// egui's spacing, except where noted.
 fn desktop_spacing() -> egui::Spacing {
     egui::Spacing {
         interact_size: Vec2::new(20.0, 20.0), // Used by the color-picker buttons
+        // egui 0.37 doubled this, which makes the little "+"/"−" buttons wide, and the
+        // auto-buttons' gear sliver with them. This is egui 0.31's default:
+        button_padding: Vec2::new(4.0, 1.0),
         ..egui::Spacing::default()
     }
 }
@@ -1328,6 +1323,19 @@ fn style_for(layout: ScreenLayout) -> Style {
     // every widget at rest a quiet outline in whatever theme is in force.
     let mut visuals = Visuals::light();
     visuals.widgets.inactive.bg_stroke = visuals.widgets.noninteractive.bg_stroke;
+
+    // egui 0.37 rounded its widgets' corners off to 4–6. These are egui 0.31's defaults;
+    // I think they look less busy in the tightly-packed Number Loom UI.
+    let widgets = &mut visuals.widgets;
+    for (state, radius) in [
+        (&mut widgets.noninteractive, 2),
+        (&mut widgets.inactive, 2),
+        (&mut widgets.hovered, 3),
+        (&mut widgets.active, 2),
+        (&mut widgets.open, 2),
+    ] {
+        state.corner_radius = egui::CornerRadius::same(radius);
+    }
 
     let (visuals, spacing, text_styles) = match layout {
         ScreenLayout::Desktop => (visuals, desktop_spacing(), Style::default().text_styles),
@@ -1386,12 +1394,12 @@ fn centering_pad(layout: ScreenLayout, viewport: Vec2, drawing: Vec2) -> Vec2 {
 /// scroll area beneath — over the canvas the wheel steps through the palette instead of
 /// scrolling. Positive is a notch rolled away from the user.
 ///
-/// Read from the events rather than from `raw_scroll_delta` so that one notch is one step
+/// Read from the events rather than from the scroll delta so that one notch is one step
 /// whatever the platform's scroll speed happens to be set to.
 fn take_wheel_notches(ctx: &egui::Context) -> f32 {
     // Trackpads report points instead of lines; converting at egui's own rate makes a swipe
     // that would have scrolled one line's worth count as one notch.
-    let points_per_line = ctx.options(|o| o.line_scroll_speed).max(1.0);
+    let points_per_line = ctx.options(|o| o.input_options.line_scroll_speed).max(1.0);
 
     ctx.input_mut(|i| {
         let mut notches = 0.0;
@@ -1400,6 +1408,7 @@ fn take_wheel_notches(ctx: &egui::Context) -> f32 {
                 unit,
                 delta,
                 modifiers,
+                ..
             } => {
                 // ctrl/cmd-wheel is egui's zoom gesture; that one belongs to `zoom_delta`.
                 if modifiers.ctrl || modifiers.mac_cmd || modifiers.command {
@@ -1418,15 +1427,14 @@ fn take_wheel_notches(ctx: &egui::Context) -> f32 {
         });
         // egui spreads a mouse notch over the next few frames, so the leftovers have to go as
         // well — and they arrive on frames that carry no event of their own.
-        i.raw_scroll_delta = Vec2::ZERO;
         i.smooth_scroll_delta = Vec2::ZERO;
         notches
     })
 }
 
 impl eframe::App for NonogramGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.main_ui(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.main_ui(ui);
 
         self.saving.dirty = true;
         // The restored session came out of storage as it was loaded (see `session::load`). Now
@@ -1449,13 +1457,18 @@ impl eframe::App for NonogramGui {
 }
 
 impl NonogramGui {
-    /// The whole window, panel by panel. Separate from `eframe::App::update` for testing.
-    pub fn main_ui(&mut self, ctx: &egui::Context) {
+    /// The whole window, panel by panel, in the root `ui`. Separate from `eframe::App::ui` for
+    /// testing.
+    pub fn main_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         self.input_mode = ctx.input(|i| self.input_mode.after(i));
         let layout = ScreenLayout::of(ctx);
 
-        // Styling. Has to be here instead of `edit_image` to take effect on the Web.
-        ctx.set_style(style_for(layout));
+        // Styling. Has to be here instead of `edit_image` to take effect on the Web. The root
+        // `ui` took its style from the context before this ran, so it needs telling too.
+        let style = std::sync::Arc::new(style_for(layout));
+        ctx.set_global_style(style.clone());
+        ui.set_style(style);
 
         // Whatever is on screen, the mode's background work goes on.
         match &mut self.solve_gui {
@@ -1470,8 +1483,8 @@ impl NonogramGui {
         }
 
         match layout {
-            ScreenLayout::Desktop => self.desktop_ui(ctx),
-            ScreenLayout::Compact => self.compact_ui(ctx),
+            ScreenLayout::Desktop => self.desktop_ui(ui),
+            ScreenLayout::Compact => self.compact_ui(ui),
         }
 
         let open = self.overlays(layout).len();
@@ -1479,53 +1492,50 @@ impl NonogramGui {
     }
 
     /// The desktop layout: a toolbar, a status bar, a sidebar, and the canvas.
-    fn desktop_ui(&mut self, ctx: &egui::Context) {
+    fn desktop_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         // Panel order matters: egui hands each panel the space its predecessors didn't claim, so
         // the top and bottom bars span the full width, and the sidebar then splits what's left
         // with the canvas.
-        egui::TopBottomPanel::top("toolbar")
-            .frame(bar_frame(ctx, Edge::Bottom))
-            .show(ctx, |ui| {
-                self.toolbar(ctx, ui);
-            });
+        egui::Panel::top("toolbar").show(ui, |ui| {
+            self.toolbar(ctx, ui);
+        });
         self.dialogs(ctx, ScreenLayout::Desktop);
 
-        egui::TopBottomPanel::bottom("status_bar")
-            .frame(bar_frame(ctx, Edge::Top))
-            .show(ctx, |ui| {
-                // `editor_gui.status`/`editor_gui.progress` are shared (via `Rc<RefCell<_>>`) with
-                // `solve_gui.canvas`, so this shows the latest message/progress regardless of which
-                // mode is active.
-                ui.horizontal(|ui| {
-                    // Reserves a consistent height for the bar even when there's nothing to show,
-                    // so the rest of the UI doesn't jump around as messages come and go.
-                    ui.label("");
+        egui::Panel::bottom("status_bar").show(ui, |ui| {
+            // `editor_gui.status`/`editor_gui.progress` are shared (via `Rc<RefCell<_>>`) with
+            // `solve_gui.canvas`, so this shows the latest message/progress regardless of which
+            // mode is active.
+            ui.horizontal(|ui| {
+                // Reserves a consistent height for the bar even when there's nothing to show,
+                // so the rest of the UI doesn't jump around as messages come and go.
+                ui.label("");
 
-                    if let Some(progress) = *self.editor_gui.progress.borrow() {
-                        // ~50% wider than the sidebar (150.0) is by default.
-                        ui.add(
-                            egui::ProgressBar::new(progress)
-                                .animate(true)
-                                .desired_width(225.0),
-                        );
-                    }
+                if let Some(progress) = *self.editor_gui.progress.borrow() {
+                    // ~50% wider than the sidebar (150.0) is by default.
+                    ui.add(
+                        egui::ProgressBar::new(progress)
+                            .animate(true)
+                            .desired_width(225.0),
+                    );
+                }
 
-                    if let Some(status) = self.editor_gui.status.get() {
-                        let color = if status.is_error {
-                            Color32::DARK_RED
-                        } else {
-                            ui.visuals().text_color()
-                        };
-                        ui.colored_label(color, &status.text);
-                    }
-                });
+                if let Some(status) = self.editor_gui.status.get() {
+                    let color = if status.is_error {
+                        Color32::DARK_RED
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    ui.colored_label(color, &status.text);
+                }
             });
+        });
 
-        egui::SidePanel::left("sidebar")
+        egui::Panel::left("sidebar")
             .resizable(true)
-            .default_width(SIDEBAR_WIDTH)
-            .width_range(SIDEBAR_WIDTH..=400.0)
-            .show(ctx, |ui| {
+            .default_size(SIDEBAR_WIDTH)
+            .size_range(SIDEBAR_WIDTH..=400.0)
+            .show(ui, |ui| {
                 // Both sidebars can outgrow a short window — the editor's once "Metadata" is
                 // expanded, the solver's once a puzzle has a long palette.
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1537,21 +1547,28 @@ impl NonogramGui {
                 });
             });
 
-        self.canvas_panel(ctx, ScreenLayout::Desktop);
+        self.canvas_panel(ui, ScreenLayout::Desktop);
     }
 
     /// The canvas, in whatever space the panels around it have left.
-    fn canvas_panel(&mut self, ctx: &egui::Context, layout: ScreenLayout) {
+    fn canvas_panel(&mut self, ui: &mut egui::Ui, layout: ScreenLayout) {
+        let ctx = &ui.ctx().clone();
         let margin = match layout {
             ScreenLayout::Desktop => CANVAS_MARGIN,
             ScreenLayout::Compact => compact::CANVAS_MARGIN,
         };
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(margin))
-            .show(ctx, |ui| {
+            .frame(egui::Frame::central_panel(&ctx.global_style()).inner_margin(margin))
+            .show(ui, |ui| {
                 // The compact layout's touch-sized spacing and bigger text would pad out the clue
                 // gutters, which are laid out as widgets.
                 *ui.spacing_mut() = desktop_spacing();
+                // Nothing on the canvas scrolls by flinging it — the wheel, the middle button and
+                // two fingers all have jobs of their own — so there's nothing to coast or
+                // spring back, and a zoom that leaves the view past the edge should just stop
+                // at it.
+                ui.spacing_mut().scroll.kinetic.rubber_band = false;
+                ui.spacing_mut().scroll.kinetic.decay_time = 0.0;
                 ui.style_mut().text_styles = Style::default().text_styles;
 
                 // Everything below only applies while the pointer is over the canvas: the wheel
@@ -1605,9 +1622,16 @@ impl NonogramGui {
                 // `animated(false)` because the only thing that scrolls this programmatically is
                 // the pan below, which has to keep up with the pointer exactly. A finger's drag
                 // belongs to the cursor, not to scrolling.
-                let mut scroll_area = egui::ScrollArea::both()
-                    .animated(false)
-                    .drag_to_scroll(touch_area.is_none());
+                let mut scroll_area = egui::ScrollArea::both().animated(false).scroll_source(
+                    egui::scroll_area::ScrollSource {
+                        drag: if touch_area.is_none() {
+                            egui::scroll_area::DragScroll::Always
+                        } else {
+                            egui::scroll_area::DragScroll::Never
+                        },
+                        ..Default::default()
+                    },
+                );
                 if let Some(offset) = self.pending_scroll.take() {
                     scroll_area = scroll_area.scroll_offset(offset);
                 }
@@ -1671,7 +1695,7 @@ impl NonogramGui {
                         if let Some(anchor) = anchor {
                             let new_pad = centering_pad(layout, viewport, drawing * factor);
                             self.pending_scroll = Some(zoom_scroll_offset(
-                                scrolled.state.offset,
+                                scrolled.state.clamped_offset(),
                                 anchor - scrolled.inner_rect.min,
                                 (pad, new_pad),
                                 factor,
