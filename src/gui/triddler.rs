@@ -95,7 +95,7 @@ fn expressed_clues(
             })
             .collect();
         // Clues run in the lane's own direction, so the box nearest the grid is the last one;
-        // `reversed` covers the families whose clues are labelled at the far end from where the
+        // `reversed` covers the families whose clues are labeled at the far end from where the
         // lane is stored.
         if !g.reversed {
             v.reverse();
@@ -200,10 +200,10 @@ pub(super) fn draw_clue_gutters(
 /// The sidebar's hover readout: the hovered cell in the middle, ringed by the block lengths
 /// running out of it in each of the six lane directions.
 ///
-/// The centre swatch matches the hovered triangle's own shape (▲ or ▼) instead of a generic
+/// The center swatch matches the hovered triangle's own shape (▲ or ▼) instead of a generic
 /// square, and the arms are shaped like the rhombus that lane's clue boxes use, so they read as
 /// belonging to that lane. They're pushed further out than a square grid's arms so that adjacent
-/// rhombuses (60° apart, wide across their short diagonal) don't overlap each other or the centre.
+/// rhombuses (60° apart, wide across their short diagonal) don't overlap each other or the center.
 pub(super) fn draw_rosette(
     ui: &egui::Ui,
     painter: &egui::Painter,

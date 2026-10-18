@@ -4,7 +4,7 @@
 //! after every move. Rather than a checkbox sitting next to the button and merely *implying* that
 //! it governs it, this draws a second, fake button beneath the real one, poking out on the left.
 //! The gear on that exposed sliver is the toggle: pressing it holds the under-button down for as
-//! long as the aid is automatic, and the main button greys out, because there's nothing left to
+//! long as the aid is automatic, and the main button grays out, because there's nothing left to
 //! ask for.
 
 use egui::{

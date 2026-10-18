@@ -1390,7 +1390,7 @@ mod tests {
         for outline in [
             crate::geometry::Outline::hexagon(2),
             crate::geometry::Outline::hexagon(3),
-            // The webpbn worked example: a shape with an off-centre bend.
+            // The webpbn worked example: a shape with an off-center bend.
             crate::geometry::Outline {
                 a: (0, 2),
                 b: (1, 3),

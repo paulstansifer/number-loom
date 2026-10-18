@@ -67,7 +67,7 @@ fn polygon(out: &mut String, points: &[Point], style: &str) {
     let _ = writeln!(out, r#"<polygon points="{}" {style}/>"#, pts.join(" "));
 }
 
-/// A clue's number, centred in its box. Sized down as it gets longer — `textLength` squeezes the
+/// A clue's number, centerd in its box. Sized down as it gets longer — `textLength` squeezes the
 /// glyphs rather than letting a three-digit clue spill out of its box, which is what the GUI's
 /// `clue_font` does by picking a narrower font.
 fn number(out: &mut String, at: Point, txt: &str, color: (u8, u8, u8)) {
@@ -104,7 +104,7 @@ fn escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// Where one clue box sits: `out` is how far its centre is from the gutter's anchor, along the
+/// Where one clue box sits: `out` is how far its center is from the gutter's anchor, along the
 /// lane. `square` boxes are for trianogram caps, whose diagonals only make sense in a box that
 /// isn't stretched; everything else gets the lane-shaped box the GUI draws, which is a rectangle
 /// on a square grid and a rhombus on a triddler.
@@ -149,7 +149,7 @@ fn expressed<'a, C: Clue>(
     let mut v: Vec<Vec<(&ColorInfo, Option<u16>)>> =
         line.iter().map(|c| c.express(palette)).collect();
     // Clues run in the lane's own direction, so the clue nearest the grid is the last one;
-    // `reversed` covers the families whose clues are labelled at the far end from where the lane
+    // `reversed` covers the families whose clues are labeled at the far end from where the lane
     // is stored. Both levels reverse: the parts of a clue are ordered like the clue itself.
     if !reversed {
         v.reverse();
@@ -174,7 +174,7 @@ fn draw_lane<C: Clue>(
     g: &layout::GutterLane,
     shaped: bool,
 ) {
-    // The centre of the first box: past the indicator strip, half a box further on.
+    // The center of the first box: past the indicator strip, half a box further on.
     let mut at = crate::layout::CLUE_PAD + CLUE_BOX / 2.0;
 
     for clue in expressed(line, palette, g.reversed) {
@@ -226,7 +226,7 @@ fn draw_lane<C: Clue>(
             let Some(len) = count else { continue };
             if !shaped {
                 // Filled with paper, not left open: a triddler's boxes are rhombuses whose
-                // corners reach past their neighbours along the gutter, so open outlines would
+                // corners reach past their neighbors along the gutter, so open outlines would
                 // cross each other instead of reading as a chain.
                 polygon(
                     out,

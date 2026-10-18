@@ -234,7 +234,7 @@ pub(crate) struct TouchState {
     /// Whether the tool has moved since it went down. A hold that's let go of without moving is
     /// still a click.
     dragged: bool,
-    /// How long the undo stack was when the tool went down, so that a cancelled stroke can be
+    /// How long the undo stack was when the tool went down, so that a canceled stroke can be
     /// taken back.
     undo_len_at_press: usize,
 }
@@ -845,7 +845,7 @@ mod canvas_tests {
     #[test]
     fn a_second_finger_takes_a_stroke_back() {
         let mut gui = editor(Tool::LineAlongLane);
-        tap(&mut gui); // Something to undo that the cancelled stroke mustn't take with it.
+        tap(&mut gui); // Something to undo that the canceled stroke mustn't take with it.
         let mut finger = Finger::down(&mut gui);
         finger.slide(&mut gui, (-2.0, 0.0));
         finger.lift(&mut gui);

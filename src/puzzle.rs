@@ -433,7 +433,7 @@ impl<C: Clue, K: GridKind> Puzzle<C, K> {
                     g.anchor.x + g.outward.x * len,
                     g.anchor.y + g.outward.y * len,
                 );
-                // A box is centred on the gutter's line, so it sticks out sideways as well as
+                // A box is centerd on the gutter's line, so it sticks out sideways as well as
                 // along it; half of `CLUE_BOX_SHORT` would do for the sides, but the long side is
                 // the safe bound in every direction.
                 let half = crate::layout::CLUE_BOX;

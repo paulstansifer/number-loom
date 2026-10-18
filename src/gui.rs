@@ -1289,17 +1289,17 @@ impl NonogramGui {
 /// Starting width of the tool sidebar; the user may adjust it.
 const SIDEBAR_WIDTH: f32 = 150.0;
 
-/// Lay out a row of widgets centred within the available width.
+/// Lay out a row of widgets centerd within the available width.
 ///
 /// egui won't do this on its own. `Layout::left_to_right` places items from the left edge
 /// whatever its `main_align` says — `horizontal_placement` hardcodes `Align::LEFT` — and
-/// `vertical_centered` only centres a child whose size it knows *before* laying it out, which a
+/// `vertical_centered` only centers a child whose size it knows *before* laying it out, which a
 /// `ui.horizontal` row is not. The obvious fix, a sizing pass followed by a real one, would mean
 /// running `add_contents` twice per frame; these rows are made of buttons, so the measuring pass
 /// would act on every click a second time.
 ///
 /// So: pad by however wide the row turned out last frame, and record this frame's width for the
-/// next one. Only the very first frame a row is shown is off-centre.
+/// next one. Only the very first frame a row is shown is off-center.
 fn centered_row<R>(
     ui: &mut egui::Ui,
     id_salt: &str,

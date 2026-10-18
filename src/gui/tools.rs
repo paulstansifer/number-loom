@@ -325,7 +325,7 @@ impl CanvasGui {
             return changes;
         }
 
-        // Cell *centres*, not raw origins: a triangle's centroid sits off-corner and at a
+        // Cell *centers*, not raw origins: a triangle's centroid sits off-corner and at a
         // different offset for ▲ than ▼, so mixing origins would misjudge lane direction
         // whenever a lane's cells alternate orientation.
         let center = |cell: CellIdx| picture.cell_shape(cell).center(picture.cell_origin(cell));
@@ -417,7 +417,7 @@ pub(super) fn lane_along_drag(
         // Angle between the lane's direction and the drag, ignoring which way along the lane it
         // points, so dragging toward either end still snaps to that lane.
         let cos_angle = ((span.x * drag.x + span.y * drag.y) / (span_len * drag_len)).abs();
-        // Distance travelled along the lane, in cell steps, found by projecting the drag onto
+        // Distance traveled along the lane, in cell steps, found by projecting the drag onto
         // the lane's own (first-to-last) direction.
         let steps = (drag.x * span.x + drag.y * span.y) / span_len / avg_spacing;
 

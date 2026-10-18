@@ -634,7 +634,7 @@ mod triddler_tests {
             // in this format.
             round_trip(Outline::hexagon(side), |_| false);
         }
-        // An off-centre outline, with a sharp corner or two.
+        // An off-center outline, with a sharp corner or two.
         round_trip(
             Outline {
                 a: (0, 2),

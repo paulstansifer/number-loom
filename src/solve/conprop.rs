@@ -781,7 +781,7 @@ pub async fn conprop_solve_in_background<C: Clue, K: GridKind>(
         if last_yield.elapsed() > TIME_BETWEEN_YIELDS {
             gui::yield_now().await;
             if terminate.try_recv().is_ok() {
-                anyhow::bail!("search cancelled");
+                anyhow::bail!("search canceled");
             }
             last_yield = Instant::now();
         }
@@ -1069,7 +1069,7 @@ mod tests {
         let mut ctx = SolveContext::new(&puzzle, &mut line_cache, &options);
 
         // One literal on each side of the cut, so a range that runs an entry too far or an entry
-        // too short shows up in the count rather than cancelling out.
+        // too short shows up in the count rather than canceling out.
         let literals = [(CellIdx(0), Color(1)), (CellIdx(3), BACKGROUND)];
         let mut state = scratch_state(&puzzle, &mut ctx, &literals);
         two_guesses_deep(&mut state);

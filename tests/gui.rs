@@ -821,7 +821,7 @@ mod tests {
     /// rearranging the picture is exactly what solving isn't.
     #[test]
     fn test_lasso_tool_is_editor_only() {
-        // The material icon the lasso button is labelled with.
+        // The material icon the lasso button is labeled with.
         const LASSO: &str = "\u{eb03}";
 
         let doc = load("examples/png/apron.png");
@@ -1114,7 +1114,7 @@ mod tests {
             for clipped in &harness.output().shapes {
                 painted_text(&clipped.shape, &mut texts);
             }
-            // (Nothing else in the solve view is labelled with a single capital letter.)
+            // (Nothing else in the solve view is labeled with a single capital letter.)
             texts.retain(|text| ["A", "B", "C", "D", "E"].contains(&text.as_str()));
             texts.sort();
             texts

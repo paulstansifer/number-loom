@@ -3,7 +3,7 @@
 //! Sometimes text needs to be visible on arbitrary backgrounds, and `egui` doesn't support text
 //! outlining.
 //!
-//! So we take the digit's shape out of the font and stroke it. The stroke is centred on the contour,
+//! So we take the digit's shape out of the font and stroke it. The stroke is centerd on the contour,
 //! so half of it hides under the glyph when the text is painted on top: it cannot detach, it is the
 //! same thickness the whole way round, and it stays right at any zoom.
 //!
@@ -156,7 +156,7 @@ fn bevel_sharp_corners(points: &[Pos2], cut: f32) -> Vec<Pos2> {
             out.push(corner);
             continue;
         }
-        // Never eat more than half of either edge, or two neighbouring cuts would cross.
+        // Never eat more than half of either edge, or two neighboring cuts would cross.
         let cut = cut.min(before_len / 2.0).min(after_len / 2.0);
         out.push(corner + before * cut);
         out.push(corner + after * cut);

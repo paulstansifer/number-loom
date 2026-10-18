@@ -1,6 +1,6 @@
 # Rebuilding the conprop work, step by step
 
-A checklist for reimplementing the changes in `solve/conprop.rs` and its neighbours from scratch.
+A checklist for reimplementing the changes in `solve/conprop.rs` and its neighbors from scratch.
 Every step here exists in the current tree, so you can diff against it when you want to — but the
 order is chosen so that each step is *verifiable on its own* before the next one depends on it, which
 is not the order I originally did them in.
@@ -59,8 +59,8 @@ delta by the lane count.
 
 ### [ ] 0.3 A guess budget
 
-`SolveOptions::max_guesses` plus `--max-guesses N`, honoured in the search loop: stop and report what
-is known. Only conprop needs to honour it.
+`SolveOptions::max_guesses` plus `--max-guesses N`, honored in the search loop: stop and report what
+is known. Only conprop needs to honor it.
 
 **Why:** the interesting puzzles are the ones that never finish, and killing the process throws the
 counters away with it. Every diagnosis in Phase 1 came from `--max-guesses 3000` on a puzzle that
@@ -91,7 +91,7 @@ less work, 30x faster. Consistent story — our search is better, our constant f
 ### [ ] 1.2 The picker, not the search, is the top cost
 
 30–86% of the clock on nearly every puzzle. And each picker serves about **1.7 picks** (54 picks / 32
-pickers on `webpbn-04645`) while sorting *every* `(cell, colour)` candidate twice.
+pickers on `webpbn-04645`) while sorting *every* `(cell, color)` candidate twice.
 
 ### [ ] 1.3 Nogood width tracks trail depth
 
@@ -213,14 +213,14 @@ reasons from partial knowledge, so **every** cell narrowed since the root is a c
 puzzles. Minimized it is **2.7–5.6**, and it is bounded by lane length rather than trail depth, so it
 does not grow as the search deepens. Cost: ~25 lane scrubs per conflict, measured at 0.4–3%.
 
-### [ ] 3.3 The colour-puzzle question: measure it, don't assume
+### [ ] 3.3 The color-puzzle question: measure it, don't assume
 
-A `Nogood` literal is `(cell, colour)` meaning "this cell **is** that colour". A merely-narrowed cell
+A `Nogood` literal is `(cell, color)` meaning "this cell **is** that color". A merely-narrowed cell
 needs "this cell is one of {...}", which the vocabulary cannot say, and strengthening it to a single
-colour is sound but nearly worthless (it rules out one case and lets the others escape).
+color is sound but nearly worthless (it rules out one case and lets the others escape).
 
 **Measure how often it comes up** before deciding to extend anything. Five of six puzzles I checked:
-**zero** merely-narrowed literals in any minimized reason. One colour puzzle (`color-02257`): 121 of
+**zero** merely-narrowed literals in any minimized reason. One color puzzle (`color-02257`): 121 of
 1158 literals, affecting 74 of 369 reasons (20%). So: skip those conflicts and let the guess-based
 clause handle them alone. No new vocabulary needed.
 
@@ -259,7 +259,7 @@ the clause is then unit and forces the remaining literal.
 
 Reason lookup by kind:
 - `Lane(l)`: the same deletion minimization, on the lane **as it stood before that trail entry**, with
-  the opposite value *pinned* and never dropped. "Why isn't this cell that colour" is just "explain
+  the opposite value *pinned* and never dropped. "Why isn't this cell that color" is just "explain
   the contradiction you get when you say it is".
 - `Nogood(i)`: that nogood's other literals.
 - `Decision`: no reason. Bail to the replay.

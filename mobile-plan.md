@@ -146,7 +146,7 @@ phone.
 ### [x] 1.1 Manifest, icons and service worker
 
 **Done**, in `web/`. The placeholder icons are `icon.png` scaled up 3× and 8× with
-nearest-neighbour scaling, so they're pixelated rather than blurry. Two things beyond plain
+nearest-neighbor scaling, so they're pixelated rather than blurry. Two things beyond plain
 network-first in `sw.js`:
 
 - On install, it caches the page and whatever trunk links from it. The page that registered the
@@ -400,7 +400,7 @@ The mouse handling moved, unchanged, into `CanvasGui::mouse_input`.
 
 Tested: unit tests for the state machine (tap, a shaky tap, drag, hold-then-drag, hold without
 moving, a hold noticed late, a second finger before and during a stroke), and for the canvas
-(painting at the cursor, steering, the edge, strokes, cancelling, flood fill, solving and
+(painting at the cursor, steering, the edge, strokes, canceling, flood fill, solving and
 annotating by touch). In headless Chrome with touch emulation: a tap below the grid painted the
 middle cell and showed the cursor; a drag moved the cursor four cells; a hold-then-drag painted a
 four-cell stroke as one undo step.

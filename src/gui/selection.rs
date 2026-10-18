@@ -503,11 +503,11 @@ mod lasso_tests {
     }
 
     /// A loop traced around the middle 3×3 of a 5×5 grid selects exactly those nine cells: the
-    /// eight the path runs through, plus the one in the centre that it only encloses.
+    /// eight the path runs through, plus the one in the center that it only encloses.
     #[test]
     fn a_loop_selects_what_it_traces_and_what_it_encloses() {
         let picture = square(5, 5);
-        // Through the centres of the ring cells, so "touched" is unambiguous.
+        // Through the centers of the ring cells, so "touched" is unambiguous.
         let path = vec![
             Point::new(1.5, 1.5),
             Point::new(3.5, 1.5),
@@ -568,7 +568,7 @@ mod lasso_tests {
             selection_outline(&picture, &[CellIdx(0), CellIdx(1)]).len(),
             6
         );
-        // A 2×2 block: eight boundary edges, with the four interior ones cancelled.
+        // A 2×2 block: eight boundary edges, with the four interior ones canceled.
         assert_eq!(
             selection_outline(&picture, &[CellIdx(0), CellIdx(1), CellIdx(3), CellIdx(4)]).len(),
             8

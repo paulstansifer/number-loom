@@ -107,7 +107,7 @@ pub struct AnnotateDrag {
     /// The cell the drag started on. The mark swings around this one.
     origin: CellIdx,
     /// Where the press landed, in abstract units. The drag is measured from here rather than
-    /// from the origin cell's centre, so the mark answers to the pointer directly.
+    /// from the origin cell's center, so the mark answers to the pointer directly.
     press: Point,
     /// What would be committed if the pointer were released right now — `None` until the pointer
     /// has moved far enough for this to be a drag rather than a click.
@@ -192,7 +192,7 @@ fn midpoint((a, b): (Point, Point)) -> Point {
     Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)
 }
 
-/// The point on a tick's edge that sits `WAVE_INSET` to the `right` of the lane's centre line —
+/// The point on a tick's edge that sits `WAVE_INSET` to the `right` of the lane's center line —
 /// where the wave running along that lane should meet it.
 ///
 /// The inset is measured *across* the lane, but a tick lies along its own cell edge, and those
@@ -254,7 +254,7 @@ fn span_from_drag(
 impl CanvasGui {
     /// Drive the annotate tool from the pointer. Takes an abstract-unit position rather than a
     /// cell, so that the mark answers to where the pointer actually is rather than snapping
-    /// between cell centres.
+    /// between cell centers.
     ///
     /// Deliberately calls neither `perform` nor anything that bumps `version`: annotations are
     /// scratch, invisible both to undo and to every cache `version` guards.
@@ -335,7 +335,7 @@ impl CanvasGui {
     }
 }
 
-/// How far the wave sits from the lane's own centre line, in abstract units. Comfortably inside
+/// How far the wave sits from the lane's own center line, in abstract units. Comfortably inside
 /// a lane, even a triangular one (which is only `TRI_ROW_HEIGHT` across).
 const WAVE_INSET: f32 = 0.27;
 /// How far the wave swings either side of that line.
@@ -551,7 +551,7 @@ impl Marks {
             .collect();
         self.line(points, mark_width(scale));
 
-        // The count goes at the midpoint, on the wave's own centre line. Nothing is cut out of
+        // The count goes at the midpoint, on the wave's own center line. Nothing is cut out of
         // the wave for it: the number is painted last, and its outline carves its own hole.
         self.label(ui, scale, at(0.5, 0.0), count);
     }

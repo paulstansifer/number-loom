@@ -189,7 +189,7 @@ impl NonogramGui {
             ));
         });
 
-        // Used to grey out a "+" that would have no effect at all (see `Outline::can_grow`) —
+        // Used to gray out a "+" that would have no effect at all (see `Outline::can_grow`) —
         // not to decide what clicking it does, `tri_resize` re-checks that against a fresh
         // `Solution` on its own.
         let outline = self
@@ -205,8 +205,8 @@ impl NonogramGui {
             ScreenLayout::Desktop => 1.0,
             ScreenLayout::Compact => compact::TARGET / 12.0,
         };
-        let apothem: f32 = 22.0 * zoom; // centre-to-edge distance of the hexagon.
-        let circumradius: f32 = apothem / 0.866_025_4; // centre-to-vertex distance.
+        let apothem: f32 = 22.0 * zoom; // center-to-edge distance of the hexagon.
+        let circumradius: f32 = apothem / 0.866_025_4; // center-to-vertex distance.
         let edit_size: Vec2 = Vec2::new(30.0, 18.0) * zoom.sqrt();
         let button_along: f32 = 12.0 * zoom; // button extent parallel to its edge.
         let button_across: f32 = 12.0 * zoom; // button extent along the outward normal.
@@ -222,9 +222,9 @@ impl NonogramGui {
             .map(|s| to_vec2(s.outward_and_edge_dir().0))
             .collect();
 
-        // All the widget's geometry, as a pure function of where its centre ends up. Called
-        // once below against a placeholder centre just to measure how much room the widget
-        // actually needs, then again against the real centre once that's known — rather than
+        // All the widget's geometry, as a pure function of where its center ends up. Called
+        // once below against a placeholder center just to measure how much room the widget
+        // actually needs, then again against the real center once that's known — rather than
         // guessing a fixed canvas size up front and hoping the content fits inside it (which
         // previously left it either clipped or sitting in an oversized, wastefully padded box).
         let layout = |center: Pos2| {
@@ -249,7 +249,7 @@ impl NonogramGui {
                     let button_center =
                         base + edge_dir * (sign * button_gap / 2.0 + sign * button_along / 2.0);
                     // A small rectangle with one axis along the edge and the other along the
-                    // outward normal — the same "centre ± dir*half ± perp*half" construction
+                    // outward normal — the same "center ± dir*half ± perp*half" construction
                     // `layout::clue_box` uses for the (differently-shaped) clue boxes.
                     let along = edge_dir * (button_along / 2.0);
                     let across = outward * (button_across / 2.0);
@@ -275,8 +275,8 @@ impl NonogramGui {
         }
         let canvas = bounds.size() + Vec2::splat(2.0 * PAD);
 
-        // Take the full width, so the hexagon ends up centred in the sidebar the way the square
-        // resizer's cross does — everything below is placed relative to `response.rect`'s centre,
+        // Take the full width, so the hexagon ends up centerd in the sidebar the way the square
+        // resizer's cross does — everything below is placed relative to `response.rect`'s center,
         // so widening the reservation is all it takes.
         let strip = Vec2::new(ui.available_width().max(canvas.x), canvas.y);
         let (response, painter) = ui.allocate_painter(strip, egui::Sense::hover());
@@ -299,7 +299,7 @@ impl NonogramGui {
 
         let mut clicked: Option<(crate::geometry::Side, bool)> = None;
         for (side, add, button_center, outward, edge_dir, corners) in buttons {
-            // Only "+" can ever be pointless enough to grey out — see `Outline::can_grow`. If
+            // Only "+" can ever be pointless enough to gray out — see `Outline::can_grow`. If
             // "+5" would be capped to "+1" it's still worth doing, so this only fires when *no*
             // growth at all is possible, not when the requested amount would be capped.
             let enabled = !add || outline.is_none_or(|o| o.can_grow(side));
@@ -313,7 +313,7 @@ impl NonogramGui {
                 }
                 *ui.style().interact(&button_response)
             } else {
-                // Grey out exactly the way `Ui::disable` does (`Visuals::gray_out`) — outline
+                // Gray out exactly the way `Ui::disable` does (`Visuals::gray_out`) — outline
                 // included, since `main_ui` gives every button at rest one of those.
                 let base = ui.visuals().widgets.inactive;
                 egui::style::WidgetVisuals {

@@ -332,7 +332,7 @@ impl Outline {
 
     /// Whether growing `side` by one step would add any real cell at all. Used both by
     /// `resized` (to clamp growth that would otherwise wander past real cells) and by the editor
-    /// (to grey out a "+" button that would have no effect whatsoever).
+    /// (to gray out a "+" button that would have no effect whatsoever).
     pub fn can_grow(&self, side: Side) -> bool {
         let mut candidate = *self;
         match side {
@@ -714,7 +714,7 @@ mod tests {
             .map(|i| spell(&geo.lane_map.lanes[i]))
             .collect();
         // `\` lines read top-left to bottom-right, the opposite of the end their clues are
-        // labelled from. See the note in `Geometry::<Tri>::new`.
+        // labeled from. See the note in `Geometry::<Tri>::new`.
         assert_eq!(backslashes, vec!["FLM", "AGHNO", "BCIJP", "DEK"]);
     }
 
@@ -751,7 +751,7 @@ mod tests {
                         assert_eq!(
                             Outline::from_griddlers(&label).unwrap(),
                             outline.normalized(),
-                            "{outline:?} labelled {label}"
+                            "{outline:?} labeled {label}"
                         );
                         shapes += 1;
                     }
@@ -811,7 +811,7 @@ mod tests {
 
     /// The solver's rosette places each `(back, forward)` count using `arm_directions`, so those
     /// vectors have to point the way the lane is actually stored — otherwise a family's two
-    /// numbers land on opposite sides of the centre from where they belong.
+    /// numbers land on opposite sides of the center from where they belong.
     #[test]
     fn arm_directions_follow_lane_order() {
         for outline in [doc_example(), Outline::hexagon(3)] {
@@ -1067,7 +1067,7 @@ mod tests {
     }
 
     /// The Olsak solver documents two identities its hexagon sides must satisfy, where
-    /// A=topleft, B=bottomleft, C=bottom, D=bottomright, E=topright, F=top (labelled
+    /// A=topleft, B=bottomleft, C=bottom, D=bottomright, E=topright, F=top (labeled
     /// counterclockwise from the upper left). They're an independent check on this model.
     #[test]
     fn olsak_hexagon_side_identities_hold() {
@@ -1302,9 +1302,9 @@ pub trait GridKind: Copy + Clone + Eq + std::hash::Hash + std::fmt::Debug + 'sta
     /// Used to lay out the solver's contiguous-run widget.
     fn arm_directions() -> &'static [Vec2];
 
-    /// Whether a family's clues are labelled at the *last* cell of its lanes rather than the
+    /// Whether a family's clues are labeled at the *last* cell of its lanes rather than the
     /// first. True only for `\` lines, which are stored reading top-left to bottom-right but are
-    /// labelled at the bottom — the same asymmetry both file formats have.
+    /// labeled at the bottom — the same asymmetry both file formats have.
     fn clue_end_is_last(family: FamilyIdx) -> bool;
 
     /// Erase the kind, for results that cross back to the GUI and the CLI.
@@ -1517,12 +1517,12 @@ impl GridKind for Tri {
             .map(|(i, t)| (*t, CellIdx(i as u32)))
             .collect();
 
-        // For each family: the coordinate to group by, the direction to walk from the *labelled*
+        // For each family: the coordinate to group by, the direction to walk from the *labeled*
         // end (the one that decides the clue set), the two clue-sets (the first wins on a corner
         // where both bounds bind), and whether the clues are actually read from the other end.
         //
         // That last flag exists only for `\` lines. Rows and `/` lines put clue index 0 at the
-        // labelled end, as you'd expect; `\` lines do not — they read top-left to bottom-right,
+        // labeled end, as you'd expect; `\` lines do not — they read top-left to bottom-right,
         // *towards* the `bottom`/`bottomright` labels rather than away from them. This is not
         // documented; it was determined empirically, by finding the only one of the eight
         // possible direction combinations under which the worked example in `webpbn_tridder.md`
@@ -1553,7 +1553,7 @@ impl GridKind for Tri {
                 ClueSet::TopRight,
                 false,
             ),
-            // `\` lines: labelled at the bottom, but read from the far end, downward-right.
+            // `\` lines: labeled at the bottom, but read from the far end, downward-right.
             (
                 |t| t.c,
                 Direction::UpLeft,
@@ -2382,7 +2382,7 @@ mod typed_tests {
 
     fn tri_shapes() -> Vec<Outline> {
         let mut v = vec![
-            // The webpbn worked example: an off-centre bend.
+            // The webpbn worked example: an off-center bend.
             Outline {
                 a: (0, 2),
                 b: (1, 3),
@@ -2659,7 +2659,7 @@ mod typed_tests {
         for side in 1..=4 {
             assert_every_edge_is_covered(&Geometry::<Tri>::new(Outline::hexagon(side)));
         }
-        // An off-centre outline, so the check isn't only exercised on a fully symmetric shape.
+        // An off-center outline, so the check isn't only exercised on a fully symmetric shape.
         assert_every_edge_is_covered(&Geometry::<Tri>::new(Outline {
             a: (0, 2),
             b: (1, 3),
@@ -3013,8 +3013,8 @@ mod typed_tests {
         }
     }
 
-    /// Rows read left-to-right and are labelled on the left; `\` lines read top-left to
-    /// bottom-right but are labelled at the bottom, so their clue list is drawn reversed.
+    /// Rows read left-to-right and are labeled on the left; `\` lines read top-left to
+    /// bottom-right but are labeled at the bottom, so their clue list is drawn reversed.
     #[test]
     fn gutters_sit_at_the_labelled_end() {
         let geo = Geometry::<Tri>::new(Outline::hexagon(2));
@@ -3104,7 +3104,7 @@ mod typed_tests {
             })
             .collect();
 
-        // (lane, index along the gutter, centre, the box's actual four corners)
+        // (lane, index along the gutter, center, the box's actual four corners)
         let mut boxes: Vec<(LaneIdx, usize, Point, [Point; 4])> = vec![];
         for (_, gutter) in geo.gutters() {
             for g in gutter {
@@ -3122,7 +3122,7 @@ mod typed_tests {
             geo.lane_map.lanes.len()
         );
 
-        // No clue box centre may land on a cell.
+        // No clue box center may land on a cell.
         for (lane, i, c, _) in &boxes {
             for cell in geo.lane_map.cells() {
                 assert!(
@@ -3152,7 +3152,7 @@ mod typed_tests {
                     g.anchor.x + g.outward.x * len,
                     g.anchor.y + g.outward.y * len,
                 );
-                // The last box's far corners reach half a box-length beyond its centre, in
+                // The last box's far corners reach half a box-length beyond its center, in
                 // either the long or short direction depending on the lane's angle.
                 let pad = CLUE_BOX.max(CLUE_BOX_SHORT);
                 lo.x = lo.x.min(tip.x - pad);

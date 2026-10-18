@@ -157,7 +157,7 @@ impl CellShape {
         }
     }
 
-    /// The cell's centroid — where a dot, cross, or overlay belongs. Note this is *not* the centre
+    /// The cell's centroid — where a dot, cross, or overlay belongs. Note this is *not* the center
     /// of the bounding box for a triangle: a triangle's centroid is a third of the way from its
     /// base toward its apex.
     pub fn center(self, origin: Point) -> Point {
@@ -310,7 +310,7 @@ pub(crate) const TRI_LANE_DIR: [Vec2; 3] = [
 /// an axis-aligned rectangle, but a triangular cell's outward-facing edge is 60° off its lane, so
 /// there the box is a rhombus. The two cases are the same arithmetic.
 ///
-/// `axis` may point either way along the lane; the box is symmetric about its centre either way.
+/// `axis` may point either way along the lane; the box is symmetric about its center either way.
 pub fn clue_box(center: Point, axis: Vec2, edge_dir: Vec2, size: f32, short: f32) -> [Point; 4] {
     let (ax, ay) = (axis.x * size / 2.0, axis.y * size / 2.0);
     let (bx, by) = (edge_dir.x * short / 2.0, edge_dir.y * short / 2.0);
@@ -373,7 +373,7 @@ pub struct GutterLane {
 }
 
 impl GutterLane {
-    /// The centre of the `i`th clue box, counting outward from the grid.
+    /// The center of the `i`th clue box, counting outward from the grid.
     pub fn clue_box_center(&self, i: usize) -> Point {
         let out = CLUE_PAD + CLUE_BOX / 2.0 + i as f32 * (CLUE_BOX + CLUE_GAP);
         Point::new(

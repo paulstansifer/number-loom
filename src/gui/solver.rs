@@ -922,7 +922,7 @@ pub(crate) fn draw_string_in_box(
     draw_string_at(ui, painter, rect.center(), clue_txt, scale, rgb, 0.7);
 }
 
-/// The mean of a convex polygon's vertices: the true centre for a parallelogram, and a triangle's
+/// The mean of a convex polygon's vertices: the true center for a parallelogram, and a triangle's
 /// centroid — exactly where `CellShape::center` puts it.
 pub(super) fn polygon_centroid(points: &[Pos2]) -> Pos2 {
     let sum = points.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2());
@@ -938,7 +938,7 @@ pub(super) fn fill_polygon(painter: &egui::Painter, points: &[Pos2], (r, g, b): 
 }
 
 /// As `draw_string_in_box`, but the clue box is an arbitrary convex polygon — the solver
-/// sidebar's rosette centre is whatever shape the hovered cell is, rather than a rect.
+/// sidebar's rosette center is whatever shape the hovered cell is, rather than a rect.
 pub(crate) fn draw_string_in_polygon(
     ui: &egui::Ui,
     painter: &egui::Painter,

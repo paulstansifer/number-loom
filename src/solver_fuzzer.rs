@@ -270,7 +270,7 @@ mod tests {
             Outline::hexagon(1),
             Outline::hexagon(2),
             Outline::hexagon(3),
-            // The webpbn worked example: a shape with an off-centre bend, not a regular hexagon.
+            // The webpbn worked example: a shape with an off-center bend, not a regular hexagon.
             Outline {
                 a: (0, 2),
                 b: (1, 3),
