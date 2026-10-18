@@ -288,7 +288,13 @@ pub fn documents_from_zip(zip_bytes: &[u8]) -> anyhow::Result<Vec<Document>> {
             continue;
         }
 
-        let path = entry.name().to_string();
+        let path = match entry.name() {
+            Ok(name) => name.to_string(),
+            Err(e) => {
+                eprintln!("Unreadable name; skipping: {e}");
+                continue;
+            }
+        };
         let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
 
         let readable = filename.rsplit_once('.').is_some_and(|(_, ext)| {

@@ -26,7 +26,7 @@ use number_loom::solve::human_line_solver::{Technique, rule_out_finished_colors}
 use number_loom::solve::line_solve::{Cell, exhaust_line, scrub_line, settle_line, skim_line};
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 #[derive(clap::Parser, Debug)]
 #[command(about = "Compares line-solving techniques on random partly-solved lines")]
@@ -296,12 +296,12 @@ struct TestLine {
 
 /// Runs of background and foreground, with a different taste in run lengths for each line.
 fn random_solution(rng: &mut StdRng, len: usize, colors: u8) -> Vec<Color> {
-    let stay_background = rng.gen_range(0.3..0.9);
-    let stay_foreground = rng.gen_range(0.3..0.9);
+    let stay_background = rng.random_range(0.3..0.9);
+    let stay_foreground = rng.random_range(0.3..0.9);
 
-    let random_foreground = |rng: &mut StdRng| Color(rng.gen_range(1..=colors));
+    let random_foreground = |rng: &mut StdRng| Color(rng.random_range(1..=colors));
 
-    let mut cur = if rng.gen_bool(0.5) {
+    let mut cur = if rng.random_bool(0.5) {
         BACKGROUND
     } else {
         random_foreground(rng)
@@ -310,14 +310,14 @@ fn random_solution(rng: &mut StdRng, len: usize, colors: u8) -> Vec<Color> {
     for _ in 0..len {
         res.push(cur);
         if cur == BACKGROUND {
-            if !rng.gen_bool(stay_background) {
+            if !rng.random_bool(stay_background) {
                 cur = random_foreground(rng);
             }
-        } else if !rng.gen_bool(stay_foreground) {
+        } else if !rng.random_bool(stay_foreground) {
             // Sometimes, differently-colored runs touch.
             let prev = cur;
             cur = BACKGROUND;
-            if colors > 1 && rng.gen_bool(0.3) {
+            if colors > 1 && rng.random_bool(0.3) {
                 while cur == BACKGROUND || cur == prev {
                     cur = random_foreground(rng);
                 }
@@ -344,7 +344,7 @@ fn clues_of(solution: &[Color]) -> Vec<Nono> {
 
 /// `None` if the line didn't work out (generally, because it got solved too early).
 fn random_test_line(rng: &mut StdRng, args: &Args) -> Option<TestLine> {
-    let len = rng.gen_range(args.min_len..=args.max_len);
+    let len = rng.random_range(args.min_len..=args.max_len);
     let solution = random_solution(rng, len, args.colors);
     let clues = clues_of(&solution);
 
@@ -354,11 +354,11 @@ fn random_test_line(rng: &mut StdRng, args: &Args) -> Option<TestLine> {
     }
 
     // What the crossing lines had worked out, the last time anyone looked at this one...
-    let reveal = rng.gen_range(0.0..0.5);
+    let reveal = rng.random_range(0.0..0.5);
     let mut lane: Vec<Cell> = solution
         .iter()
         .map(|color| {
-            if rng.gen_bool(reveal) {
+            if rng.random_bool(reveal) {
                 Cell::from_color(*color)
             } else {
                 unknown
@@ -371,7 +371,7 @@ fn random_test_line(rng: &mut StdRng, args: &Args) -> Option<TestLine> {
     // ...and what they've worked out since.
     let mut unsolved: Vec<usize> = (0..len).filter(|i| !lane[*i].is_known()).collect();
     unsolved.shuffle(rng);
-    let new_cells = rng.gen_range(1..=args.max_new_cells);
+    let new_cells = rng.random_range(1..=args.max_new_cells);
     if unsolved.len() <= new_cells {
         return None; // Not a line anymore, just some leftovers.
     }

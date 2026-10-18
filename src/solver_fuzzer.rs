@@ -10,15 +10,15 @@ mod tests {
     use number_loom::solve::grid_solve::{SolveOptions, solve};
     use number_loom::solve::human_line_solver::{Technique, rule_out_finished_colors};
     use number_loom::solve::line_solve::{Cell, exhaust_line, scrub_line, skim_line};
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
 
     fn generate_random_line(length: usize, num_colors: u8) -> Vec<Color> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut line = Vec::with_capacity(length);
-        let mut current_color = if rng.gen_bool(0.5) {
+        let mut current_color = if rng.random_bool(0.5) {
             BACKGROUND
         } else {
-            Color(rng.gen_range(1..=num_colors))
+            Color(rng.random_range(1..=num_colors))
         };
         let mut current_run_length = 0;
 
@@ -27,13 +27,13 @@ mod tests {
                 let previous_color = current_color;
                 // Make consecutive runs have different colors!
                 while current_color == previous_color {
-                    current_color = if rng.gen_bool(0.5) {
+                    current_color = if rng.random_bool(0.5) {
                         BACKGROUND
                     } else {
-                        Color(rng.gen_range(1..=num_colors))
+                        Color(rng.random_range(1..=num_colors))
                     };
                 }
-                current_run_length = rng.gen_range(1..=(length / 2).max(1));
+                current_run_length = rng.random_range(1..=(length / 2).max(1));
             }
             line.push(current_color);
             current_run_length -= 1;
@@ -42,7 +42,7 @@ mod tests {
     }
 
     fn generate_consistent_partial_solution(solution_line: &[Color], num_colors: u8) -> Vec<Cell> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut partial_solution = Vec::with_capacity(solution_line.len());
 
         for &actual_color in solution_line {
@@ -52,7 +52,7 @@ mod tests {
             // For other colors, 75% chance of also allowing it
             for i in 0..num_colors {
                 let other_color = Color(i);
-                if other_color != actual_color && rng.gen_bool(0.75) {
+                if other_color != actual_color && rng.random_bool(0.75) {
                     cell.actually_could_be(other_color);
                 }
             }
@@ -67,14 +67,14 @@ mod tests {
         solution_line: &[Color],
         num_colors: u8,
     ) -> Vec<Cell> {
-        let mut rng = rand::thread_rng();
-        let solved_fraction = rng.gen_range(0.3..0.9);
+        let mut rng = rand::rng();
+        let solved_fraction = rng.random_range(0.3..0.9);
 
         generate_consistent_partial_solution(solution_line, num_colors)
             .into_iter()
             .zip(solution_line)
             .map(|(cell, &actual_color)| {
-                if rng.gen_bool(solved_fraction) {
+                if rng.random_bool(solved_fraction) {
                     Cell::from_color(actual_color)
                 } else {
                     cell
@@ -235,7 +235,7 @@ mod tests {
             // Look at fewer colors at first:
             for max_colors in 2..=5 {
                 // Look at shorter lines at first:
-                let line_length = rng.gen_range(1..=max_line_length.min((i + 1) * 2));
+                let line_length = rng.random_range(1..=max_line_length.min((i + 1) * 2));
                 let solution_line = generate_random_line(line_length, max_colors);
 
                 for original_partial_solution in [
@@ -281,13 +281,13 @@ mod tests {
         for outline in outlines {
             let geometry = Geometry::<Tri>::new(outline);
             for case in 0..25 {
-                let num_colors = rng.gen_range(1..=3u8);
+                let num_colors = rng.random_range(1..=3u8);
                 let cells: Vec<Color> = (0..geometry.cell_count())
                     .map(|_| {
-                        if rng.gen_bool(0.5) {
+                        if rng.random_bool(0.5) {
                             BACKGROUND
                         } else {
-                            Color(rng.gen_range(1..=num_colors))
+                            Color(rng.random_range(1..=num_colors))
                         }
                     })
                     .collect();
