@@ -434,6 +434,9 @@ pub struct CanvasGui {
     pub previous_tool: Tool,
     #[serde(skip)]
     pub line_tool_state: Option<CellIdx>,
+    /// This avoids version bumping (and thus flicker) when the line tool effectively hasn't moved.
+    #[serde(skip)]
+    line_tool_drawn: HashMap<CellIdx, Color>,
     /// The lasso tool's selection, if any. Outlives switching tools only long enough to be
     /// flattened; see `flatten_selection`.
     pub selection: Option<Selection>,
@@ -634,6 +637,7 @@ impl CanvasGui {
             current_tool: editor.current_tool,
             previous_tool: editor.previous_tool,
             line_tool_state: None,
+            line_tool_drawn: HashMap::new(),
             selection: None,
             annotations: vec![],
             annotate_drag: None,

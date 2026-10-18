@@ -293,6 +293,7 @@ impl CanvasGui {
                 if pointer.pressed {
                     self.drag_start_color = paint_color;
                     self.line_tool_state = Some(cell);
+                    self.line_tool_drawn = [(cell, paint_color)].into();
 
                     self.perform(
                         Action::ChangeColor {
@@ -303,7 +304,13 @@ impl CanvasGui {
                 } else if pointer.down {
                     if let Some(start) = self.line_tool_state {
                         let changes = self.line_between(start, cell);
-                        self.perform(Action::ChangeColor { changes }, ActionMood::ReplaceAction);
+                        if changes != self.line_tool_drawn {
+                            self.line_tool_drawn = changes.clone();
+                            self.perform(
+                                Action::ChangeColor { changes },
+                                ActionMood::ReplaceAction,
+                            );
+                        }
                     }
                 } else if pointer.released {
                     self.line_tool_state = None;
@@ -683,6 +690,30 @@ mod paint_pointer_tests {
         assert_eq!(row, [Color(1), Color(1), Color(1), Color(1), BACKGROUND]);
         assert!(gui.line_tool_state.is_none());
         assert_eq!(gui.undo_stack.len(), 1);
+    }
+
+    /// A drag that stays on one cell changes nothing, so the version (which every solver aid is
+    /// keyed on) mustn't move, even when an aid like "infer background" has merged its own cells
+    /// into the stroke.
+    #[test]
+    fn a_drag_that_goes_nowhere_leaves_the_version_alone() {
+        for tool in [Tool::Pencil, Tool::LineAlongLane] {
+            let mut gui = solver();
+            gui.current_tool = tool;
+            gui.pointer_tool_input(at(0, 1), press(PaintIntent::Current), tool);
+            gui.perform(
+                Action::ChangeColor {
+                    changes: [(at(4, 4), BACKGROUND)].into(),
+                },
+                ActionMood::Merge,
+            );
+            let version = gui.version;
+            for _ in 0..3 {
+                gui.pointer_tool_input(at(0, 1), drag(PaintIntent::Current), tool);
+            }
+            assert_eq!(gui.version, version, "{tool:?}");
+            assert_eq!(cell(&gui, at(4, 4)), BACKGROUND, "{tool:?}");
+        }
     }
 
     /// Picking another tool partway through a line (with its key, say) leaves the line in charge
