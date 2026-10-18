@@ -34,8 +34,19 @@ fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &Document) {
     }
 }
 
-/// Draws a gallery item for a document.
-pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Response {
+/// The width of the contents of a preview, for desktop.
+pub const DESKTOP_PREVIEW_WIDTH: f32 = 250.0;
+
+/// How wide previews' contents should be for `columns` of them to fill `available` width.
+pub fn preview_width_for(ui: &egui::Ui, available: f32, columns: usize) -> f32 {
+    // Each preview's frame adds a margin and a stroke on both sides.
+    let frame_extra = 2.0 * (5.0 + 1.0);
+    let gaps = (columns - 1) as f32 * ui.spacing().item_spacing.x;
+    ((available - gaps) / columns as f32 - frame_extra).clamp(100.0, DESKTOP_PREVIEW_WIDTH)
+}
+
+/// Draws a gallery item for a document, with contents `width` wide.
+pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document, width: f32) -> egui::Response {
     let title = doc.get_or_make_up_title();
 
     let dims_label = doc.dims_label();
@@ -53,9 +64,10 @@ pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document) -> egui::Respon
         .inner_margin(egui::Margin::same(5))
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(title).strong());
+                ui.set_max_width(width);
+                ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate());
                 let (mut rect, _response) =
-                    ui.allocate_exact_size(egui::vec2(250.0, 10.0), egui::Sense::hover());
+                    ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
 
                 rect = rect.expand2(Vec2::new(5.0, 0.0));
 

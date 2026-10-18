@@ -257,11 +257,7 @@ impl NonogramGui {
     /// The Library dialog, if it's open. Returns the puzzle chosen from it, if one was.
     fn library_dialog(&mut self, ctx: &egui::Context, layout: ScreenLayout) -> Option<Document> {
         let status = self.library_dialog.as_ref()?;
-        // The previews are a fixed width, so a phone only has room for one across.
-        let columns = match layout {
-            ScreenLayout::Desktop => 2,
-            ScreenLayout::Compact => 1,
-        };
+        let columns = 2;
         let mut chosen = None;
         let mut close = false;
         let (_, back) = compact::dialog(
@@ -279,9 +275,16 @@ impl NonogramGui {
                     }
                     LibraryStatus::Loaded(docs) => {
                         let mut grid = |ui: &mut egui::Ui| {
+                            // A phone's previews shrink to fill the screen; a desktop's don't.
+                            let width = match layout {
+                                ScreenLayout::Desktop => gallery::DESKTOP_PREVIEW_WIDTH,
+                                ScreenLayout::Compact => {
+                                    gallery::preview_width_for(ui, ui.available_width(), columns)
+                                }
+                            };
                             egui::Grid::new("library_grid").show(ui, |ui| {
                                 for (i, doc) in docs.iter().enumerate() {
-                                    if gallery::gallery_puzzle_preview(ui, doc).clicked() {
+                                    if gallery::gallery_puzzle_preview(ui, doc, width).clicked() {
                                         chosen = Some(doc.clone());
                                     }
                                     if i % columns == columns - 1 {
