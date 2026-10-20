@@ -27,14 +27,15 @@ pub fn to_bytes(
     file_name: Option<String>,
     format: Option<NonogramFormat>,
 ) -> anyhow::Result<Vec<u8>> {
-    let format = format.unwrap_or_else(|| {
-        puzzle::infer_format(
+    let format = match format {
+        Some(format) => format,
+        None => puzzle::infer_format(
             file_name
                 .as_ref()
-                .expect("gotta have SOME clue about format"),
+                .context("no file format specified, or a filename to infer it from")?,
             None,
-        )
-    });
+        ),
+    };
 
     // Triangular puzzles round-trip through webpbn and olsak, and draw as HTML. The other
     // writers all assume two clue directions and a rectangular grid of cells, and would quietly
@@ -54,7 +55,7 @@ pub fn to_bytes(
     }
 
     let bytes = if format == NonogramFormat::Image {
-        let file_name = file_name.expect("need file name to pick image format");
+        let file_name = file_name.context("need a filename to infer an image format")?;
         as_image_bytes(square_solution(document)?, file_name)?
     } else {
         match format {
@@ -63,12 +64,12 @@ pub fn to_bytes(
                 DynPuzzle::TriNono(p) => as_olsak_nono(p)?,
                 DynPuzzle::SquareTriano(p) => as_olsak_triano(p)?,
             },
-            NonogramFormat::Webpbn => as_webpbn(document),
+            NonogramFormat::Webpbn => as_webpbn(document)?,
             NonogramFormat::Html => {
                 let (title, author) = (document.title.clone(), document.author.clone());
                 crate::with_puzzle!(document.puzzle(), |p| as_html(p, &title, &author))
             }
-            NonogramFormat::Image => panic!(),
+            NonogramFormat::Image => unreachable!("handled above"),
             NonogramFormat::Woven => to_woven(&document.clone().into_document()?)?,
             NonogramFormat::CharGrid => as_char_grid(square_solution(document)?),
         }
@@ -83,7 +84,7 @@ pub fn save(
     path: &PathBuf,
     format: Option<NonogramFormat>,
 ) -> anyhow::Result<()> {
-    let bytes = to_bytes(document, Some(path.to_str().unwrap().to_string()), format)?;
+    let bytes = to_bytes(document, Some(path.to_string_lossy().into_owned()), format)?;
 
     if path == &PathBuf::from("-") {
         use std::io::Write;

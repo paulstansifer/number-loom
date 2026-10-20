@@ -489,7 +489,7 @@ fn progress_image<K: GridKind + ImageDelimiter>(
 /// has a complete one (from a stored solution, or one line logic alone can recover) — most
 /// documents do, and a webpbn file that has both lets any reader skip re-deriving it. Any
 /// progress towards solving it is written too, as a `<solution type="saved">`.
-pub fn as_webpbn(document: &UncertainDocument) -> String {
+pub fn as_webpbn(document: &UncertainDocument) -> anyhow::Result<String> {
     let mut document_with_puzzle = document.clone();
     // Not `solution`: for clues that line logic can't finish, that would guess, and so might
     // write down one of several pictures as though it were *the* answer.
@@ -499,9 +499,11 @@ pub fn as_webpbn(document: &UncertainDocument) -> String {
     let tri_solution: Option<Solution<Tri>> = picture.as_ref().and_then(|p| p.as_tri()).cloned();
 
     match document_with_puzzle.puzzle() {
-        DynPuzzle::SquareNono(p) => write_webpbn(document, p, square_solution.as_ref()),
-        DynPuzzle::TriNono(p) => write_webpbn(document, p, tri_solution.as_ref()),
-        DynPuzzle::SquareTriano(_) => panic!("webpbn cannot represent trianogram clues"),
+        DynPuzzle::SquareNono(p) => Ok(write_webpbn(document, p, square_solution.as_ref())),
+        DynPuzzle::TriNono(p) => Ok(write_webpbn(document, p, tri_solution.as_ref())),
+        DynPuzzle::SquareTriano(_) => {
+            bail!("webpbn cannot represent trianograms")
+        }
     }
 }
 
@@ -702,7 +704,7 @@ mod tests {
     #[test]
     fn triddler_survives_a_webpbn_round_trip() {
         let mut original = webpbn_to_document(DOC_TRIDDLER).unwrap();
-        let serialized = as_webpbn(&original);
+        let serialized = as_webpbn(&original).unwrap();
         assert!(serialized.contains(r#"type="triddler""#));
 
         let mut reloaded = webpbn_to_document(&serialized).unwrap();
@@ -798,7 +800,7 @@ mod tests {
     fn writing_a_square_puzzle_includes_its_solution() {
         let mut doc = webpbn_to_document(WEBPBN_HOUSE_STYLE).unwrap();
         let solution = doc.solution().unwrap().clone(); // line logic alone solves it
-        let serialized = as_webpbn(&doc);
+        let serialized = as_webpbn(&doc).unwrap();
         assert!(serialized.contains(r#"<solution type="goal">"#));
 
         let mut reloaded = webpbn_to_document(&serialized).unwrap();
@@ -813,7 +815,7 @@ mod tests {
     fn writing_a_triddler_includes_its_solution() {
         let mut doc = webpbn_to_document(DOC_TRIDDLER).unwrap();
         let solution = doc.solution().unwrap().clone(); // line logic alone solves it
-        let serialized = as_webpbn(&doc);
+        let serialized = as_webpbn(&doc).unwrap();
         assert!(serialized.contains(r#"<solution type="goal">"#));
 
         let mut reloaded = webpbn_to_document(&serialized).unwrap();
@@ -842,7 +844,7 @@ mod tests {
             </puzzle></puzzleset>"#;
 
         let doc = webpbn_to_document(AMBIGUOUS_NO_SOLUTION).unwrap();
-        let serialized = as_webpbn(&doc);
+        let serialized = as_webpbn(&doc).unwrap();
         assert!(!serialized.contains("<solution"));
     }
 
@@ -891,7 +893,7 @@ mod tests {
     #[test]
     fn saved_progress_survives_a_round_trip() {
         let original = webpbn_to_document(WITH_SAVED).unwrap();
-        let serialized = as_webpbn(&original);
+        let serialized = as_webpbn(&original).unwrap();
         assert!(serialized.contains(r#"<solution type="saved">"#));
 
         // `[X.]` comes back as `?`, which isn't the same `Cell`, but means the same thing.
@@ -931,10 +933,10 @@ mod tests {
         };
 
         let blank = with_progress(Cell::new_anything());
-        assert!(!as_webpbn(&blank).contains(r#"type="saved""#));
+        assert!(!as_webpbn(&blank).unwrap().contains(r#"type="saved""#));
 
         let known = with_progress(Cell::from_color(Color(1)));
-        let mut reloaded = webpbn_to_document(&as_webpbn(&known)).unwrap();
+        let mut reloaded = webpbn_to_document(&as_webpbn(&known).unwrap()).unwrap();
         assert_eq!(reloaded.in_progress(), known.in_progress());
         assert_ne!(reloaded.puzzle().palette()[&Color(1)].ch, '?');
     }
@@ -1038,7 +1040,7 @@ mod tests {
             info.ch = if info.color == BACKGROUND { ' ' } else { '★' };
         }
 
-        let serialized = as_webpbn(&doc.into());
+        let serialized = as_webpbn(&doc.into()).unwrap();
         assert!(
             !serialized.contains(r#"char=" ""#),
             "a space should never appear as a color char: {serialized}"
@@ -1112,7 +1114,7 @@ mod tests {
             crate::puzzle::UncertainDocument::from_solution(solution, "t.txt".to_string());
         let original_bg_name = document.puzzle().palette()[&BACKGROUND].name.clone();
 
-        let serialized = as_webpbn(&document);
+        let serialized = as_webpbn(&document).unwrap();
         assert!(
             serialized.contains(&format!(r#"backgroundcolor="{original_bg_name}""#)),
             "should name its background explicitly: {serialized}"
@@ -1133,6 +1135,6 @@ mod tests {
     fn a_square_puzzle_still_says_grid() {
         let doc = crate::formats::char_grid::char_grid_to_solution("##\n#.").unwrap();
         let document = crate::puzzle::UncertainDocument::from_solution(doc, "t.txt".to_string());
-        assert!(as_webpbn(&document).contains(r#"type="grid""#));
+        assert!(as_webpbn(&document).unwrap().contains(r#"type="grid""#));
     }
 }

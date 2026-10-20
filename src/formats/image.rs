@@ -97,6 +97,6 @@ where
 
     Ok(writer
         .into_inner()
-        .expect("Couldn't get inner Vec<u8> from BufWriter")
+        .map_err(|e| anyhow::anyhow!("error getting bytes from `BufWriter`: {e}"))?
         .into_inner())
 }

@@ -3,7 +3,7 @@ use crate::geometry::{CellIdx, GridKind, Shape, Square, Tri};
 use crate::puzzle::{
     ClueStyle, Color, ColorInfo, Document, DynSolution, PartialSolution, Solution, UNSOLVED,
 };
-use anyhow::{Error, bail};
+use anyhow::{Context, Error, bail};
 use base64::{Engine as _, engine::general_purpose};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -58,9 +58,9 @@ const REPLACEMENT_CHS: std::ops::RangeInclusive<char> = '!'..='~';
 
 impl SerializableSolution {
     /// The cells, from whichever of the two forms this file uses.
-    fn cell_colors(&self) -> Vec<Color> {
+    fn cell_colors(&self) -> anyhow::Result<Vec<Color>> {
         if self.cell_chars.is_empty() {
-            return self.cells.clone();
+            return Ok(self.cells.clone());
         }
 
         let by_ch: std::collections::HashMap<char, Color> =
@@ -68,9 +68,10 @@ impl SerializableSolution {
         self.cell_chars
             .chars()
             .map(|ch| {
-                *by_ch
+                by_ch
                     .get(&ch)
-                    .unwrap_or_else(|| panic!("no color in the palette is drawn as {ch:?}"))
+                    .copied()
+                    .with_context(|| format!("no color in the palette is drawn as {ch:?}"))
             })
             .collect()
     }
@@ -300,7 +301,7 @@ mod cell_spelling_tests {
             s_solution.cells.is_empty(),
             "the numeric form is redundant once the cells are spelled"
         );
-        assert_eq!(s_solution.cell_colors(), solution.cells.raw);
+        assert_eq!(s_solution.cell_colors().unwrap(), solution.cells.raw);
     }
 
     #[test]
@@ -331,7 +332,7 @@ mod cell_spelling_tests {
             "a repaired palette can spell its cells, so the numeric form is not needed"
         );
         // The repair is invisible from the outside: the cells still mean what they meant.
-        assert_eq!(s_solution.cell_colors(), solution.cells.raw);
+        assert_eq!(s_solution.cell_colors().unwrap(), solution.cells.raw);
     }
 
     /// Only the entry that clashed gets a new `ch`; the rest keep what they had. A replacement
@@ -370,7 +371,7 @@ mod cell_spelling_tests {
             '#',
             "the duplicate takes the first free character, skipping ones already spoken for"
         );
-        assert_eq!(s_solution.cell_colors(), solution.cells.raw);
+        assert_eq!(s_solution.cell_colors().unwrap(), solution.cells.raw);
     }
 
     /// Saving twice must not keep changing the file: the second save sees an unambiguous palette
@@ -393,7 +394,7 @@ mod cell_spelling_tests {
         );
 
         let once: SerializableSolution = (&solution).into();
-        let reloaded: DynSolution = (&once).into();
+        let reloaded = DynSolution::try_from(&once).unwrap();
         let twice: SerializableSolution = (&reloaded).into();
 
         assert_eq!(
@@ -402,7 +403,7 @@ mod cell_spelling_tests {
             "saving a repaired palette again reordered it"
         );
         assert_eq!(once, twice);
-        assert_eq!(twice.cell_colors(), solution.cells.raw);
+        assert_eq!(twice.cell_colors().unwrap(), solution.cells.raw);
     }
 
     #[test]
@@ -414,7 +415,7 @@ mod cell_spelling_tests {
         let s_solution: SerializableSolution = (&solution).into();
 
         assert!(s_solution.cell_chars.is_empty());
-        assert_eq!(s_solution.cell_colors(), solution.cells.raw);
+        assert_eq!(s_solution.cell_colors().unwrap(), solution.cells.raw);
     }
 
     /// The point of keeping `cells`: a file written before `c` existed still has to load.
@@ -432,8 +433,8 @@ mod cell_spelling_tests {
         let old: SerializableSolution = serde_json::from_str(before_c).unwrap();
         let new: SerializableSolution = serde_json::from_str(with_c).unwrap();
 
-        assert_eq!(old.cell_colors(), vec![BACKGROUND, Color(1), Color(1)]);
-        assert_eq!(old.cell_colors(), new.cell_colors());
+        assert_eq!(old.cell_colors().unwrap(), vec![BACKGROUND, Color(1), Color(1)]);
+        assert_eq!(old.cell_colors().unwrap(), new.cell_colors().unwrap());
     }
 }
 
@@ -739,7 +740,7 @@ mod tests {
 impl TryFrom<WovenVersion0> for Document {
     type Error = Error;
     fn try_from(s_doc: WovenVersion0) -> anyhow::Result<Self> {
-        let mut solution: DynSolution = (&s_doc.solution).into();
+        let mut solution = DynSolution::try_from(&s_doc.solution)?;
         if solution.cells().contains(&UNSOLVED) {
             bail!("Unsolved cells in solution?");
         }
@@ -813,16 +814,17 @@ impl From<&DynSolution> for SerializableSolution {
     }
 }
 
-impl From<&SerializableSolution> for DynSolution {
-    fn from(s_solution: &SerializableSolution) -> Self {
+impl TryFrom<&SerializableSolution> for DynSolution {
+    type Error = Error;
+    fn try_from(s_solution: &SerializableSolution) -> anyhow::Result<Self> {
         let palette = s_solution
             .palette
             .iter()
             .map(|ci| (ci.color, ci.clone()))
             .collect();
-        let cells: TiVec<CellIdx, Color> = s_solution.cell_colors().into();
+        let cells: TiVec<CellIdx, Color> = s_solution.cell_colors()?.into();
         // The shape is the one place a stored puzzle is narrowed back to a static kind.
-        match &s_solution.shape {
+        Ok(match &s_solution.shape {
             Shape::Square { width, height } => DynSolution::Square(Solution::new(
                 s_solution.clue_style,
                 palette,
@@ -838,7 +840,7 @@ impl From<&SerializableSolution> for DynSolution {
                 crate::geometry::Geometry::<Tri>::new(*outline),
                 cells,
             )),
-        }
+        })
     }
 }
 

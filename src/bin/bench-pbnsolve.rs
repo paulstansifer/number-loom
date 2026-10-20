@@ -753,7 +753,7 @@ fn webpbn_path_for(
 
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let converted = temp_dir.join(format!("{stem}.xml"));
-    std::fs::write(&converted, as_webpbn(document))
+    std::fs::write(&converted, as_webpbn(document)?)
         .with_context(|| format!("couldn't write {}", converted.display()))?;
     Ok(converted)
 }
@@ -840,8 +840,7 @@ fn bench_one(
     let mut document = import::load_path(&path.to_path_buf(), None)
         .with_context(|| format!("couldn't load {}", path.display()))?;
 
-    // Check the shape before converting: `as_webpbn` panics on Triano clues rather than returning
-    // an error, because webpbn genuinely can't express them.
+    // Check the shape up front, for a benchmark-specific message.
     if matches!(document.puzzle(), DynPuzzle::SquareTriano(_)) {
         bail!("trianogram; webpbn can't represent it");
     }
