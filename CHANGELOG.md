@@ -3,9 +3,20 @@
 ## Future
 ### Added
  - Support for mobile interfaces.
+   - If the window is sufficiently narrow, the UI switches over to a compact, touch-friendly layout
+   - If touch input is detected, a cell cursor is displayed. Drag moves the cursor; tap and hold-drag draw.
  - Support for saving/loading in-progress puzzles in WOVEN format and webpbn's XML format.
+ - Record what puzzles the user has solved and display checkmarks for them in the gallery.
+ - Added "human-like" solve techniques. Now, line assistance displays A, B, C, D, or E depending on the 
+   (estimated) logical difficulty of the line deduction.
+ - Added support for saving and loading solve progress (in addition to the canonical solution) in the WOVEN 
+   and webpbn formats.
 ### Changed
  - The tree-search backtracking solver has been replaced with a faster one based on constraint propagation.
+ - Switched the default rendering in solve mode to be the normal one (Xes for known-background, blank for 
+   unknown), instead of "experimental" (white for known-background, a gray pattern for unknown).
+### Fixed
+ - There were some crashes in cases where saving or loading went wrong.
 
 ## 0.6.0 - 2026-09-14
 ### Added
