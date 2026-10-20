@@ -32,9 +32,9 @@ Number Loom helps you explore how edits affect solvability. It can automatically
 
 ## Installation and usage
 
-`number-loom` can run in your browser! I've published it at https://paul-stansifer.itch.io/number-loom.
+`number-loom` can run in your browser! I've published it at https://paul-stansifer.itch.io/number-loom. (It also has a small-screen mobile device mode with a relative-drag cursor so your finger doesn't have to cover up what you're doing.)
 
-You can also install it to your machine if you're comfortable with the command line. The first step is to [install `cargo` through `rustup`](https://doc.rust-lang.org/cargo/getting-started/installation.html) if you haven't already.
+You can also install it to your desktop machine if you're comfortable with the command line. The first step is to [install `cargo` through `rustup`](https://doc.rust-lang.org/cargo/getting-started/installation.html) if you haven't already.
 
 Then run `cargo install number-loom`.
 
@@ -46,7 +46,7 @@ To convert a puzzle from the command line, do `number-loom examples/png/hair_dry
 
 ## Solver
 
-In addition to requiring more steps or more attention, some nonograms require more advanced reasoning than others to solve. This sort of difficulty is tricky to usefully quantify, but there's one important distinction: "line logic" puzzles rely on what can be proven one line at a time; more difficult puzzles require "backtracking" reasoning.
+In addition to requiring more steps or more attention, some nonograms require more advanced reasoning than others to solve. This sort of difficulty is tricky to usefully quantify, but there's one important well-defined distinction: "line logic" puzzles rely on what can be proven one line at a time; more difficult puzzles require "backtracking" reasoning.
 
 ### Line logic
 
@@ -72,7 +72,7 @@ Number Loom's backtracking solver is based on "constraint propagation": it alter
 
 ## GUI
 
-### Shortcuts
+### Desktop shortcuts
 
 The tools can all be selected with the key for their first letters: Pencil, Line, Flood fiil, Select, and Annotate. (Most tools only exist in one mode, though!)
 
@@ -82,6 +82,10 @@ Left-click uses the current tool with the selected color, right-click uses it wi
 
 Undo is "Z" and redo is "Y".
 
+### Mobile devices
+
+Drag anywhere on the puzzle to move the "cursor". Tap or hold-and-drag to paint at the cursor's position.
+
 ### Edit mode
 
 When editing a nonogram, you can:
@@ -90,7 +94,7 @@ When editing a nonogram, you can:
 * Lasso-select and move a part of the image around
 * Adjust the size of the canvas from any side
 * Add, remove, or recolor palette entries
-s* Solve the puzzle (it paints gray dots over unsolved cells), optionally automatically after each edit
+* Solve the puzzle (it paints gray dots over unsolved cells), optionally automatically after each edit
 * Disambiguate
 * Switch to "Puzzle" mode to test-solve
 * Edit metadata: title, description, author and license. The "title" is intended to be displayed before the puzzle is solved (typically, a vague hint), and the "description" is intended for display afterward (typically, a straightforward description of the puzzle).
@@ -125,7 +129,7 @@ Note: indicators only appear if some cell can be shown to have a particular colo
 
 Trianograms are a rare variant. "Mindful Puzzle Books" publishes a book by that name. The Olšák solver also supports this variant, crediting the concept to "the journal Maľované krížovky, Silentium s.r.o, Bratislava", but I haven't been able to find out more. There are square-grid puzzles with triangles at [griddlers.net](http://griddlers.net/), but I think they are merely traditional nonograms with triangular colors.
 
-A trianogram has black, white, and four additional "colors": triangles that divide the cell into half-black and half-white. The triangles always serve as "caps" to a clue; for example "◢2◤" denotes that the four cells "◢■■◤" will appear. They will be consecutive, despite the fact that the caps are different "colors". Two consecutive clues will only be guaranteed to be separated by a space if neither of them is capped on the facing sides (if there are multiple identical consecutive triangles, they will each get their own clue).
+A trianogram has black, white, and four additional "colors": triangles that divide the cell into half-black and half-white. The triangles always serve as "caps" to a clue; for example "◢2◤" denotes that the four cells "◢■■◤" will appear. They will be contiguous, despite the fact that the caps are different "colors". Two consecutive clues will only be guaranteed to be separated by a space if neither of them is capped on the facing sides (if there are multiple identical consecutive triangles, they will each get their own clue).
 
 The Olšák solver, I believe, supports multi-color trianograms, but `number-loom` does not yet.
 
@@ -135,9 +139,9 @@ The "webpbn" format supports "triangular colors", but it does not support "clue 
 
 ### Triddlers
 
-Triddlers (named by analogy with "Griddler", one of the many names for this kind of puzzle) are another variant in which the cells are equilateral triangles, arranged on a hexagonal grid, and there are *three* different axes of clues, rather than *two*.
+Triddlers (named by analogy with "Griddler", one of the many names for this kind of puzzle) are another variant in which the cells are equilateral triangles, arranged on a hexagonal grid, and there are *three* different axes of clues, rather than two.
 
-Only `olsak`, `woven`, `webpbn`, and `char-grid`. Note that, even though `webpbn` can represent them, `pbnsolve` does cannot solve triddlers.
+Only `olsak`, `woven`, `webpbn`, and `char-grid` support triddlers. Note that, even though `webpbn` can *represent* them, `pbnsolve` does cannot solve triddlers.
 
 ## Development
 
