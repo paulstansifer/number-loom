@@ -729,9 +729,15 @@ impl CanvasGui {
 
     /// What's known while solving, as the solver's aids want it.
     pub fn progress(&self) -> PartialSolution {
+        debug_assert!(self.solving); // Unclear what should happen otherwise
         match self.document.in_progress() {
-            Some(progress) if self.solving => progress.clone(),
-            _ => self.document.solution().to_partial(),
+            Some(progress) => progress.clone(),
+            // No progress at all; start from a clean slate
+            None => vec![
+                crate::solve::line_solve::Cell::new_anything();
+                self.document.solution().cells().len()
+            ]
+            .into(),
         }
     }
 
