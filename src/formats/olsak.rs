@@ -67,15 +67,17 @@ pub fn as_olsak_nono<K: GridKind>(puzzle: &Puzzle<Nono, K>) -> anyhow::Result<St
             res.push_str(&format!("   {ch}:{ch}  {spec}   {comment}\n",));
         }
     }
-    let write_line = |res: &mut String, clues: &[Nono], reversed: bool| {
+    let write_line = |res: &mut String, clues: &[Nono], reversed: bool| -> anyhow::Result<()> {
         let mut clues: Vec<&Nono> = clues.iter().collect();
         if reversed {
             clues.reverse();
         }
         for clue in clues {
-            res.push_str(&format!("{}{} ", clue.count, palette[&clue.color].ch));
+            let ch = palette.get(&clue.color).context("color not in palette")?.ch;
+            res.push_str(&format!("{}{} ", clue.count, ch));
         }
         res.push('\n');
+        Ok(())
     };
 
     if triangular {
@@ -86,7 +88,7 @@ pub fn as_olsak_nono<K: GridKind>(puzzle: &Puzzle<Nono, K>) -> anyhow::Result<St
                 lanes.reverse();
             }
             for lane in lanes {
-                write_line(&mut res, &puzzle.lines[lane], blocks_reversed);
+                write_line(&mut res, &puzzle.lines[lane], blocks_reversed)?;
             }
         }
     } else {
@@ -94,7 +96,7 @@ pub fn as_olsak_nono<K: GridKind>(puzzle: &Puzzle<Nono, K>) -> anyhow::Result<St
         for (name, family) in [("rows", FamilyIdx(0)), ("columns", FamilyIdx(1))] {
             res.push_str(&format!(": {name}\n"));
             for lane in puzzle.lane_map().family(family) {
-                write_line(&mut res, &puzzle.lines[lane], false);
+                write_line(&mut res, &puzzle.lines[lane], false)?;
             }
         }
     }
@@ -150,41 +152,35 @@ pub fn as_olsak_triano(puzzle: &Puzzle<Triano, Square>) -> anyhow::Result<String
             res.push_str(&format!("   {ch}:{ch}  {spec}   {comment}\n",));
         }
     }
-    res.push_str(": rows\n");
-    for row in puzzle.row_clues() {
-        for clue in row {
-            if let Some(c) = clue.front_cap {
-                res.push(palette[&c].ch);
+    let ch_of = |color: &Color| {
+        palette
+            .get(color)
+            .map(|ci| ci.ch)
+            .context("color not in palette")
+    };
+    for (name, lines) in [
+        ("rows", puzzle.row_clues()),
+        ("columns", puzzle.col_clues()),
+    ] {
+        res.push_str(&format!(": {name}\n"));
+        for line in lines {
+            for clue in line {
+                if let Some(c) = clue.front_cap {
+                    res.push(ch_of(&c)?);
+                }
+                res.push_str(&format!(
+                    "{}{}",
+                    clue.body_len
+                        + (clue.front_cap.is_some() as u16 + clue.back_cap.is_some() as u16),
+                    ch_of(&clue.body_color)?
+                ));
+                if let Some(c) = clue.back_cap {
+                    res.push(ch_of(&c)?);
+                }
+                res.push(' ');
             }
-            res.push_str(&format!(
-                "{}{}",
-                clue.body_len + (clue.front_cap.is_some() as u16 + clue.back_cap.is_some() as u16),
-                palette[&clue.body_color].ch
-            ));
-            if let Some(c) = clue.back_cap {
-                res.push(palette[&c].ch);
-            }
-            res.push(' ');
+            res.push('\n');
         }
-        res.push('\n');
-    }
-    res.push_str(": columns\n");
-    for column in puzzle.col_clues() {
-        for clue in column {
-            if let Some(c) = clue.front_cap {
-                res.push(palette[&c].ch);
-            }
-            res.push_str(&format!(
-                "{}{}",
-                clue.body_len + (clue.front_cap.is_some() as u16 + clue.back_cap.is_some() as u16),
-                palette[&clue.body_color].ch
-            ));
-            if let Some(c) = clue.back_cap {
-                res.push(palette[&c].ch);
-            }
-            res.push(' ');
-        }
-        res.push('\n');
     }
 
     Ok(res)

@@ -71,7 +71,7 @@ pub fn to_bytes(
             }
             NonogramFormat::Image => unreachable!("handled above"),
             NonogramFormat::Woven => to_woven(&document.clone().into_document()?)?,
-            NonogramFormat::CharGrid => as_char_grid(square_solution(document)?),
+            NonogramFormat::CharGrid => as_char_grid(square_solution(document)?)?,
         }
         .into_bytes()
     };

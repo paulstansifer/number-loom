@@ -4,6 +4,7 @@
 //! Which image formats are understood is up to the `image` crate; on the way out, the file
 //! extension picks the encoding.
 
+use anyhow::Context;
 use std::{collections::HashMap, path::Path};
 
 use image::{DynamicImage, GenericImageView, ImageFormat, Pixel, Rgb, RgbImage, Rgba};
@@ -82,7 +83,11 @@ where
 
     for x in 0..solution.x_size() {
         for y in 0..solution.y_size() {
-            let (r, g, b) = solution.palette[&solution[(x, y)]].rgb;
+            let (r, g, b) = solution
+                .palette
+                .get(&solution[(x, y)])
+                .context("color not in palette")?
+                .rgb;
             image.put_pixel(x as u32, y as u32, Rgb::<u8>([r, g, b]));
         }
     }

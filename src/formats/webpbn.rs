@@ -360,7 +360,9 @@ pub fn webpbn_to_document(webpbn: &str) -> anyhow::Result<UncertainDocument> {
 
 /// `pbnsolve` doesn't like spaces in `<solution>`s, and I bet non-ASCII is asking for trouble, so
 /// clean up the palette
-fn webpbn_safe_chars(palette: &HashMap<Color, ColorInfo>) -> HashMap<Color, ColorInfo> {
+fn webpbn_safe_chars(
+    palette: &HashMap<Color, ColorInfo>,
+) -> anyhow::Result<HashMap<Color, ColorInfo>> {
     let mut palette = palette.clone();
 
     if let Some(bg) = palette.get_mut(&BACKGROUND) {
@@ -386,12 +388,12 @@ fn webpbn_safe_chars(palette: &HashMap<Color, ColorInfo>) -> HashMap<Color, Colo
         let new_ch = fresh
             .by_ref()
             .find(|c| !used.contains(c))
-            .expect("ran out of ASCII letters and digits for color characters");
+            .context("too many colors for webpbn (it needs a distinct letter or digit for each)")?;
         used.insert(new_ch);
         info.ch = new_ch;
     }
 
-    palette
+    Ok(palette)
 }
 
 /// How `write_webpbn` delimits one text row of a `<solution>` image; `webpbn_tridder.md` uses `|`
@@ -453,16 +455,14 @@ fn image<K: GridKind + ImageDelimiter>(
 fn solution_image<K: GridKind + ImageDelimiter>(
     solution: &Solution<K>,
     palette: &HashMap<Color, ColorInfo>,
-) -> String {
+) -> anyhow::Result<String> {
     image(&solution.geometry, |cells| {
-        Some(
-            cells
-                .iter()
-                .map(|&cell| palette[&solution.cells[cell]].ch)
-                .collect(),
-        )
+        cells
+            .iter()
+            .map(|&cell| palette.get(&solution.cells[cell]).map(|ci| ci.ch))
+            .collect()
     })
-    .unwrap()
+    .context("the picture uses a color that isn't in the palette")
 }
 
 /// Renders a `<solution type="saved">` image, or `None` if there's no progress worth saving (or
@@ -499,8 +499,8 @@ pub fn as_webpbn(document: &UncertainDocument) -> anyhow::Result<String> {
     let tri_solution: Option<Solution<Tri>> = picture.as_ref().and_then(|p| p.as_tri()).cloned();
 
     match document_with_puzzle.puzzle() {
-        DynPuzzle::SquareNono(p) => Ok(write_webpbn(document, p, square_solution.as_ref())),
-        DynPuzzle::TriNono(p) => Ok(write_webpbn(document, p, tri_solution.as_ref())),
+        DynPuzzle::SquareNono(p) => write_webpbn(document, p, square_solution.as_ref()),
+        DynPuzzle::TriNono(p) => write_webpbn(document, p, tri_solution.as_ref()),
         DynPuzzle::SquareTriano(_) => {
             bail!("webpbn cannot represent trianograms")
         }
@@ -511,10 +511,10 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
     document: &UncertainDocument,
     puzzle: &Puzzle<Nono, K>,
     solution: Option<&Solution<K>>,
-) -> String {
+) -> anyhow::Result<String> {
     use indoc::indoc;
 
-    let palette = webpbn_safe_chars(&puzzle.palette);
+    let palette = webpbn_safe_chars(&puzzle.palette)?;
 
     let puzzle_type = match puzzle.geometry.shape() {
         Shape::Square { .. } => "grid",
@@ -524,7 +524,10 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
     // Name the background explicitly rather than assuming it's called "white": a palette lifted
     // from a PNG names its colors after their hex values, and a reader that guesses "white" would
     // treat every one of them as foreground.
-    let background_name = &palette[&BACKGROUND].name;
+    let background_name = &palette
+        .get(&BACKGROUND)
+        .context("need a background color")?
+        .name;
     // Every `<count>` we write names its own color, so `defaultcolor` is never actually consulted;
     // it just has to name a real color for readers that validate it.
     // Lowest color index rather than whatever the `HashMap` yields first, so the output is stable.
@@ -572,21 +575,27 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
         res.push('\n');
     }
 
-    let write_clue_set = |res: &mut String, name: &str, lines: &[&Vec<Nono>]| {
-        res.push_str(&format!(r#"<clues type="{name}">"#));
-        for line in lines {
-            res.push_str("<line>");
-            for clue in line.iter() {
-                res.push_str(&format!(
-                    r#"<count color="{}">{}</count>"#,
-                    palette[&clue.color].name, clue.count
-                ));
+    let write_clue_set =
+        |res: &mut String, name: &str, lines: &[&Vec<Nono>]| -> anyhow::Result<()> {
+            res.push_str(&format!(r#"<clues type="{name}">"#));
+            for line in lines {
+                res.push_str("<line>");
+                for clue in line.iter() {
+                    res.push_str(&format!(
+                        r#"<count color="{}">{}</count>"#,
+                        palette
+                            .get(&clue.color)
+                            .context("color not in palette")?
+                            .name,
+                        clue.count
+                    ));
+                }
+                res.push_str("</line>\n");
             }
-            res.push_str("</line>\n");
-        }
-        res.push_str(r#"</clues>"#);
-        res.push('\n');
-    };
+            res.push_str(r#"</clues>"#);
+            res.push('\n');
+            Ok(())
+        };
 
     match puzzle.geometry.shape() {
         Shape::Square { .. } => {
@@ -597,7 +606,7 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
                     .family(family)
                     .map(|l| &puzzle.lines[l])
                     .collect();
-                write_clue_set(&mut res, name, &lines);
+                write_clue_set(&mut res, name, &lines)?;
             }
         }
         Shape::Triangular(_) => {
@@ -614,14 +623,14 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
                     continue; // A sharp corner; webpbn omits the set entirely.
                 }
                 let lines: Vec<&Vec<Nono>> = lanes.into_iter().map(|l| &puzzle.lines[l]).collect();
-                write_clue_set(&mut res, name, &lines);
+                write_clue_set(&mut res, name, &lines)?;
             }
         }
     }
 
     if let Some(solution) = solution {
         res.push_str("<solution type=\"goal\">\n<image>\n");
-        res.push_str(&solution_image(solution, &palette));
+        res.push_str(&solution_image(solution, &palette)?);
         res.push_str("</image>\n</solution>\n");
     }
 
@@ -636,7 +645,7 @@ fn write_webpbn<K: GridKind + ImageDelimiter>(
     res.push_str(r#"</puzzle></puzzleset>"#);
     res.push('\n');
 
-    res
+    Ok(res)
 }
 
 #[cfg(test)]
@@ -1009,7 +1018,7 @@ mod tests {
             },
         );
 
-        let safe = webpbn_safe_chars(&palette);
+        let safe = webpbn_safe_chars(&palette).unwrap();
 
         assert_eq!(safe[&BACKGROUND].ch, '.');
         assert_eq!(safe[&Color(3)].ch, 'Q');

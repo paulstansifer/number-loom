@@ -6,9 +6,10 @@ Use `cargo run` to open the GUI, `cargo run --help` for options (including CLI c
 # Text that users will read
 
 If you're an LLM, don't write the final wording of anything a user of Number Loom will
-read. Instead, write "HUMANIZE: <draft>", and a human will replace it. Please report how many places remain.
+read. Instead, write "HUMANIZE: <draft>", and a human will replace it. Please report 
+how many places remain.
 
-This covers labels, tooltips, status messages, dialog text, the README and the changelog. It
+This covers labels, tooltips, errors, dialog text, the README and the changelog. It
 doesn't cover code comments, documentation for developers (like this file), or plans.
 
 # File tree

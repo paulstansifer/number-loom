@@ -24,7 +24,7 @@ use crate::{
 fn build_char_palette(
     mut unused_chars: BTreeSet<char>,
     fallback_bg: char,
-) -> HashMap<char, ColorInfo> {
+) -> anyhow::Result<HashMap<char, ColorInfo>> {
     let mut palette = HashMap::<char, ColorInfo>::new();
 
     // the characters this matters for are in ASCII
@@ -144,10 +144,10 @@ fn build_char_palette(
                 },
             },
         );
-        next_color += 1;
+        next_color = next_color.checked_add(1).context("more than 255 colors")?;
     }
 
-    palette
+    Ok(palette)
 }
 
 /// A chargrid whose first non-whitespace character is `/` is a triddler (see
@@ -157,10 +157,12 @@ pub fn char_grid_to_solution(char_grid: &str) -> anyhow::Result<DynSolution> {
     if char_grid.trim_start().starts_with('/') {
         return Ok(DynSolution::Tri(char_grid_to_tri_solution(char_grid)?));
     }
-    Ok(DynSolution::Square(char_grid_to_square_solution(char_grid)))
+    Ok(DynSolution::Square(char_grid_to_square_solution(
+        char_grid,
+    )?))
 }
 
-fn char_grid_to_square_solution(char_grid: &str) -> Solution<Square> {
+fn char_grid_to_square_solution(char_grid: &str) -> anyhow::Result<Solution<Square>> {
     // We want deterministic behavior
     let mut unused_chars = BTreeSet::<char>::new();
     for ch in char_grid.chars() {
@@ -169,12 +171,15 @@ fn char_grid_to_square_solution(char_grid: &str) -> Solution<Square> {
         }
         unused_chars.insert(ch);
     }
-    let fallback_bg = char_grid.trim_start().chars().next().unwrap();
-    let mut palette = build_char_palette(unused_chars, fallback_bg);
+    let fallback_bg = char_grid
+        .trim_start()
+        .chars()
+        .next()
+        .context("empty grid")?;
+    let mut palette = build_char_palette(unused_chars, fallback_bg)?;
 
     let mut grid: Vec<Vec<Color>> = vec![];
 
-    // TODO: check that rows are the same length!
     for (y, row) in char_grid
         .split("\n")
         .filter(|line| !line.is_empty())
@@ -188,6 +193,11 @@ fn char_grid_to_square_solution(char_grid: &str) -> Solution<Square> {
 
             grid[x][y] = palette[&ch].color;
         }
+    }
+    // Maybe the user's editor stripped trailing spaces?
+    let height = grid.iter().map(|col| col.len()).max().unwrap_or(0);
+    for col in &mut grid {
+        col.resize(height, BACKGROUND);
     }
 
     let has_triangles = palette.values().any(|ci| ci.corner.is_some());
@@ -206,14 +216,14 @@ fn char_grid_to_square_solution(char_grid: &str) -> Solution<Square> {
         ClueStyle::Nono
     };
 
-    Solution::from_columns(
+    Ok(Solution::from_columns(
         clue_style,
         palette
             .into_values()
             .map(|color_info| (color_info.color, color_info))
             .collect(),
         grid,
-    )
+    ))
 }
 
 /// Reads a triddler drawn the way `webpbn_tridder.md`'s `<solution>` does: one text row per `a`
@@ -251,7 +261,7 @@ fn char_grid_to_tri_solution(char_grid: &str) -> anyhow::Result<Solution<Tri>> {
     }
 
     let fallback_bg = fallback_bg.context("triddler chargrid has no cells")?;
-    let palette = build_char_palette(unused_chars, fallback_bg);
+    let palette = build_char_palette(unused_chars, fallback_bg)?;
 
     // The outline is exactly the box these coordinates span: a real triddler's rows are convex,
     // so (unlike an arbitrary blob of characters) the box this implies can't include any cell we
@@ -268,8 +278,8 @@ fn char_grid_to_tri_solution(char_grid: &str) -> anyhow::Result<Solution<Tri>> {
     }
     let outline = Outline {
         a: a_range.context("triddler chargrid has no cells")?,
-        b: b_range.unwrap(),
-        c: c_range.unwrap(),
+        b: b_range.context("triddler chargrid has no cells")?,
+        c: c_range.context("triddler chargrid has no cells")?,
     };
     let geometry = Geometry::<Tri>::new(outline);
 
@@ -293,24 +303,49 @@ fn char_grid_to_tri_solution(char_grid: &str) -> anyhow::Result<Solution<Tri>> {
     ))
 }
 
-pub fn as_char_grid(solution: &Solution<Square>) -> String {
+pub fn as_char_grid(solution: &Solution<Square>) -> anyhow::Result<String> {
     let mut result = String::new();
 
     for y in 0..solution.y_size() {
         for x in 0..solution.x_size() {
             let color = solution[(x, y)];
-            let color_info = &solution.palette[&color];
+            let color_info = solution
+                .palette
+                .get(&color)
+                .context("color not in palette")?;
             result.push(color_info.ch);
         }
         result.push('\n');
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::geometry::FamilyIdx;
+
+    #[test]
+    fn an_empty_grid_is_an_error_not_a_crash() {
+        assert!(char_grid_to_solution("").is_err());
+        assert!(char_grid_to_solution("  \n\n").is_err());
+    }
+
+    #[test]
+    fn ragged_rows_are_padded_with_background() {
+        let solution = match char_grid_to_solution(".#.\n#\n").unwrap() {
+            DynSolution::Square(s) => s,
+            DynSolution::Tri(_) => panic!("expected a square grid"),
+        };
+        assert_eq!((solution.x_size(), solution.y_size()), (3, 2));
+        assert_eq!(solution[(2, 1)], BACKGROUND);
+    }
+
+    #[test]
+    fn too_many_characters_is_an_error_not_a_crash() {
+        let many: String = ('\u{100}'..'\u{300}').collect();
+        assert!(char_grid_to_solution(&many).is_err());
+    }
 
     #[test]
     fn a_leading_slash_after_whitespace_still_means_triddler() {

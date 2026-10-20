@@ -433,7 +433,10 @@ mod cell_spelling_tests {
         let old: SerializableSolution = serde_json::from_str(before_c).unwrap();
         let new: SerializableSolution = serde_json::from_str(with_c).unwrap();
 
-        assert_eq!(old.cell_colors().unwrap(), vec![BACKGROUND, Color(1), Color(1)]);
+        assert_eq!(
+            old.cell_colors().unwrap(),
+            vec![BACKGROUND, Color(1), Color(1)]
+        );
         assert_eq!(old.cell_colors().unwrap(), new.cell_colors().unwrap());
     }
 }
