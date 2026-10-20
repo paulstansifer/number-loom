@@ -18,7 +18,7 @@ required-features = ["eval-techniques"]
 [package]
 name = "number-loom"
 description = "Multipurpose GUI and CLI tool for constructing nonograms"
-version = "0.6.0"
+version = "0.7.0"
 authors = ["Paul Stansifer <paul.stansifer@gmail.com>"]
 edition = "2024"
 license = "MIT"

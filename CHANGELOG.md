@@ -1,6 +1,6 @@
 ## Changelog
 
-## Future
+## 0.7.0 - 2026-10-20
 ### Added
  - Support for mobile interfaces.
    - If the window is sufficiently narrow, the UI switches over to a compact, touch-friendly layout

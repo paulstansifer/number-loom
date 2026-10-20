@@ -17,8 +17,10 @@
 * Add CC-0 (public domain) as an license option
 * Speed up the replay a little for larger puzzles.
 * Try `FxHashMap` instead of `HashMap`.
+* Make proper high-res and maskable icons for the PWA version.
 
 # Maybe?
+* Make a nonogram-themed loading spinner for the Wasm version?
 * Human-like reasoning modes for difficulty measurement (and a max-effort slider in the GUI)
   * What intermediate-difficulty reasoning steps do people use?
     * We need somewhat broad categories, since the solver exhausts one level before going on
