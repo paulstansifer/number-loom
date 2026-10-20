@@ -6,6 +6,7 @@
 use super::*;
 use crate::formats::partial_cells::has_progress;
 use crate::puzzle::UncertainDocument;
+use crate::user_settings::UserSettings;
 
 /// How far the puzzle library has got, once the Library button has asked for it.
 pub enum LibraryStatus {
@@ -282,9 +283,12 @@ impl NonogramGui {
                                     gallery::preview_width_for(ui, ui.available_width(), columns)
                                 }
                             };
+                            let solved_ids = UserSettings::solved_puzzles();
                             egui::Grid::new("library_grid").show(ui, |ui| {
                                 for (i, doc) in docs.iter().enumerate() {
-                                    if gallery::gallery_puzzle_preview(ui, doc, width).clicked() {
+                                    if gallery::gallery_puzzle_preview(ui, doc, width, &solved_ids)
+                                        .clicked()
+                                    {
                                         chosen = Some(doc.clone());
                                     }
                                     if i % columns == columns - 1 {

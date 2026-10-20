@@ -18,6 +18,8 @@ pub mod consts {
     pub const SOLVER_RENDER_STYLE: &str = "solver.render_style";
     pub const EDITOR_AUTHOR_NAME: &str = "editor.author_name";
     pub const EDITOR_AUTO_SOLVE: &str = "editor.auto_solve";
+    /// A JSON array of the IDs of the puzzles that have been solved.
+    pub const SOLVED_PUZZLES: &str = "gallery.solved_puzzles";
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -81,5 +83,25 @@ impl UserSettings {
         {
             LocalStorage::set(key, value).map_err(|e| anyhow::anyhow!(e.to_string()))
         }
+    }
+}
+
+impl UserSettings {
+    /// The IDs of the puzzles that have been solved.
+    pub fn solved_puzzles() -> std::collections::HashSet<String> {
+        Self::get(consts::SOLVED_PUZZLES)
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Remembers that the puzzle with this ID has been solved.
+    pub fn mark_puzzle_solved(id: &str) -> anyhow::Result<()> {
+        let mut solved = Self::solved_puzzles();
+        if !solved.insert(id.to_string()) {
+            return Ok(());
+        }
+        let mut sorted: Vec<_> = solved.into_iter().collect();
+        sorted.sort();
+        Self::set(consts::SOLVED_PUZZLES, &serde_json::to_string(&sorted)?)
     }
 }

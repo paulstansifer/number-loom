@@ -4,7 +4,7 @@ use crate::puzzle::{Document, DynSolution};
 use eframe::egui;
 use egui::{CornerRadius, Vec2};
 use itertools::Itertools;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 fn palette_bar(ui: &mut egui::Ui, rect: egui::Rect, doc: &Document) {
     let color_counts = count_colors(doc.solution());
@@ -45,9 +45,16 @@ pub fn preview_width_for(ui: &egui::Ui, available: f32, columns: usize) -> f32 {
     ((available - gaps) / columns as f32 - frame_extra).clamp(100.0, DESKTOP_PREVIEW_WIDTH)
 }
 
-/// Draws a gallery item for a document, with contents `width` wide.
-pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document, width: f32) -> egui::Response {
+/// Draws a gallery item for a document, with contents `width` wide. `solved_ids` holds the IDs of
+/// the puzzles that have been solved already.
+pub fn gallery_puzzle_preview(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    width: f32,
+    solved_ids: &HashSet<String>,
+) -> egui::Response {
     let title = doc.get_or_make_up_title();
+    let solved = solved_ids.contains(&title);
 
     let dims_label = doc.dims_label();
 
@@ -65,7 +72,12 @@ pub fn gallery_puzzle_preview(ui: &mut egui::Ui, doc: &Document, width: f32) -> 
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.set_max_width(width);
-                ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate());
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate());
+                    if solved {
+                        ui.label(egui::RichText::new("✔").color(egui::Color32::DARK_GREEN));
+                    }
+                });
                 let (mut rect, _response) =
                     ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
 

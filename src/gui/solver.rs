@@ -189,6 +189,7 @@ impl SolveGui {
         // completions (after an undo and a redo, say) reuse this one rather than recapturing.
         if self.replay.is_none() && Self::is_correctly_solved(canvas) {
             self.replay = Some(Replay::new(canvas));
+            let _ = UserSettings::mark_puzzle_solved(&canvas.document.get_or_make_up_title());
         }
     }
 
