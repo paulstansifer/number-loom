@@ -493,19 +493,18 @@ impl SolveGui {
                     let checked = &canvas.checked_clues;
                     // The gutter numbers its lines within the family, so it gets plain slices:
                     // an index into one of these is a line number, not a `LaneIdx`.
-                    let marks = |family: FamilyIdx, hint: Option<BlockHint>| GutterMarks {
+                    let marks = |family: FamilyIdx| GutterMarks {
                         analysis: line_analysis.map(|la| &la[lane_map.family_range(family)].raw),
                         fixed: fixed_clues.map(|fc| &fc[lane_map.family_range(family)].raw),
                         checked,
                         is_stale,
-                        hover: hint,
                     };
                     let col_clicked = draw_dyn_clues(
                         ui,
                         &self.clues,
                         scale,
                         Orientation::Vertical,
-                        &marks(FamilyIdx(1), col_hint),
+                        &marks(FamilyIdx(1)),
                     );
                     ui.end_row();
 
@@ -514,11 +513,28 @@ impl SolveGui {
                         &self.clues,
                         scale,
                         Orientation::Horizontal,
-                        &marks(FamilyIdx(0), row_hint),
+                        &marks(FamilyIdx(0)),
                     );
                     // A click lands in one gutter or the other, never both.
                     clicked_clue = col_clicked.or(row_clicked);
                     self.hovered_cell = canvas.canvas(ui, scale, self.render_style);
+                    // The hovered block's length goes on the far side of the picture from the
+                    // clues, where it doesn't cover up their analysis marks.
+                    let (rows, cols) = (
+                        {
+                            let r = lane_map.family_range(FamilyIdx(0));
+                            usize::from(r.end) - usize::from(r.start)
+                        },
+                        {
+                            let r = lane_map.family_range(FamilyIdx(1));
+                            usize::from(r.end) - usize::from(r.start)
+                        },
+                    );
+                    draw_hover_strip(ui, scale, Orientation::Horizontal, rows, row_hint);
+                    ui.end_row();
+
+                    ui.label(""); // Bottom-left is empty
+                    draw_hover_strip(ui, scale, Orientation::Vertical, cols, col_hint);
                     ui.end_row();
                 });
         });
@@ -720,7 +736,6 @@ pub struct GutterMarks<'a> {
     pub checked: &'a HashSet<ClueId>,
     /// Whether the analysis predates the picture as it now stands.
     pub is_stale: bool,
-    pub hover: Option<BlockHint>,
 }
 
 /// The little mark showing how hard a line is to crack: a letter grade (see
@@ -960,6 +975,37 @@ pub(crate) fn draw_string_in_polygon(
     );
 }
 
+/// The strip on the far side of the picture from a clue gutter (to the right of the rows, below
+/// the columns), which shows the length of the block under the pointer on its line. `lines` is
+/// how many lines the family has; the strip is allocated even with nothing to show, so that
+/// hovering doesn't shift the layout.
+fn draw_hover_strip(
+    ui: &mut egui::Ui,
+    scale: f32,
+    orientation: Orientation,
+    lines: usize,
+    hint: Option<BlockHint>,
+) {
+    let pad = scale * crate::layout::CLUE_PAD;
+    let size = match orientation {
+        Orientation::Horizontal => Vec2::new(pad, scale * lines as f32),
+        Orientation::Vertical => Vec2::new(scale * lines as f32, pad),
+    };
+    let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
+    let Some(h) = hint else { return };
+    let center = match orientation {
+        Orientation::Horizontal => Pos2::new(
+            response.rect.min.x + pad / 2.0,
+            response.rect.min.y + (h.line as f32 + 0.5) * scale,
+        ),
+        Orientation::Vertical => Pos2::new(
+            response.rect.min.x + (h.line as f32 + 0.5) * scale,
+            response.rect.min.y + pad / 2.0,
+        ),
+    };
+    draw_bare_number(ui, &painter, center, &h.len.to_string(), scale, h.rgb);
+}
+
 fn draw_clues<C: crate::puzzle::Clue>(
     ui: &mut egui::Ui,
     puzzle: &crate::puzzle::Puzzle<C, crate::geometry::Square>,
@@ -1018,8 +1064,7 @@ fn draw_clues<C: crate::puzzle::Clue>(
     let lane_map = &puzzle.geometry.lane_map;
 
     for i in 0..clues_vec.len() {
-        // The indicator strip against the grid: the hovered line's block length if there is one,
-        // and otherwise the analysis mark the number is deliberately covering up.
+        // The indicator strip against the grid, where the analysis mark goes.
         let center = match orientation {
             Orientation::Horizontal => Pos2::new(
                 response.rect.max.x - puzz_padding / 2.0,
@@ -1030,15 +1075,8 @@ fn draw_clues<C: crate::puzzle::Clue>(
                 response.rect.max.y - puzz_padding / 2.0,
             ),
         };
-        match marks.hover.filter(|h| h.line == i) {
-            Some(h) => {
-                draw_bare_number(ui, &painter, center, &h.len.to_string(), scale, h.rgb);
-            }
-            None => {
-                if let Some(analysis) = marks.analysis {
-                    draw_analysis_mark(&painter, center, scale, &analysis[i], marks.is_stale);
-                }
-            }
+        if let Some(analysis) = marks.analysis {
+            draw_analysis_mark(&painter, center, scale, &analysis[i], marks.is_stale);
         }
 
         let line_clues = &clues_vec[i];

@@ -1950,10 +1950,19 @@ mod tests {
                         (cell - cell.round()).abs() < 0.01,
                         "{path}: {cell} points per cell"
                     );
-                    // The clues (when solving) are above and to the left, so the picture is
-                    // inside the viewport only if they are too.
+                    // The clues (when solving) are above and to the left, and the hover readout's
+                    // strips are below and to the right, so the picture is inside the viewport
+                    // only if they are too.
+                    let strip = if solving {
+                        number_loom::layout::CLUE_PAD * cell
+                    } else {
+                        0.0
+                    };
                     assert!(
-                        viewport.contains_rect(picture),
+                        viewport.contains_rect(egui::Rect::from_min_max(
+                            picture.min,
+                            picture.max + egui::Vec2::splat(strip)
+                        )),
                         "{path}, solving: {solving}: {picture:?} isn't inside {viewport:?}"
                     );
                     // And it's in the middle. (The solver's clues push its picture off-center.)
@@ -1971,8 +1980,11 @@ mod tests {
                     }
                     let width = viewport.width() - 16.0; // The canvas's margins.
                     let height = viewport.height() - 16.0;
-                    let content = picture.max - viewport.min;
-                    let grown = content * (cell + 1.0) / cell;
+                    let content = picture.max + egui::Vec2::splat(strip) - viewport.min;
+                    // The fit extrapolates from a smaller zoom, where the parts that don't scale
+                    // (the borders) loom larger, so it can land a point short when solving.
+                    let slack = if solving { 2.0 } else { 1.0 };
+                    let grown = content * (cell + slack) / cell;
                     assert!(
                         grown.x > width || grown.y > height,
                         "{path}, solving: {solving}: {cell} points per cell leaves room"
