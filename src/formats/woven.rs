@@ -187,8 +187,8 @@ pub fn compress_and_encode(bytes: &[u8], quality: u32) -> anyhow::Result<String>
     Ok(general_purpose::STANDARD_NO_PAD.encode(compressor.into_inner()))
 }
 
-/// The counterpart to `compress_and_encode`. Whitespace is ignored, since WOVEN strings get
-/// wrapped.
+/// The counterpart to `compress_and_encode`. Whitespace is ignored, since older WOVEN strings
+/// were wrapped.
 pub fn decode_and_decompress(s: &str) -> anyhow::Result<Vec<u8>> {
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     let compressed = general_purpose::STANDARD_NO_PAD.decode(s.as_bytes())?;
@@ -203,16 +203,7 @@ pub fn decode_and_decompress(s: &str) -> anyhow::Result<Vec<u8>> {
 /// been round-tripped through a `Document` and normalized on the way.
 fn encode_woven(s_doc: &WovenDocument) -> anyhow::Result<String> {
     let bytes = serde_json::to_vec(s_doc)?;
-    let encoded = format!("WOVEN-{}-", compress_and_encode(&bytes, 11)?);
-
-    let mut result = String::new();
-    for (i, c) in encoded.chars().enumerate() {
-        result.push(c);
-        if (i + 1) % 100 == 0 {
-            result.push('\n');
-        }
-    }
-    Ok(result)
+    Ok(format!("WOVEN-{}-", compress_and_encode(&bytes, 11)?))
 }
 
 /// The counterpart to `encode_woven`: everything `from_woven` does except the last step of

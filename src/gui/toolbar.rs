@@ -26,6 +26,82 @@ pub(super) struct NewPuzzleDialog {
     clue_style: crate::puzzle::ClueStyle,
 }
 
+/// How far before an overlaid button a text box's text starts to fade out.
+const FADE_WIDTH: f32 = 30.0;
+
+/// A couple big hacks here to make the share string dialogs pretty.
+/// 
+/// A one-line text box spanning `width`, with a button laid over its right end. The text fades
+/// out on its way to the button, and a pasted string scrolls back to its beginning. Returns the
+/// text box's response and the button's.
+fn field_with_button(
+    ui: &mut egui::Ui,
+    layout: ScreenLayout,
+    width: f32,
+    edit: egui::TextEdit<'_>,
+    button: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) -> (egui::Response, egui::Response) {
+    let height = match layout {
+        ScreenLayout::Desktop => ui.spacing().interact_size.y,
+        ScreenLayout::Compact => compact::TARGET,
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+
+    let pasted = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))));
+    let mut out = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+            edit.desired_width(width).show(ui)
+        })
+        .inner;
+    if pasted && out.response.has_focus() && out.response.changed() {
+        // A paste leaves the cursor at the end of the text; put it at the beginning, so that
+        // the beginning is what's visible.
+        out.state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(0),
+            )));
+        out.state.store(ui.ctx(), out.response.id);
+        ui.ctx().request_repaint();
+    }
+
+    // The fade goes above the text, but below the button, whose size isn't known until it's
+    // been laid out.
+    let fade_slot = ui.painter().add(egui::Shape::Noop);
+    let button_response = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            button,
+        )
+        .inner;
+
+    let fill = ui.visuals().extreme_bg_color;
+    let clear = egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 0);
+    let half = egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 200);
+    let button_rect = button_response.rect;
+    let (top, bottom) = (button_rect.top(), button_rect.bottom());
+    let fade_left = button_rect.left() - FADE_WIDTH;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(egui::pos2(fade_left, top), clear);
+    mesh.colored_vertex(egui::pos2(button_rect.left(), top), half);
+    mesh.colored_vertex(egui::pos2(button_rect.left(), bottom), half);
+    mesh.colored_vertex(egui::pos2(fade_left, bottom), clear);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    // An opaque backing, so that a disabled button's translucency doesn't show the text.
+    ui.painter().set(
+        fade_slot,
+        egui::Shape::Vec(vec![
+            egui::Shape::mesh(mesh),
+            egui::Shape::rect_filled(button_rect, 2.0, fill),
+        ]),
+    );
+
+    (out.response.response, button_response)
+}
+
 /// A new square puzzle's dimensions. The dialog offers no size controls at all; resizing from
 /// the sidebar is the way to get to any other shape.
 const NEW_SQUARE_SIZE: (usize, usize) = (20, 20);
@@ -374,22 +450,32 @@ impl NonogramGui {
                 }
 
                 let chosen = if dialog.as_link { &sh_ui_3 } else { &sh_ui_2 };
-                ui.add(
+                let (edit_response, button_response) = field_with_button(
+                    ui,
+                    layout,
+                    text_width,
                     // Read-only: an `&str` can be selected and copied, but not edited.
-                    egui::TextEdit::multiline(&mut dialog.shared.as_str())
-                        .font(TextStyle::Monospace)
-                        .desired_width(text_width),
-                )
-                .labelled_by(chosen.id);
-                if compact::can_share() {
-                    if ui.button(icons::ICON_SHARE).clicked() {
+                    egui::TextEdit::singleline(&mut dialog.shared.as_str())
+                        .font(TextStyle::Monospace),
+                    |ui| {
+                        if compact::can_share() {
+                            ui.button(icons::ICON_SHARE)
+                        } else {
+                            ui.add(compact::icon_button(icons::ICON_CONTENT_COPY, layout))
+                                .on_hover_text("HUMANIZE: Copy to clipboard")
+                        }
+                    },
+                );
+                edit_response.labelled_by(chosen.id);
+                if button_response.clicked() {
+                    if compact::can_share() {
                         compact::share(&canvas.document.title, &dialog.shared, dialog.as_link);
-                    }
-                } else if ui.button("Copy to clipboard").clicked() {
-                    ctx.copy_text(dialog.shared.clone());
-                    // There's nothing else to show that it happened, on a phone.
-                    if layout == ScreenLayout::Compact {
-                        canvas.status.set(StatusMessage::info("Copied"));
+                    } else {
+                        ctx.copy_text(dialog.shared.clone());
+                        // There's nothing else to show that it happened, on a phone.
+                        if layout == ScreenLayout::Compact {
+                            canvas.status.set(StatusMessage::info("Copied"));
+                        }
                     }
                 }
 
@@ -417,14 +503,27 @@ impl NonogramGui {
                 ui.separator();
 
                 let paste_label = ui.label("Paste a 'WOVEN' string to load:");
-                ui.add(
-                    egui::TextEdit::multiline(&mut dialog.pasted)
-                        .font(TextStyle::Monospace)
-                        .desired_width(text_width),
-                )
-                .labelled_by(paste_label.id);
+                let pasted = dialog.pasted.trim();
+                let well_formed = pasted.len() > "WOVEN--".len()
+                    && pasted.starts_with("WOVEN-")
+                    && pasted.ends_with('-');
+                let (edit_response, load_response) = field_with_button(
+                    ui,
+                    layout,
+                    text_width,
+                    egui::TextEdit::singleline(&mut dialog.pasted).font(TextStyle::Monospace),
+                    |ui| ui.add_enabled(well_formed, egui::Button::new("Load")),
+                );
+                edit_response.labelled_by(paste_label.id);
+                let load = load_response.clicked();
+                if !well_formed && !dialog.pasted.trim().is_empty() {
+                    ui.colored_label(
+                        egui::Color32::DARK_RED,
+                        "Must start with \"WOVEN-\" and end with \"-\".",
+                    );
+                }
 
-                if ui.button("Load").clicked() {
+                if load {
                     match crate::formats::woven::from_woven(
                         &dialog.pasted,
                         "unknown.woven".to_string(),

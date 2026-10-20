@@ -1721,14 +1721,14 @@ mod tests {
 
             // The drawer closed behind it.
             assert!(harness.query_by_label("Library").is_none());
-            let copy = harness.get_by_label("Copy to clipboard");
+            let copy = harness.get_by_label(icons::ICON_CONTENT_COPY);
             assert_tappable(&copy);
             let back = harness.get_by_label(icons::ICON_ARROW_BACK);
             let bounds = back.accesskit_node().bounding_box().unwrap();
             assert!(bounds.x0 < TARGET as f64 && bounds.y0 < TARGET as f64);
             back.click();
             harness.run();
-            assert!(harness.query_by_label("Copy to clipboard").is_none());
+            assert!(harness.query_by_label(icons::ICON_CONTENT_COPY).is_none());
 
             // Metadata has one of its own.
             harness.get_by_label(icons::ICON_EDIT_NOTE).click();
