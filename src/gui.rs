@@ -141,7 +141,7 @@ pub fn edit_image(document: anyhow::Result<Document>) {
     use eframe::icon_data::from_png_bytes;
     use egui::ViewportBuilder;
 
-    let icon_bytes: &'static [u8] = include_bytes!("../icon.png");
+    let icon_bytes: &'static [u8] = include_bytes!("../media/icon_512_by_512.png");
 
     let native_options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()

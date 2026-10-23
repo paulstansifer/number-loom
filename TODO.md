@@ -32,7 +32,6 @@
 * Allow backtracking disambiguation (with a very small time budget for each solve)
 * Bottleneck difficulty measurement during solve
 * Inverted "disambiguate" to increase difficulty
-* PWA + touch input with cursor
 * If the user drags the line tool off of a lane, keep the rosette and helper numbers locked to the original lane
 * investigate using Tauri?
 * Come up with terminology that distinguishes between the GUI for people to use while solving and the auto-solver.

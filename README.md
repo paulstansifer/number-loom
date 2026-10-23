@@ -4,7 +4,7 @@
 
 You can also use it to test-solve your puzzles... or to solve puzzles for fun, if you like!
 
-![Screenshot of a GUI editor](screenshot.png)
+![Screenshot of a GUI editor](media/screenshot.png)
 
 *Spot a change that makes the puzzle totally solvable and still look good!*
 
@@ -111,7 +111,7 @@ In puzzle mode, left-click paints the currently-selected color, right-click pain
 
 Shift-drag draws an "annotation" on the puzzle, which measures the distance that you drag it. Annotations always appear on the right side of the cells you dragged them in, so overlapping drags in opposite directions should be readable:
 
-![Screenshot of annotations](annotation_example.png)
+![Screenshot of annotations](media/annotation_example.png)
 
 Shift-click to delete annotations, or add a single-cell annotation.
 

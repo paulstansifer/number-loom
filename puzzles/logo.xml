@@ -1,14 +1,14 @@
 <?xml version="1.0"?>
 <puzzleset>
-<puzzle type="grid" defaultcolor="white">
+<puzzle type="grid" backgroundcolor="white" defaultcolor="black">
 <source>number-loom</source>
 <title>A logo</title>
 <description>The logo of Number Loom</description>
 <author>Paul Stansifer</author>
-<id>Number Loom logo</id>
+<id>paris-engine-yankee</id>
 <copyright>CC BY 4.0</copyright>
 <color name="black" char="#">000000</color>
-<color name="white" char=" ">FFFFFF</color>
+<color name="white" char=".">FFFFFF</color>
 <clues type="columns"><line><count color="black">6</count></line>
 <line><count color="black">2</count></line>
 <line><count color="black">2</count></line>
@@ -26,27 +26,27 @@
 <line><count color="black">4</count><count color="black">4</count></line>
 <line><count color="black">1</count></line>
 <line><count color="black">6</count><count color="black">4</count></line>
-<line><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">2</count></line>
-<line><count color="black">6</count><count color="black">2</count><count color="black">1</count></line>
+<line><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">2</count></line>
+<line><count color="black">4</count><count color="black">2</count><count color="black">1</count></line>
 <line><count color="black">4</count></line>
-<line><count color="black">6</count><count color="black">2</count></line>
+<line><count color="black">5</count><count color="black">2</count></line>
 <line><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count></line>
-<line><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">5</count></line>
+<line><count color="black">2</count><count color="black">1</count><count color="black">5</count></line>
 <line><count color="black">1</count></line>
-<line><count color="black">6</count><count color="black">1</count></line>
-<line><count color="black">1</count><count color="black">1</count><count color="black">4</count></line>
-<line><count color="black">3</count><count color="black">2</count><count color="black">1</count></line>
+<line><count color="black">5</count><count color="black">1</count></line>
+<line><count color="black">1</count><count color="black">4</count></line>
+<line><count color="black">1</count><count color="black">1</count></line>
 <line><count color="black">4</count></line>
 <line><count color="black">1</count></line>
 <line><count color="black">2</count></line>
 </clues>
 <clues type="rows"><line><count color="black">1</count><count color="black">1</count></line>
-<line><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">3</count><count color="black">3</count><count color="black">3</count></line>
-<line><count color="black">2</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">4</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count></line>
-<line><count color="black">3</count><count color="black">1</count><count color="black">3</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count></line>
-<line><count color="black">1</count><count color="black">3</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">3</count><count color="black">3</count><count color="black">2</count></line>
-<line><count color="black">1</count><count color="black">2</count><count color="black">3</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count></line>
-<line><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">3</count><count color="black">3</count><count color="black">1</count><count color="black">1</count></line>
+<line><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count></line>
+<line><count color="black">2</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">4</count><count color="black">2</count><count color="black">2</count><count color="black">1</count><count color="black">1</count></line>
+<line><count color="black">3</count><count color="black">1</count><count color="black">3</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">2</count></line>
+<line><count color="black">1</count><count color="black">3</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">3</count><count color="black">1</count></line>
+<line><count color="black">1</count><count color="black">2</count><count color="black">3</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count></line>
+<line><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">3</count><count color="black">3</count><count color="black">1</count></line>
 <line><count color="black">1</count><count color="black">1</count></line>
 <line><count color="black">1</count><count color="black">1</count></line>
 <line><count color="black">1</count><count color="black">2</count></line>
@@ -56,4 +56,23 @@
 <line><count color="black">1</count><count color="black">1</count><count color="black">2</count><count color="black">2</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count><count color="black">1</count></line>
 <line><count color="black">9</count><count color="black">3</count><count color="black">1</count><count color="black">3</count></line>
 </clues>
+<solution type="goal">
+<image>
+|......#.#.....................|
+|#...#.#.#.#.....#.............|
+|##..#.#.#.####..##..##..#.#...|
+|###.#.###.#.#.#.#.#.#.#.##....|
+|#.###.....#.#.#.#.#.###.#.....|
+|#..##.###.#.#.#.#.#.#...#.....|
+|#...#.#.#.#.#.#.###.###.#.....|
+|......#.#.....................|
+|......#.#.....................|
+|......#.##....................|
+|......#..#..#######.###.##....|
+|......##.#.##.#.#.###.##.###..|
+|.......###.#..#.#..#..#..#.#..|
+|........#..#.##.##.#..#..#.#.#|
+|.....#########...###..#....###|
+</image>
+</solution>
 </puzzle></puzzleset>

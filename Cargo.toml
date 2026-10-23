@@ -26,7 +26,7 @@ keywords = ["nonogram"]
 readme = "README.md"
 repository = "https://github.com/paulstansifer/number-loom"
 default-run = "number-loom"
-exclude = ["examples/"]
+exclude = ["examples/", "media/icon.xcf"]
 
 # (See the [[bin]] section)
 [features]
