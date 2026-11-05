@@ -514,14 +514,13 @@ fn clue_is_fixed<C: Clue>(
 }
 
 /// Where each clue starts, for the clues that are fully located by skim logic (the rest are
-/// `None`).
-pub fn skim_to_place_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<Option<usize>> {
-    let (Ok(left_packed_right_extents), Ok(right_packed_left_extents)) = (
-        packed_extents(clues, lane, false),
-        packed_extents(clues, lane, true),
-    ) else {
-        return vec![None; clues.len()];
-    };
+/// `None`). An error if the clues can't be packed into the lane at all.
+pub fn skim_to_place_fixed_clues<C: Clue>(
+    clues: &[C],
+    lane: &[Cell],
+) -> anyhow::Result<Vec<Option<usize>>> {
+    let left_packed_right_extents = packed_extents(clues, lane, false)?;
+    let right_packed_left_extents = packed_extents(clues, lane, true)?;
 
     let mut fixed_clues = vec![];
 
@@ -533,16 +532,18 @@ pub fn skim_to_place_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<Opt
             .push(clue_is_fixed(clue, left_extent, right_extent, lane).then_some(left_extent));
     }
 
-    fixed_clues
+    Ok(fixed_clues)
 }
 
-/// Returns indices of clues that are fully located by skim logic
-pub fn skim_to_find_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<usize> {
-    skim_to_place_fixed_clues(clues, lane)
+/// Returns indices of clues that are fully located by skim logic. An error if the clues can't be
+/// packed into the lane at all. (That's most, but not all, of the contradictions a whole
+/// `skim_line` would find: a painted cell in a lane with no clues packs just fine, for instance.)
+pub fn skim_to_find_fixed_clues<C: Clue>(clues: &[C], lane: &[Cell]) -> anyhow::Result<Vec<usize>> {
+    Ok(skim_to_place_fixed_clues(clues, lane)?
         .iter()
         .enumerate()
         .filter_map(|(clue_idx, start)| start.map(|_| clue_idx))
-        .collect()
+        .collect())
 }
 
 /// Packs all clues to their leftmost and rightmost possible locations. If any squares are
@@ -1429,7 +1430,7 @@ mod tests {
     }
 
     fn test_fixed<C: Clue>(clues: Vec<C>, init: &str) -> Vec<usize> {
-        skim_to_find_fixed_clues(&clues, &l(init))
+        skim_to_find_fixed_clues(&clues, &l(init)).unwrap()
     }
 
     #[test]
@@ -1483,8 +1484,10 @@ mod tests {
         // Nothing to fix:
         assert_eq!(test_fixed(n(""), "🔳 🔳 🔳"), Vec::<usize>::new());
 
-        // A contradictory line reports nothing, rather than erroring:
-        assert_eq!(test_fixed(n("⬛4"), "🔳 🔳 🔳"), Vec::<usize>::new());
+        // A contradiction that packing finds:
+        assert!(skim_to_find_fixed_clues(&n("⬛4"), &l("🔳 🔳 🔳")).is_err());
+        // ...and one it doesn't (`grid_solve::fixed_clues` does a whole skim to catch these):
+        assert!(skim_to_find_fixed_clues(&n(""), &l("🔳 ⬛ 🔳")).is_ok());
     }
 
     macro_rules! heur {

@@ -37,6 +37,10 @@ pub struct SolveGui {
     /// Per lane, indexed like `line_analysis`: which of that lane's clues are "done"
     #[serde(skip)]
     pub fixed_clues: Staleable<Option<TiVec<LaneIdx, Vec<usize>>>>,
+    /// Per lane, indexed like `line_analysis`: which of that lane's clues are "done" (or whether
+    /// the lane is contradictory), kept up to date. `fixed_clues` is copied from here.
+    #[serde(skip)]
+    pub skim: Staleable<TiVec<LaneIdx, anyhow::Result<Vec<usize>>>>,
     pub render_style: RenderStyle,
     #[serde(skip, default = "never")]
     last_inferred_version: Version,
@@ -129,6 +133,7 @@ impl SolveGui {
             line_analysis: Staleable::default(),
             mark_fixed_clues: UserSettings::get_bool(consts::SOLVER_MARK_FIXED_CLUES),
             fixed_clues: Staleable::default(),
+            skim: Staleable::default(),
             render_style: UserSettings::get(consts::SOLVER_RENDER_STYLE)
                 .and_then(|name| RenderStyle::from_setting_name(&name))
                 .unwrap_or(RenderStyle::TraditionalXes),
@@ -394,10 +399,13 @@ impl SolveGui {
                 });
             }
             Aid::MarkResolvedClues if run => {
-                let clues = &self.clues;
-                self.fixed_clues.get_or_refresh(canvas.version, || {
-                    Some(clues.fixed_clues(&canvas.progress()))
-                });
+                let skim = self.skim(canvas);
+                // A contradictory lane has nothing to cross off.
+                let fixed = skim
+                    .iter()
+                    .map(|lane| lane.as_ref().cloned().unwrap_or_default())
+                    .collect();
+                self.fixed_clues.update(Some(fixed), canvas.version);
             }
             // Checked as the answer is shown, by `errors_detected`.
             Aid::DetectErrors if requested => {
@@ -409,6 +417,12 @@ impl SolveGui {
             }
             _ => {}
         }
+    }
+
+    fn skim(&mut self, canvas: &CanvasGui) -> &TiVec<LaneIdx, anyhow::Result<Vec<usize>>> {
+        let clues = &self.clues;
+        self.skim
+            .get_or_refresh(canvas.version, || clues.fixed_clues(&canvas.progress()))
     }
 
     /// Whether "Detect errors" has something to say: there's a cell that doesn't match the
@@ -435,6 +449,7 @@ impl SolveGui {
     }
 
     pub fn body(&mut self, ui: &mut egui::Ui, scale: f32, canvas: &mut CanvasGui) {
+        self.skim(canvas);
         let is_stale = !self.line_analysis.fresh(canvas.version);
         let hover = self.hover_blocks(canvas);
 
@@ -445,6 +460,7 @@ impl SolveGui {
                 puzzle: &self.clues,
                 analysis: self.line_analysis.val.as_deref(),
                 fixed: self.fixed_clues.val.as_deref(),
+                skim: &self.skim.val,
                 is_stale,
                 hover,
             };
@@ -496,6 +512,7 @@ impl SolveGui {
                     let marks = |family: FamilyIdx| GutterMarks {
                         analysis: line_analysis.map(|la| &la[lane_map.family_range(family)].raw),
                         fixed: fixed_clues.map(|fc| &fc[lane_map.family_range(family)].raw),
+                        skim: &self.skim.val[lane_map.family_range(family)].raw,
                         checked,
                         is_stale,
                     };
@@ -732,6 +749,8 @@ pub struct GutterMarks<'a> {
     pub analysis: Option<&'a [LineStatus]>,
     /// Per line of this family, the indices of that line's fully-resolved clues.
     pub fixed: Option<&'a [Vec<usize>]>,
+    /// Per line of this family, what skimming makes of it (see `SolveGui::skim`).
+    pub skim: &'a [anyhow::Result<Vec<usize>>],
     /// The clues the user has checked off by hand, keyed by `(lane, index within the lane)`.
     pub checked: &'a HashSet<ClueId>,
     /// Whether the analysis predates the picture as it now stands.
@@ -766,25 +785,29 @@ pub(crate) fn draw_analysis_mark(
                 color,
             );
         }
-        Err(_) => {
-            let stroke = egui::Stroke::new((radius * 0.4).max(1.0), Color32::RED);
-            painter.line_segment(
-                [
-                    center + Vec2::new(-radius, -radius),
-                    center + Vec2::new(radius, radius),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    center + Vec2::new(radius, -radius),
-                    center + Vec2::new(-radius, radius),
-                ],
-                stroke,
-            );
-        }
+        Err(_) => draw_cross(painter, center, scale),
         _ => {}
     }
+}
+
+/// The red X for a line with a contradiction or error in it.
+pub(crate) fn draw_cross(painter: &egui::Painter, center: Pos2, scale: f32) {
+    let radius = scale * crate::layout::ANALYSIS_MARK_RADIUS;
+    let stroke = egui::Stroke::new((radius * 0.4).max(1.0), Color32::RED);
+    painter.line_segment(
+        [
+            center + Vec2::new(-radius, -radius),
+            center + Vec2::new(radius, radius),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            center + Vec2::new(radius, -radius),
+            center + Vec2::new(-radius, radius),
+        ],
+        stroke,
+    );
 }
 
 /// The font to write a clue in: `scale * font_scale` tall, but squeezed narrower as the number
@@ -1075,7 +1098,9 @@ fn draw_clues<C: crate::puzzle::Clue>(
                 response.rect.max.y - puzz_padding / 2.0,
             ),
         };
-        if let Some(analysis) = marks.analysis {
+        if marks.skim.get(i).is_some_and(|skim| skim.is_err()) {
+            draw_cross(&painter, center, scale);
+        } else if let Some(analysis) = marks.analysis {
             draw_analysis_mark(&painter, center, scale, &analysis[i], marks.is_stale);
         }
 

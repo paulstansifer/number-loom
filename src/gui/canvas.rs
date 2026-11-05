@@ -41,6 +41,8 @@ pub struct ClueOverlay<'a> {
     pub analysis: Option<&'a TiSlice<LaneIdx, crate::solve::grid_solve::LineStatus>>,
     /// One `Vec<usize>` of resolved clue indices per lane, indexed like `analysis`.
     pub fixed: Option<&'a TiSlice<LaneIdx, Vec<usize>>>,
+    /// Result of skimming each lane, indexed like `analysis` (see `SolveGui::skim`).
+    pub skim: &'a TiSlice<LaneIdx, anyhow::Result<Vec<usize>>>,
     pub is_stale: bool,
     /// The hovered cell's block lengths, shown in place of the analysis marks on its own lanes.
     pub hover: Option<HoverBlocks>,

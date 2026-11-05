@@ -30,7 +30,7 @@ pub(super) struct NewPuzzleDialog {
 const FADE_WIDTH: f32 = 30.0;
 
 /// A couple big hacks here to make the share string dialogs pretty.
-/// 
+///
 /// A one-line text box spanning `width`, with a button laid over its right end. The text fades
 /// out on its way to the button, and a pasted string scrolls back to its beginning. Returns the
 /// text box's response and the button's.

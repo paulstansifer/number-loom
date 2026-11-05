@@ -1094,6 +1094,52 @@ mod tests {
         assert!(clue_counts.iter().sum::<usize>() > 0);
     }
 
+    /// A lane that skimming finds a contradiction in gets a red cross even with every aid off.
+    #[test]
+    fn test_skim_contradictions_without_aids() {
+        use number_loom::gui::{Action, ActionMood};
+        use number_loom::puzzle::Color;
+
+        let doc = load("examples/png/apron.png");
+        let mut harness = app_harness(NonogramGui::new(doc));
+
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+        // Set directly rather than clicking, which would persist into the real user preferences.
+        {
+            let solve_gui = harness.state_mut().solve_gui.as_mut().unwrap();
+            solve_gui.analyze_lines = false;
+            solve_gui.mark_fixed_clues = false;
+            solve_gui.detect_errors = false;
+            solve_gui.infer_background = false;
+        }
+        harness.run();
+
+        let contradictions = |harness: &Harness<NonogramGui>| -> usize {
+            let solve_gui = harness.state().solve_gui.as_ref().unwrap();
+            assert!(solve_gui.skim.fresh(harness.state().canvas.version));
+            solve_gui.skim.val.iter().filter(|l| l.is_err()).count()
+        };
+
+        assert_eq!(contradictions(&harness), 0, "an empty grid is consistent");
+
+        // Paint the whole picture in the first color, which is more than (most) lines call for.
+        let cells = harness.state().canvas.document.solution().cells().len();
+        let changes = (0..cells).map(|i| (CellIdx(i as u32), Color(1))).collect();
+        harness
+            .state_mut()
+            .canvas
+            .perform(Action::ChangeColor { changes }, ActionMood::Normal);
+        harness.run();
+
+        assert!(contradictions(&harness) > 0);
+        let solve_gui = harness.state().solve_gui.as_ref().unwrap();
+        assert!(
+            solve_gui.fixed_clues.val.is_none(),
+            "the resolved-clue marks are still off"
+        );
+    }
+
     /// "Analyze Lines" writes a letter grade in the gutter of each line that can be progressed:
     /// one per line the analysis found something for, and none anywhere else.
     #[test]

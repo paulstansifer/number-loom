@@ -188,7 +188,9 @@ pub(super) fn draw_clue_gutters(
                     solver::draw_bare_number(ui, painter, at, &len.to_string(), scale, rgb)
                 }
                 None => {
-                    if let Some(status) = overlay.analysis.and_then(|a| a.get(g.lane)) {
+                    if overlay.skim.get(g.lane).is_some_and(|skim| skim.is_err()) {
+                        solver::draw_cross(painter, at, scale);
+                    } else if let Some(status) = overlay.analysis.and_then(|a| a.get(g.lane)) {
                         solver::draw_analysis_mark(painter, at, scale, status, overlay.is_stale);
                     }
                 }

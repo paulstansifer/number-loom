@@ -1,5 +1,11 @@
 ## Changelog
 
+## Future
+### Added
+ - Unconditionally display a red "X" on lines that contradict their clues (this uses "skim" logic only)
+### Changed
+ - Changed the logo to say "Number" rather than "NumBER".
+
 ## 0.7.0 - 2026-10-20
 ### Added
  - Support for mobile interfaces.

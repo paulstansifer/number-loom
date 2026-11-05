@@ -348,6 +348,12 @@ fn hop_up_from_edge<C: Clue>(
     learn_cell(BACKGROUND, lane, edge.lane_idx(start), affected)
 }
 
+/// `skim_to_place_fixed_clues`, but with no clues fixed if the clues can't be packed into the lane
+/// at all. The technique can find the contradiction for itself.
+fn placed_or_nothing<C: Clue>(clues: &[C], lane: &[Cell]) -> Vec<Option<usize>> {
+    skim_to_place_fixed_clues(clues, lane).unwrap_or_else(|_| vec![None; clues.len()])
+}
+
 /// An empty stretch of the lane, with background (or an edge) at both ends, can't have anything
 /// in it if it's shorter than every clue that isn't fixed.
 pub fn gap_too_small_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Result<ScrubReport> {
@@ -356,7 +362,7 @@ pub fn gap_too_small_line<C: Clue>(clues: &[C], lane: &mut [Cell]) -> anyhow::Re
     // (If every clue is fixed, no gap is big enough.)
     let shortest = clues
         .iter()
-        .zip(skim_to_place_fixed_clues(clues, lane))
+        .zip(placed_or_nothing(clues, lane))
         .filter(|(_, fixed_at)| fixed_at.is_none())
         .map(|(clue, _)| clue.len())
         .min()
@@ -496,11 +502,7 @@ impl Unfixed {
 
         let mut fixed_cells = vec![false; lane.len()];
         let mut segments = vec![];
-        for (i, (clue, fixed_at)) in clues
-            .iter()
-            .zip(skim_to_place_fixed_clues(clues, lane))
-            .enumerate()
-        {
+        for (i, (clue, fixed_at)) in clues.iter().zip(placed_or_nothing(clues, lane)).enumerate() {
             if let Some(start) = fixed_at {
                 fixed_cells[start..start + clue.len()].fill(true);
                 continue;

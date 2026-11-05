@@ -1058,12 +1058,34 @@ pub fn analyze_lines<C: Clue, K: GridKind>(
         .collect()
 }
 
-/// Which clues each lane has fully resolved — pinned down and painted in. One `Vec<usize>` of
-/// clue indices per lane, indexed exactly like `analyze_lines`.
+/// The clues that are known to be solved based on "skim" logic. One `Vec<usize>` of
+/// clue indices per lane, indexed exactly like `analyze_lines`, or an error if skimming finds a
+/// contradiction in that lane.
 pub fn fixed_clues<C: Clue, K: GridKind>(
     puzzle: &Puzzle<C, K>,
     grid: &PartialSolution,
-) -> TiVec<LaneIdx, Vec<usize>> {
+) -> TiVec<LaneIdx, anyhow::Result<Vec<usize>>> {
+    per_lane(puzzle, grid, |clues, lane| {
+        skim_line(clues, &mut lane.to_vec())?;
+        skim_to_find_fixed_clues(clues, lane)
+    })
+}
+
+/// As `fixed_clues`, but faster: the errors are only the contradictions that packing the clues
+/// finds, and not everything a whole skim would.
+pub fn fixed_clues_by_packing<C: Clue, K: GridKind>(
+    puzzle: &Puzzle<C, K>,
+    grid: &PartialSolution,
+) -> TiVec<LaneIdx, anyhow::Result<Vec<usize>>> {
+    per_lane(puzzle, grid, skim_to_find_fixed_clues)
+}
+
+/// `f` of each lane's clues and cells, indexed exactly like `analyze_lines`.
+fn per_lane<C: Clue, K: GridKind, T>(
+    puzzle: &Puzzle<C, K>,
+    grid: &PartialSolution,
+    f: impl Fn(&[C], &[Cell]) -> T,
+) -> TiVec<LaneIdx, T> {
     let lane_map = &puzzle.geometry.lane_map;
     let mut gathered = vec![];
 
@@ -1072,7 +1094,7 @@ pub fn fixed_clues<C: Clue, K: GridKind>(
         .keys()
         .map(|lane| {
             gather_into(lane_map, lane, grid, &mut gathered);
-            skim_to_find_fixed_clues(&puzzle.lines[lane], &gathered)
+            f(&puzzle.lines[lane], &gathered)
         })
         .collect()
 }

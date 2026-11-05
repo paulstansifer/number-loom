@@ -543,8 +543,9 @@ pub trait PuzzleDynOps {
     }
     /// One `LineStatus` per lane, parallel to `LaneMap::lanes`.
     fn analyze_lines(&self, partial: &PartialSolution) -> TiVec<LaneIdx, LineStatus>;
-    /// The clues each lane has fully resolved, indexed like `analyze_lines`.
-    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, Vec<usize>>;
+    /// The clues each lane has fully resolved (or a skim contradiction), indexed like
+    /// `analyze_lines`.
+    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, anyhow::Result<Vec<usize>>>;
     fn settle_solution(&self, partial: &mut PartialSolution) -> anyhow::Result<()>;
 }
 
@@ -597,7 +598,7 @@ impl<C: Clue, K: GridKind> PuzzleDynOps for Puzzle<C, K> {
         grid_solve::analyze_lines(self, partial)
     }
 
-    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, Vec<usize>> {
+    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, anyhow::Result<Vec<usize>>> {
         grid_solve::fixed_clues(self, partial)
     }
 
@@ -639,7 +640,7 @@ impl PuzzleDynOps for DynPuzzle {
         with_puzzle!(self, |p| p.analyze_lines(partial))
     }
 
-    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, Vec<usize>> {
+    fn fixed_clues(&self, partial: &PartialSolution) -> TiVec<LaneIdx, anyhow::Result<Vec<usize>>> {
         with_puzzle!(self, |p| p.fixed_clues(partial))
     }
 

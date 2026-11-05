@@ -177,7 +177,11 @@ impl Picker {
         });
         self.taken = vec![false; self.candidates.len()];
 
-        let fixed_clues = grid_solve::fixed_clues(puzzle, grid);
+        // A contradictory lane has no fixed clues, as far as scoring is concerned.
+        let fixed_clues = grid_solve::fixed_clues_by_packing(puzzle, grid)
+            .into_iter()
+            .map(|fixed| fixed.unwrap_or_default())
+            .collect();
 
         let cell_count = puzzle.geometry.cell_count();
         let mut lane_clue_len = PickTable::new(cell_count, &puzzle.palette, 0);
@@ -447,7 +451,11 @@ mod tests {
         let cells = "111.????";
         let puzzle = Puzzle::<Nono, Square>::single_lane(palette(), cells.len(), clues.clone());
         let g = grid(cells);
-        let fixed_clues = grid_solve::fixed_clues(&puzzle, &g);
+        let fixed_clues: TiVec<LaneIdx, Vec<usize>> =
+            grid_solve::fixed_clues_by_packing(&puzzle, &g)
+                .into_iter()
+                .map(|fixed| fixed.unwrap())
+                .collect();
         assert_eq!(fixed_clues[LaneIdx(0)], vec![0]);
 
         let mut s = Scores::new();
