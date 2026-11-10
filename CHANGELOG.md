@@ -5,6 +5,7 @@
  - Unconditionally display a red "X" on lines that contradict their clues (this uses "skim" logic only)
 ### Changed
  - Changed the logo to say "Number" rather than "NumBER".
+ - Moved "analyze lines" and "detect errors" into their own session; they'll reset to off every time a new (unknown) puzzle is loaded, so as not to spoil the fun.
 
 ## 0.7.0 - 2026-10-20
 ### Added

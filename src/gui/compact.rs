@@ -5,7 +5,7 @@
 //! `NonogramGui::edit_sidebar` and `SolveGui::sidebar`), so a fix to one of those reaches both.
 //! The desktop layout doesn't come through here at all.
 
-use super::solver::Aid;
+use super::solver::{Aid, EXTRA_ASSISTANCE_TITLE, EXTRA_ASSISTANCE_TOOLTIP, TestSolving};
 use super::*;
 
 /// Which arrangement of the window to use.
@@ -686,19 +686,58 @@ impl NonogramGui {
                         ui.add_sized(Vec2::new(TARGET, height), SectionHeading("Auto"));
                     });
                 });
-                for (aid, requested) in Aid::ALL.into_iter().zip(aid_requests.iter_mut()) {
+                let test_solving = self.canvas.test_solving;
+                let aid_row = |ui: &mut egui::Ui,
+                               solve_gui: &mut SolveGui,
+                               aid: Aid,
+                               requested: &mut bool| {
                     row_with_controls(ui, aid.label(), |ui| {
                         let name = format!("{} automatically", aid.label());
                         if toggle_switch(ui, solve_gui.auto_mut(aid), &name).changed() {
-                            solve_gui.auto_changed(aid);
+                            solve_gui.auto_changed(aid, test_solving);
                         }
                         let auto = *solve_gui.auto_mut(aid);
                         *requested = ui.add_enabled(!auto, egui::Button::new("once")).clicked();
                     });
+                };
+                for (aid, requested) in Aid::ALL.into_iter().zip(aid_requests.iter_mut()) {
+                    if !aid.is_test_solving() {
+                        aid_row(ui, solve_gui, aid, requested);
+                    }
                 }
 
                 ui.add_space(SECTION_GAP);
                 solve_gui.render_style_picker(ui, ScreenLayout::Compact);
+
+                // Last, since it's the section that grows when opened. As on the desktop: closed
+                // to start with on a puzzle that isn't yours, and always open on your own.
+                ui.add_space(SECTION_GAP);
+                match test_solving {
+                    TestSolving::Yours => {
+                        ui.add(SectionHeading(EXTRA_ASSISTANCE_TITLE));
+                    }
+                    TestSolving::Opened { shown } => {
+                        let icon = if shown {
+                            icons::ICON_EXPAND_LESS
+                        } else {
+                            icons::ICON_EXPAND_MORE
+                        };
+                        let row = egui::Button::new(format!("{icon} {EXTRA_ASSISTANCE_TITLE}"))
+                            .frame(false)
+                            .min_size(Vec2::new(ui.available_width(), TARGET));
+                        let row = ui.add(row).on_hover_text(EXTRA_ASSISTANCE_TOOLTIP);
+                        if row.clicked() {
+                            self.canvas.test_solving = TestSolving::Opened { shown: !shown };
+                        }
+                    }
+                }
+                if self.canvas.test_solving.available() {
+                    for (aid, requested) in Aid::ALL.into_iter().zip(aid_requests.iter_mut()) {
+                        if aid.is_test_solving() {
+                            aid_row(ui, solve_gui, aid, requested);
+                        }
+                    }
+                }
             }
             None => {
                 ui.add_space(SECTION_GAP);

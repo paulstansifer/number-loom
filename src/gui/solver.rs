@@ -85,6 +85,30 @@ impl RenderStyle {
     }
 }
 
+/// Whose puzzle this is, as far as the test-solving aids (`Aid::is_test_solving`) are concerned.
+/// They take the fun out of solving someone else's puzzle, but they're how you check your own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TestSolving {
+    /// Made with New, or edited since it was opened: the aids follow the saved preferences.
+    /// (Also what a session saved before this existed comes back as.)
+    #[default]
+    Yours,
+    /// Opened, and not edited since. The aids start out off, and changing them doesn't touch the
+    /// saved preferences. `shown` is whether the user has opened their section anyway.
+    Opened { shown: bool },
+}
+
+impl TestSolving {
+    /// Whether the test-solving aids can run (and so be shown).
+    pub fn available(self) -> bool {
+        self != TestSolving::Opened { shown: false }
+    }
+}
+
+pub(super) const EXTRA_ASSISTANCE_TITLE: &str = "Extra assistance";
+
+pub(super) const EXTRA_ASSISTANCE_TOOLTIP: &str = "These are recommended for test-solving a puzzle you created, but they may take away the fun of solving.";
+
 /// The solving aids, each of which can run on demand or after every move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Aid {
@@ -111,6 +135,12 @@ impl Aid {
         }
     }
 
+    /// Whether this is one of the aids for checking a puzzle you're making, which live in their
+    /// own section (see `TestSolving`).
+    pub(super) fn is_test_solving(self) -> bool {
+        matches!(self, Aid::AnalyzeLines | Aid::DetectErrors)
+    }
+
     /// Where its "after every move" switch is remembered.
     fn setting(self) -> &'static str {
         match self {
@@ -123,12 +153,14 @@ impl Aid {
 }
 
 impl SolveGui {
-    /// For solving the puzzle with these clues.
-    pub fn new(clues: DynPuzzle) -> Self {
+    /// For solving the puzzle with these clues. Unless it's `Yours`, the test-solving aids start
+    /// out off, whatever the saved preferences say.
+    pub fn new(clues: DynPuzzle, test_solving: TestSolving) -> Self {
+        let yours = test_solving == TestSolving::Yours;
         SolveGui {
             clues,
-            analyze_lines: UserSettings::get_bool(consts::SOLVER_ANALYZE_LINES),
-            detect_errors: UserSettings::get_bool(consts::SOLVER_DETECT_ERRORS),
+            analyze_lines: yours && UserSettings::get_bool(consts::SOLVER_ANALYZE_LINES),
+            detect_errors: yours && UserSettings::get_bool(consts::SOLVER_DETECT_ERRORS),
             infer_background: UserSettings::get_bool(consts::SOLVER_INFER_BACKGROUND),
             line_analysis: Staleable::default(),
             mark_fixed_clues: UserSettings::get_bool(consts::SOLVER_MARK_FIXED_CLUES),
@@ -217,17 +249,57 @@ impl SolveGui {
             self.render_style_picker(ui, ScreenLayout::Desktop);
 
             ui.separator();
-            for aid in Aid::ALL {
-                let pressed = auto_button(ui, aid.label(), self.auto_mut(aid));
-                if pressed.auto.changed() {
-                    self.auto_changed(aid);
+            for aid in Aid::ALL.into_iter().filter(|aid| !aid.is_test_solving()) {
+                self.aid_button(ui, aid, canvas);
+            }
+
+            ui.separator();
+            // On a puzzle that isn't yours, the section starts out closed, and opening it is a
+            // choice. On your own, it's always open, and has nothing to collapse.
+            let test_solving_aids = || Aid::ALL.into_iter().filter(|aid| aid.is_test_solving());
+            match canvas.test_solving {
+                TestSolving::Yours => {
+                    ui.label(RichText::new(EXTRA_ASSISTANCE_TITLE).strong());
+                    for aid in test_solving_aids() {
+                        self.aid_button(ui, aid, canvas);
+                    }
                 }
-                self.run_aid(aid, pressed.button.clicked(), canvas);
-                if aid == Aid::DetectErrors && self.errors_detected(canvas) {
-                    ui.colored_label(egui::Color32::DARK_RED, "Error detected");
+                TestSolving::Opened { shown } => {
+                    let header = egui::CollapsingHeader::new(EXTRA_ASSISTANCE_TITLE)
+                        .open(Some(shown))
+                        .show(ui, |ui| {
+                            for aid in test_solving_aids() {
+                                self.aid_button(ui, aid, canvas);
+                            }
+                        });
+                    if header
+                        .header_response
+                        .on_hover_text(EXTRA_ASSISTANCE_TOOLTIP)
+                        .clicked()
+                    {
+                        canvas.test_solving = TestSolving::Opened { shown: !shown };
+                    }
+                    if !canvas.test_solving.available() {
+                        // Still run, so that closing the section takes the aids' marks with it.
+                        for aid in test_solving_aids() {
+                            self.run_aid(aid, false, canvas);
+                        }
+                    }
                 }
             }
         });
+    }
+
+    /// One aid's button and "after every move" switch, in the desktop sidebar.
+    fn aid_button(&mut self, ui: &mut egui::Ui, aid: Aid, canvas: &mut CanvasGui) {
+        let pressed = auto_button(ui, aid.label(), self.auto_mut(aid));
+        if pressed.auto.changed() {
+            self.auto_changed(aid, canvas.test_solving);
+        }
+        self.run_aid(aid, pressed.button.clicked(), canvas);
+        if aid == Aid::DetectErrors && self.errors_detected(canvas) {
+            ui.colored_label(egui::Color32::DARK_RED, "Error detected");
+        }
     }
 
     pub(super) fn title_and_author(ui: &mut egui::Ui, canvas: &CanvasGui) {
@@ -372,10 +444,14 @@ impl SolveGui {
         }
     }
 
-    /// Remember that `auto_mut(aid)` has just been flipped.
-    pub(super) fn auto_changed(&mut self, aid: Aid) {
+    /// Remember that `auto_mut(aid)` has just been flipped. A test-solving aid's switch is only
+    /// saved as a preference on a puzzle that's yours: peeking at someone else's puzzle is a
+    /// one-off.
+    pub(super) fn auto_changed(&mut self, aid: Aid, test_solving: TestSolving) {
         let auto = *self.auto_mut(aid);
-        let _ = UserSettings::set(aid.setting(), &auto.to_string());
+        if !aid.is_test_solving() || test_solving == TestSolving::Yours {
+            let _ = UserSettings::set(aid.setting(), &auto.to_string());
+        }
         if !auto {
             // Turning an aid off has to take its marks with it; otherwise the last analysis sits
             // in the gutters, going staler with every move.
@@ -389,7 +465,18 @@ impl SolveGui {
 
     /// Run the aid if it was `requested`, or if it runs after every move, unless what it would
     /// work out is already up to date.
+    ///
+    /// While the test-solving section is closed, its aids don't run, and what they last showed is
+    /// taken down.
     pub(super) fn run_aid(&mut self, aid: Aid, requested: bool, canvas: &mut CanvasGui) {
+        if aid.is_test_solving() && !canvas.test_solving.available() {
+            match aid {
+                Aid::AnalyzeLines => self.line_analysis = Staleable::default(),
+                Aid::DetectErrors => self.errors_checked = None,
+                _ => {}
+            }
+            return;
+        }
         let run = requested || *self.auto_mut(aid);
         match aid {
             Aid::AnalyzeLines if run => {
@@ -428,7 +515,8 @@ impl SolveGui {
     /// Whether "Detect errors" has something to say: there's a cell that doesn't match the
     /// answer, and the aid is either on, or was run since the last move.
     pub(super) fn errors_detected(&self, canvas: &CanvasGui) -> bool {
-        (self.detect_errors || self.errors_checked == Some(canvas.version))
+        canvas.test_solving.available()
+            && (self.detect_errors || self.errors_checked == Some(canvas.version))
             && Self::detect_any_errors(canvas)
     }
 

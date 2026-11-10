@@ -276,7 +276,13 @@ impl NonogramGui {
         self.receive_save_result();
 
         if let Some((document, for_solving)) = pasted.or(from_library).or(new_puzzle) {
-            self.replace_document(document);
+            // Only New makes a puzzle that's the user's own from the start.
+            let test_solving = if for_solving {
+                TestSolving::Opened { shown: false }
+            } else {
+                TestSolving::Yours
+            };
+            self.replace_document(document, test_solving);
             self.new_dialog = None;
             self.library_dialog = None;
             self.save_share = None;
@@ -462,7 +468,7 @@ impl NonogramGui {
                             ui.button(icons::ICON_SHARE)
                         } else {
                             ui.add(compact::icon_button(icons::ICON_CONTENT_COPY, layout))
-                                .on_hover_text("HUMANIZE: Copy to clipboard")
+                                .on_hover_text("Copy to clipboard")
                         }
                     },
                 );
@@ -638,7 +644,9 @@ impl NonogramGui {
     fn receive_opened_file(&mut self) {
         if let Ok(result) = self.opened_file_receiver.try_recv() {
             match result {
-                Ok(document) => self.replace_document(document),
+                Ok(document) => {
+                    self.replace_document(document, TestSolving::Opened { shown: false })
+                }
                 Err(e) => {
                     self.canvas
                         .status

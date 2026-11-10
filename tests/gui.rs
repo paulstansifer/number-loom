@@ -1094,6 +1094,43 @@ mod tests {
         assert!(clue_counts.iter().sum::<usize>() > 0);
     }
 
+    /// On a puzzle that was opened rather than made, the test-solving aids are tucked away in a
+    /// closed section until it's clicked open; editing the puzzle makes them part of the sidebar.
+    #[test]
+    fn test_solving_aids_are_hidden_on_opened_puzzles() {
+        let doc = load("examples/png/apron.png");
+        let mut harness = app_harness(NonogramGui::new_solving(doc));
+        harness.run();
+
+        assert!(harness.query_by_label("Analyze Lines").is_none());
+        assert!(harness.query_by_label("Detect errors").is_none());
+        // The aids that don't spoil anything are still there.
+        harness.get_by_label("Mark resolved clues");
+
+        harness.get_by_label_contains("Test-solving").click();
+        harness.run();
+        harness.get_by_label("Analyze Lines");
+        harness.get_by_label("Detect errors");
+
+        harness.get_by_label_contains("Test-solving").click();
+        harness.run();
+        assert!(harness.query_by_label("Analyze Lines").is_none());
+
+        // An edit makes it the user's own puzzle, and the section is always open.
+        harness.get_by_label("Edit").click();
+        harness.run();
+        harness.state_mut().canvas.perform(
+            number_loom::gui::Action::ChangeColor {
+                changes: [(CellIdx(0), number_loom::puzzle::Color(1))].into(),
+            },
+            number_loom::gui::ActionMood::Normal,
+        );
+        harness.get_by_label("Puzzle").click();
+        harness.run();
+        harness.get_by_label("Analyze Lines");
+        harness.get_by_label("Detect errors");
+    }
+
     /// A lane that skimming finds a contradiction in gets a red cross even with every aid off.
     #[test]
     fn test_skim_contradictions_without_aids() {
@@ -1603,6 +1640,31 @@ mod tests {
             }
         }
 
+        /// As `assert_all_tappable`, but for a scrolling drawer: each control only has to be on
+        /// the screen once it's been scrolled to.
+        fn assert_all_tappable_scrolling(harness: &mut Harness<NonogramGui>) {
+            use egui::accesskit::Role;
+            for role in [Role::Button, Role::CheckBox, Role::Switch] {
+                let count = harness.query_all(by().role(role)).count();
+                for i in 0..count {
+                    harness
+                        .query_all(by().role(role))
+                        .nth(i)
+                        .unwrap()
+                        .scroll_to_me();
+                    harness.run();
+                    assert_tappable(&harness.query_all(by().role(role)).nth(i).unwrap());
+                }
+            }
+        }
+
+        /// Scroll the drawer to `label`'s control, and check it's tappable there.
+        fn scroll_to(harness: &mut Harness<NonogramGui>, label: &str) {
+            harness.get_by_label_contains(label).scroll_to_me();
+            harness.run();
+            assert_tappable(&harness.get_by_label_contains(label));
+        }
+
         #[test]
         fn solve_mode_has_its_bars() {
             let harness = phone(NonogramGui::new_solving(apron()));
@@ -1682,6 +1744,17 @@ mod tests {
             harness.get_by_label(icons::ICON_MENU).click();
             harness.run();
 
+            // An opened puzzle isn't the user's own, so the test-solving aids start out hidden,
+            // until their section's heading is tapped.
+            assert!(
+                harness
+                    .query_by_label("Analyze Lines automatically")
+                    .is_none()
+            );
+            scroll_to(&mut harness, "Test-solving");
+            harness.get_by_label_contains("Test-solving").click();
+            harness.run();
+
             for label in [
                 "Edit",
                 "Puzzle",
@@ -1697,10 +1770,10 @@ mod tests {
                 "Detect errors automatically",
                 "Infer background automatically",
             ] {
-                assert_tappable(&harness.get_by_label(label));
+                scroll_to(&mut harness, label);
             }
             assert_eq!(harness.query_all_by_label("once").count(), 4);
-            assert_all_tappable(&harness);
+            assert_all_tappable_scrolling(&mut harness);
 
             // Each aid can be run once, or switched on.
             let analysis = |harness: &Harness<NonogramGui>| {
@@ -1713,23 +1786,28 @@ mod tests {
                     .val
                     .is_some()
             };
-            let auto = harness.state().solve_gui.as_ref().unwrap().analyze_lines;
-            if auto {
-                harness.get_by_label("Analyze Lines automatically").click();
-                harness.run();
-            }
+            // It's someone else's puzzle, so it starts out off, whatever the preference is.
+            assert!(!harness.state().solve_gui.as_ref().unwrap().analyze_lines);
             assert!(!analysis(&harness));
-            harness.get_all_by_label("once").next().unwrap().click();
+            // The "once" buttons go in the order of their rows: Mark resolved clues, Infer
+            // background, then the test-solving section's Analyze Lines and Detect errors.
+            scroll_to(&mut harness, "Analyze Lines automatically");
+            harness.get_all_by_label("once").nth(2).unwrap().click();
             harness.run();
             assert!(analysis(&harness));
+            use number_loom::user_settings::{UserSettings, consts};
+            let saved = UserSettings::get_bool(consts::SOLVER_ANALYZE_LINES);
             harness.get_by_label("Analyze Lines automatically").click();
             harness.run();
             assert!(harness.state().solve_gui.as_ref().unwrap().analyze_lines);
-            // Put the user's setting back the way it was.
-            if !auto {
-                harness.get_by_label("Analyze Lines automatically").click();
-                harness.run();
-            }
+            // Switching it on for someone else's puzzle isn't a preference.
+            assert_eq!(UserSettings::get_bool(consts::SOLVER_ANALYZE_LINES), saved);
+
+            // Closing the section again takes the analysis down.
+            scroll_to(&mut harness, "Test-solving");
+            harness.get_by_label_contains("Test-solving").click();
+            harness.run();
+            assert!(!analysis(&harness));
 
             // Choosing the other mode closes the drawer.
             harness.get_by_label("Edit").click();
@@ -1914,6 +1992,8 @@ mod tests {
         fn errors_show_in_the_top_bar() {
             let mut harness = phone(NonogramGui::new_solving(apron()));
             let gui = harness.state_mut();
+            // An opened puzzle hides "Detect errors" until it's asked for.
+            gui.canvas.test_solving = number_loom::gui::solver::TestSolving::Opened { shown: true };
             // A cell painted with a color that isn't the answer's.
             let (cell, wrong) = {
                 let answer = gui.canvas.document.solution().cells();
@@ -1939,7 +2019,8 @@ mod tests {
             if !auto {
                 harness.get_by_label(icons::ICON_MENU).click();
                 harness.run();
-                harness.get_all_by_label("once").nth(2).unwrap().click();
+                scroll_to(&mut harness, "Detect errors automatically");
+                harness.get_all_by_label("once").nth(3).unwrap().click();
                 harness.run();
                 harness.get_by_label(icons::ICON_CLOSE).click();
                 harness.run();

@@ -111,7 +111,7 @@ impl StatusCell {
     }
 }
 
-use solver::{RenderStyle, SolveGui};
+use solver::{RenderStyle, SolveGui, TestSolving};
 
 use crate::{
     export::to_bytes,
@@ -447,6 +447,11 @@ pub struct CanvasGui {
     /// within the lane)`. Undoable (`Action::ToggleClue`), but no part of the picture, so it
     /// doesn't bump `version` and the solve replay steps straight past it.
     pub checked_clues: HashSet<ClueId>,
+    /// Whether this is the user's own puzzle, which decides whether the test-solving aids are
+    /// available. Opening a puzzle (other than with New) makes it someone else's, and any edit
+    /// makes it yours again; see `NonogramGui::replace_document` and `perform`.
+    #[serde(default)]
+    pub test_solving: TestSolving,
     /// The annotation being dragged out right now, if any.
     #[serde(skip)]
     pub annotate_drag: Option<AnnotateDrag>,
@@ -642,6 +647,7 @@ impl CanvasGui {
             annotations: vec![],
             annotate_drag: None,
             checked_clues: HashSet::new(),
+            test_solving: TestSolving::Yours,
             solving: false,
             other_mode: solver,
             color_edit: None,
@@ -842,6 +848,12 @@ impl CanvasGui {
                 Undo => self.redo_stack.push(reversed_action),
                 Redo => self.undo_stack.push(reversed_action),
             }
+        }
+
+        // Anything done in the editor makes the puzzle the user's own, even undoing.
+        // (`replace_document` overrides this for opening a puzzle.)
+        if !self.solving {
+            self.test_solving = TestSolving::Yours;
         }
 
         if self.version != version_before {
@@ -1075,7 +1087,12 @@ impl NonogramGui {
     /// `document`, or, if its picture couldn't be worked out, a blank canvas that says why.
     pub fn new_or_blank(document: anyhow::Result<Document>) -> Self {
         match document {
-            Ok(document) => Self::new(document),
+            // Opened from a file, so not (as far as we know) the user's own work.
+            Ok(document) => {
+                let mut gui = Self::new(document);
+                gui.canvas.test_solving = TestSolving::Opened { shown: false };
+                gui
+            }
             Err(e) => {
                 let gui = Self::new(Document::from_solution(
                     DynSolution::Square(Solution::blank_bw(20, 20)),
@@ -1257,6 +1274,7 @@ impl NonogramGui {
     /// Like `new`, but starting out in solve mode.
     pub fn new_solving(document: Document) -> Self {
         let mut gui = Self::new(document);
+        gui.canvas.test_solving = TestSolving::Opened { shown: false };
         gui.enter_solve_mode();
         gui
     }
@@ -1265,12 +1283,13 @@ impl NonogramGui {
     /// the document is replaced with an undoable `ReplaceDocument`, so undoing in the editor
     /// brings back whatever was there before, progress and all.
     pub fn open_linked(&mut self, document: Document) {
-        self.replace_document(document);
+        self.replace_document(document, TestSolving::Opened { shown: false });
         self.enter_solve_mode();
     }
 
-    /// Replace the document, in the editor, undoably.
-    fn replace_document(&mut self, document: Document) {
+    /// Replace the document, in the editor, undoably. `test_solving` is whose puzzle it is now:
+    /// `Yours` for one made with New, and `Opened` for anything else.
+    fn replace_document(&mut self, document: Document, test_solving: TestSolving) {
         self.exit_solve_mode();
         self.canvas.perform(
             Action::ReplaceDocument {
@@ -1278,13 +1297,17 @@ impl NonogramGui {
             },
             ActionMood::Normal,
         );
+        self.canvas.test_solving = test_solving;
     }
 
     /// Start solving, from whatever progress the document has (see `CanvasGui::set_solving`).
     fn enter_solve_mode(&mut self) {
         if self.solve_gui.is_none() {
             self.canvas.set_solving(true);
-            self.solve_gui = Some(SolveGui::new(self.canvas.document.puzzle().clone()));
+            self.solve_gui = Some(SolveGui::new(
+                self.canvas.document.puzzle().clone(),
+                self.canvas.test_solving,
+            ));
         }
     }
 
@@ -2074,5 +2097,93 @@ mod new_solving_tests {
         let grid = gui.canvas.cells().raw.to_vec();
         assert_eq!(grid[0], answer[0]);
         assert!(grid[1..].iter().all(|&c| c == UNSOLVED));
+    }
+}
+
+#[cfg(test)]
+mod test_solving_tests {
+    use super::*;
+
+    fn linked() -> Document {
+        let woven = include_str!("../examples/woven/square_bw.1.woven");
+        crate::formats::woven::from_woven(woven.trim(), "linked.woven".to_string()).unwrap()
+    }
+
+    fn paint_first_cell(canvas: &mut CanvasGui) {
+        canvas.perform(
+            Action::ChangeColor {
+                changes: [(CellIdx(0), Color(1))].into(),
+            },
+            ActionMood::Normal,
+        );
+    }
+
+    #[test]
+    fn opening_a_puzzle_hides_the_test_solving_aids() {
+        let gui = NonogramGui::new_solving(linked());
+        assert_eq!(
+            gui.canvas.test_solving,
+            TestSolving::Opened { shown: false }
+        );
+        // Whatever the saved preferences say.
+        let solve_gui = gui.solve_gui.as_ref().unwrap();
+        assert!(!solve_gui.analyze_lines && !solve_gui.detect_errors);
+
+        let mut gui = NonogramGui::new(linked());
+        assert_eq!(gui.canvas.test_solving, TestSolving::Yours);
+        gui.open_linked(linked());
+        assert_eq!(
+            gui.canvas.test_solving,
+            TestSolving::Opened { shown: false }
+        );
+    }
+
+    #[test]
+    fn editing_makes_the_puzzle_yours() {
+        let mut gui = NonogramGui::new_solving(linked());
+
+        // Solving isn't editing, and neither is checking off a clue.
+        paint_first_cell(&mut gui.canvas);
+        gui.canvas.perform(
+            Action::ToggleClue {
+                clue: (LaneIdx(0), 0),
+            },
+            ActionMood::Normal,
+        );
+        assert_eq!(
+            gui.canvas.test_solving,
+            TestSolving::Opened { shown: false }
+        );
+
+        // Going to the editor and looking isn't either.
+        gui.exit_solve_mode();
+        gui.enter_solve_mode();
+        assert_eq!(
+            gui.canvas.test_solving,
+            TestSolving::Opened { shown: false }
+        );
+
+        gui.exit_solve_mode();
+        paint_first_cell(&mut gui.canvas);
+        assert_eq!(gui.canvas.test_solving, TestSolving::Yours);
+    }
+
+    #[test]
+    fn hidden_aids_do_not_run() {
+        let mut gui = NonogramGui::new_solving(linked());
+        let solve_gui = gui.solve_gui.as_mut().unwrap();
+        solve_gui.analyze_lines = true;
+        solve_gui.run_aid(solver::Aid::AnalyzeLines, true, &mut gui.canvas);
+        assert!(solve_gui.line_analysis.val.is_none());
+
+        // Opening the section anyway lets it run...
+        gui.canvas.test_solving = TestSolving::Opened { shown: true };
+        solve_gui.run_aid(solver::Aid::AnalyzeLines, false, &mut gui.canvas);
+        assert!(solve_gui.line_analysis.val.is_some());
+
+        // ...and closing it again takes its marks down.
+        gui.canvas.test_solving = TestSolving::Opened { shown: false };
+        solve_gui.run_aid(solver::Aid::AnalyzeLines, false, &mut gui.canvas);
+        assert!(solve_gui.line_analysis.val.is_none());
     }
 }

@@ -407,4 +407,26 @@ mod tests {
         );
         assert!(NonogramGui::from_session_string("").is_err());
     }
+
+    /// Whose puzzle it is survives, and a session from before that was saved is the user's own,
+    /// so that it behaves as it did.
+    #[test]
+    fn whose_puzzle_it_is_survives() {
+        let mut gui = NonogramGui::new_solving(top_row());
+        gui.canvas.test_solving = TestSolving::Opened { shown: true };
+        assert_eq!(
+            round_trip(&gui).canvas.test_solving,
+            TestSolving::Opened { shown: true }
+        );
+
+        let mut json: serde_json::Value = serde_json::to_value(&gui).unwrap();
+        json["canvas"]
+            .as_object_mut()
+            .unwrap()
+            .remove("test_solving")
+            .unwrap();
+        let old = serde_json::to_vec(&json).unwrap();
+        let restored = NonogramGui::from_session_string(&encode(&old).unwrap()).unwrap();
+        assert_eq!(restored.canvas.test_solving, TestSolving::Yours);
+    }
 }
