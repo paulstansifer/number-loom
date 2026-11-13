@@ -461,8 +461,7 @@ impl NonogramGui {
                     layout,
                     text_width,
                     // Read-only: an `&str` can be selected and copied, but not edited.
-                    egui::TextEdit::singleline(&mut dialog.shared.as_str())
-                        .font(TextStyle::Monospace),
+                    super::singleline(&mut dialog.shared.as_str()).font(TextStyle::Monospace),
                     |ui| {
                         if compact::can_share() {
                             ui.button(icons::ICON_SHARE)
@@ -517,7 +516,7 @@ impl NonogramGui {
                     ui,
                     layout,
                     text_width,
-                    egui::TextEdit::singleline(&mut dialog.pasted).font(TextStyle::Monospace),
+                    super::singleline(&mut dialog.pasted).font(TextStyle::Monospace),
                     |ui| ui.add_enabled(well_formed, egui::Button::new("Load")),
                 );
                 edit_response.labelled_by(paste_label.id);
@@ -556,7 +555,7 @@ impl NonogramGui {
                 ui.horizontal(|ui| {
                     let filename_label = ui.label("Filename:");
                     ui.add(
-                        egui::TextEdit::singleline(&mut canvas.document.file)
+                        super::singleline(&mut canvas.document.file)
                             .desired_width(text_width.min(450.0)),
                     )
                     .labelled_by(filename_label.id);

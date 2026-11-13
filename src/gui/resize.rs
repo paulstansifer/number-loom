@@ -162,7 +162,7 @@ impl NonogramGui {
                 ui.end_row();
 
                 pair(ui, Edge::Left, &mut clicked);
-                ui.text_edit_singleline(&mut self.lines_to_affect_string)
+                ui.add(super::singleline(&mut self.lines_to_affect_string))
                     .accessible_name(LINES_TO_AFFECT_NAME);
                 pair(ui, Edge::Right, &mut clicked);
                 ui.end_row();
@@ -293,7 +293,7 @@ impl NonogramGui {
 
         ui.put(
             Rect::from_center_size(center, edit_size),
-            egui::TextEdit::singleline(&mut self.lines_to_affect_string),
+            super::singleline(&mut self.lines_to_affect_string),
         )
         .accessible_name(LINES_TO_AFFECT_NAME);
 

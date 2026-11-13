@@ -1213,15 +1213,12 @@ impl NonogramGui {
 
     /// Title, author, description and license.
     fn metadata_form(&mut self, ui: &mut egui::Ui) {
-        ui.add(egui::TextEdit::singleline(&mut self.canvas.document.title).hint_text("Title"));
+        ui.add(singleline(&mut self.canvas.document.title).hint_text("Title"));
 
         ui.horizontal(|ui| {
             ui.label("by ");
             if ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.canvas.document.author)
-                        .hint_text("Author"),
-                )
+                .add(singleline(&mut self.canvas.document.author).hint_text("Author"))
                 .changed()
             {
                 let _ = UserSettings::set(consts::EDITOR_AUTHOR_NAME, &self.canvas.document.author);
@@ -1257,10 +1254,7 @@ impl NonogramGui {
                 self.canvas.document.license.clear();
             };
             let field = ui
-                .add_enabled(
-                    !is_cc_by,
-                    egui::TextEdit::singleline(&mut self.canvas.document.license),
-                )
+                .add_enabled(!is_cc_by, singleline(&mut self.canvas.document.license))
                 .accessible_name("Custom license");
             radio.labelled_by(field.id);
         });
@@ -1349,6 +1343,13 @@ fn centered_row<R>(
 
     ui.data_mut(|d| d.insert_temp(id, row.response.rect.width() - pad));
     row.inner
+}
+
+/// A one-line text field, with its text centered vertically. egui makes a text field as tall as
+/// a button (`compact::TARGET` in the compact layout) but puts the text at the top, so without
+/// this it looks two lines tall.
+pub(crate) fn singleline(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text).align(egui::Align2::LEFT_CENTER)
 }
 
 /// egui's spacing, except where noted.

@@ -899,7 +899,7 @@ impl NonogramGui {
                     }
                     let name = ui
                         .add(
-                            egui::TextEdit::singleline(&mut color_info.name)
+                            super::singleline(&mut color_info.name)
                                 .desired_width(ui.available_width()),
                         )
                         .accessible_name("Rename this color");
